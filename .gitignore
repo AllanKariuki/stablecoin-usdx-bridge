@@ -1,0 +1,49 @@
+/cache/
+/out/
+
+=========================
+Logs / Local development
+=========================
+
+/.logs/
+.ignore/
+*.log
+chains/ethereum/lib/*
+
+=========================
+Foundry broadcast / deployment logs
+=========================
+
+/broadcast/*/31337/
+/broadcast/**/dry-run/
+
+=========================
+Documentation
+=========================
+
+/docs/
+
+=========================
+Environment / Secrets
+=========================
+
+.env
+.env.*
+!.env.example
+
+=========================
+OS / IDE files
+=========================
+
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+=========================
+Temporary files
+=========================
+
+*.tmp
+*.temp
