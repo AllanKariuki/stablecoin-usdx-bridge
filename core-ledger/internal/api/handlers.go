@@ -1,12 +1,11 @@
 package api
 
 import (
-	"encoding/json"
-	"net/http"
+	"core-ledger/internal/bridge"
+	"core-ledger/internal/ledger"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
-	"github.com/keshi/usdx-bridge/core-ledger/internal/bridge"
-	"github.com/keshi/usdx-bridge/core-ledger/internal/ledger"
 )
 
 type Handlers struct {
@@ -18,52 +17,51 @@ func NewHandlers(repo *ledger.Repository, saga *bridge.Saga) *Handlers {
 	return &Handlers{repo: repo, saga: saga}
 }
 
-func (h *Handlers) Register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /mint", h.handleMintRequest)
-	mux.HandleFunc("GET /transfers/{correlationId}", h.handleGetTransfer)
+func (h *Handlers) Register(app *fiber.App) {
+	app.Post("/mint", h.handleMintRequest)
+	app.Get("/transfers/:correlationId", h.handleGetTransfer)
 }
 
 // POST /mint — client's entry point. target_chain decides where funds land;
 // source_chain is where they're burned from (empty/absent for a fresh mint
 // against trust bank collateral rather than a cross-chain move).
-func (h *Handlers) handleMintRequest(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) handleMintRequest(c *fiber.Ctx) error {
 	var req ledger.MintRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 	if req.TargetChain != "ETHEREUM" && req.TargetChain != "SOLANA" {
-		http.Error(w, `target_chain must be "ETHEREUM" or "SOLANA"`, http.StatusBadRequest)
-		return
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": `target_chain must be "ETHEREUM" or "SOLANA"`})
+	}
+	if req.SourceChain != "" && req.SourceChain != "ETHEREUM" && req.SourceChain != "SOLANA" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": `source_chain must be "ETHEREUM", "SOLANA", or omitted`})
+	}
+	if req.SourceChain == req.TargetChain && req.SourceChain != "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "source_chain and target_chain must differ"})
 	}
 
 	t := &ledger.BridgeTransfer{
 		CorrelationID: uuid.New().String(),
 		UserAddress:   req.UserAddress,
-		Amount:        req.Amount,
+		Amount:        req.Amount.SmallestUnit,
 		SourceChain:   req.SourceChain,
 		TargetChain:   req.TargetChain,
 		Status:        ledger.StatusPending,
 	}
 	if err := h.repo.Insert(t); err != nil {
-		http.Error(w, "failed to persist transfer", http.StatusInternalServerError)
-		return
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to persist transfer"})
 	}
 
 	go h.saga.Execute(t.CorrelationID) // async; poll GET /transfers/{id} for status
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(t)
+	return c.Status(fiber.StatusAccepted).JSON(t)
 }
 
-func (h *Handlers) handleGetTransfer(w http.ResponseWriter, r *http.Request) {
-	correlationID := r.PathValue("correlationId")
+func (h *Handlers) handleGetTransfer(c *fiber.Ctx) error {
+	correlationID := c.Params("correlationId")
 	t, err := h.repo.FindByCorrelationID(correlationID)
 	if err != nil {
-		http.Error(w, "transfer not found", http.StatusNotFound)
-		return
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "transfer not found"})
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(t)
+	return c.JSON(t)
 }
