@@ -30,8 +30,11 @@ type BridgeTransfer struct {
 }
 
 type MintRequest struct {
-	UserAddress string   `json:"user_address"`
-	Amount      *big.Int `json:"amount"`
-	SourceChain string   `json:"source_chain"`
-	TargetChain string   `json:"target_chain"`
+	UserAddress string `json:"user_address"`
+	// Amount is a decimal dollar string, e.g. "1000000.00" — matching the
+	// DAMP spec's example payloads. See DecimalAmount for the conversion to
+	// USD-X's smallest unit (6 decimals, matching both chains).
+	Amount      DecimalAmount `json:"amount"`
+	SourceChain string        `json:"source_chain"`
+	TargetChain string        `json:"target_chain"`
 }
