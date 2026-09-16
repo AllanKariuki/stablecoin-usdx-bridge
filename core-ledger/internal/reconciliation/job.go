@@ -1,11 +1,12 @@
 package reconciliation
 
 import (
+	"errors"
 	"log"
 	"math/big"
 	"time"
 
-	"github.com/keshi/usdx-bridge/core-ledger/internal/ledger"
+	"core-ledger/internal/ledger"
 )
 
 type SupplySource interface {
@@ -25,7 +26,7 @@ func NewJob(repo *ledger.Repository, eth, sol SupplySource) *Job {
 // RunForever checks, on an interval, that circulating supply across both
 // chains matches trust bank collateral — net of transfers that are
 // legitimately mid-saga (briefly "burned on one chain, not yet minted on
-// the other").
+// the other", or fiat already deposited but not yet minted at all).
 func (j *Job) RunForever() {
 	ticker := time.NewTicker(5 * time.Minute)
 	for range ticker.C {
@@ -56,9 +57,40 @@ func (j *Job) checkOnce() error {
 		inFlightTotal.Add(inFlightTotal, t.Amount)
 	}
 
-	// TODO: fetch actual trust bank collateral balance and compare
-	// circulating (adjusted for inFlightTotal) against it; alert on drift
-	// beyond a small tolerance.
-	log.Printf("reconciliation: circulating=%s in_flight=%s", circulating, inFlightTotal)
+	// What total on-chain supply should reach once every in-flight transfer
+	// settles: a burn-then-mint transiently shows less supply than it should
+	// (burned already, not minted yet); a fresh mint transiently shows less
+	// supply than the fiat already deposited for it.
+	expectedBacked := new(big.Int).Add(circulating, inFlightTotal)
+
+	bankBalance, asOf, err := j.repo.LatestTrustBankBalance()
+	if errors.Is(err, ledger.ErrNoTrustBankSnapshot) {
+		log.Printf(
+			"reconciliation: circulating=%s in_flight=%s (no trust bank snapshot recorded yet, skipping comparison)",
+			circulating, inFlightTotal,
+		)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	// Spec invariant: Fiat Reserves >= Tokens in Circulation. The bank
+	// holding more than expected is fine (unminted headroom); less is not.
+	if bankBalance.Cmp(expectedBacked) < 0 {
+		shortfall := new(big.Int).Sub(expectedBacked, bankBalance)
+		// A real deployment should page someone here (PagerDuty/Slack) —
+		// logging is a placeholder for that alert channel.
+		log.Printf(
+			"reconciliation: ALERT shortfall=%s bank_balance=%s (as_of=%s) expected_backed=%s circulating=%s in_flight=%s",
+			shortfall, bankBalance, asOf.Format(time.RFC3339), expectedBacked, circulating, inFlightTotal,
+		)
+		return nil
+	}
+
+	log.Printf(
+		"reconciliation: OK bank_balance=%s (as_of=%s) expected_backed=%s circulating=%s in_flight=%s",
+		bankBalance, asOf.Format(time.RFC3339), expectedBacked, circulating, inFlightTotal,
+	)
 	return nil
 }
