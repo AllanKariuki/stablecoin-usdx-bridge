@@ -39,6 +39,12 @@ pub mod usdx_bridge {
     ) -> Result<()> {
         handle_bridge_burn(ctx, amount, correlation_id)
     }
+
+    // Called by the user's own wallet (never the relayer) to authorize the
+    // relayer-driven bridge_burn above.
+    pub fn approve_bridge_delegate(ctx: Context<ApproveBridgeDelegate>, amount: u64) -> Result<()> {
+        handle_approve_bridge_delegate(ctx, amount)
+    }
 }
 
 #[event]
