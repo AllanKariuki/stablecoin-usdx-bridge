@@ -47,6 +47,14 @@ contract USDX is
         _grantRole(BRIDGE_ROLE, bridgeRelayer);
     }
 
+    // Fixed at 6 to match the Solana mint's USDX_DECIMALS (constants.rs) —
+    // a burn-N-mint-N cross-chain transfer only moves equal real value if
+    // both chains agree on decimals. ERC20Upgradeable defaults to 18;
+    // this override is what makes the two chains actually match.
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+
     // Called by the Core Ledger when a Solana -> Ethereum transfer settles
     function bridgeMint(address to, uint256 amount, bytes32 correlationId) external onlyRole(BRIDGE_ROLE) {
         require(!processedMints[correlationId], "USDX: correlation already minted");
