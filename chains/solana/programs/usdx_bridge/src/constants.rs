@@ -6,12 +6,10 @@ pub const MINT_AUTHORITY_SEED: &[u8] = b"mint-authority";
 #[constant]
 pub const PROCESSED_SEED: &[u8] = b"processed";
 
-// USD-X's decimal places on Solana. This MUST match whatever decimals()
-// ends up being on the Ethereum side (USDX.sol currently doesn't override
-// ERC20Upgradeable.decimals(), so it defaults to 18) — otherwise a
-// burn-N-mint-N cross-chain transfer moves different real value on each
-// leg. Confirm the intended value before deploying; 6 is a placeholder
-// (matches common stablecoin convention, e.g. USDC).
+// USD-X's decimal places on Solana. Must match USDX.sol's decimals()
+// override on Ethereum (6, matching common stablecoin convention e.g.
+// USDC) — a burn-N-mint-N cross-chain transfer only moves equal real
+// value if both chains agree on this.
 pub const USDX_DECIMALS: u8 = 6;
 
 // TODO: replace with the real relayer's pubkey before deploying — this is
