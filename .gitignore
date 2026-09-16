@@ -47,3 +47,22 @@ Temporary files
 
 *.tmp
 *.temp
+
+# Foundry
+chains/ethereum/out/
+chains/ethereum/cache/
+chains/ethereum/broadcast/
+
+# Anchor / Solana
+chains/solana/target/
+chains/solana/.anchor/
+chains/solana/test-ledger/
+**/node_modules/
+
+# Go
+core-ledger/bin/
+*.env
+
+# generated artifacts
+shared/abi/*.json
+!shared/abi/.gitkeep
