@@ -1,0 +1,9 @@
+{
+  "clientId": "usdx-bridge-api",
+  "description": "Confidential client for the core-ledger mint API — protects POST /mint behind your existing Keycloak realm rather than inventing separate auth.",
+  "publicClient": false,
+  "standardFlowEnabled": false,
+  "serviceAccountsEnabled": true,
+  "directAccessGrantsEnabled": false,
+  "protocol": "openid-connect"
+}

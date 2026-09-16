@@ -1,0 +1,38 @@
+syntax = "proto3";
+package bridge;
+
+option go_package = "github.com/keshi/usdx-bridge/shared/proto";
+
+enum Chain {
+  CHAIN_UNSPECIFIED = 0;
+  ETHEREUM = 1;
+  SOLANA = 2;
+}
+
+enum TransferStatus {
+  STATUS_UNSPECIFIED = 0;
+  PENDING = 1;
+  BURN_CONFIRMED = 2;
+  MINT_SUBMITTED = 3;
+  COMPLETED = 4;
+  FAILED = 5;
+  COMPENSATED = 6;
+}
+
+message MintRequest {
+  string user_address = 1;
+  string amount = 2; // decimal string, avoid float precision issues
+  Chain source_chain = 3;
+  Chain target_chain = 4;
+}
+
+message BridgeTransfer {
+  string correlation_id = 1;
+  string user_address = 2;
+  string amount = 3;
+  Chain source_chain = 4;
+  Chain target_chain = 5;
+  TransferStatus status = 6;
+  string source_tx_hash = 7;
+  string dest_tx_hash = 8;
+}
