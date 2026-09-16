@@ -1,6 +1,11 @@
 package ledger
 
 import (
+	"database/sql"
+	"errors"
+	"math/big"
+	"time"
+
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 )
@@ -49,4 +54,31 @@ func (r *Repository) InFlight() ([]BridgeTransfer, error) {
 		WHERE status IN ('PENDING', 'BURN_CONFIRMED', 'MINT_SUBMITTED')
 	`)
 	return ts, err
+}
+
+// ErrNoTrustBankSnapshot means no bank balance has been recorded yet —
+// something upstream (the DAMP spec's Bank Adapter service, not part of
+// this repo) is expected to insert into trust_bank_snapshot as it observes
+// the custodian account, and reconciliation has nothing to compare against
+// until the first row lands.
+var ErrNoTrustBankSnapshot = errors.New("no trust bank snapshot recorded yet")
+
+// LatestTrustBankBalance returns the most recently recorded fiat reserve
+// balance and when it was captured, for the reconciliation job to compare
+// against circulating on-chain supply.
+func (r *Repository) LatestTrustBankBalance() (*big.Int, time.Time, error) {
+	var row struct {
+		Balance *big.Int  `db:"balance"`
+		AsOf    time.Time `db:"as_of"`
+	}
+	err := r.db.Get(&row, `
+		SELECT balance, as_of FROM trust_bank_snapshot ORDER BY as_of DESC LIMIT 1
+	`)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, time.Time{}, ErrNoTrustBankSnapshot
+	}
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return row.Balance, row.AsOf, nil
 }
