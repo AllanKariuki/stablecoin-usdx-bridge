@@ -1,4 +1,4 @@
-module core-ledger
+module github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger
 
 go 1.26.5
 

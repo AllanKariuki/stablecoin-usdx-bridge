@@ -5,8 +5,8 @@ import (
 	"math/big"
 	"time"
 
-	"core-ledger/internal/bridge"
-	"core-ledger/internal/ledger"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"

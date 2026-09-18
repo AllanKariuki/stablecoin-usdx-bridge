@@ -11,7 +11,7 @@ import (
 	ata "github.com/gagliardetto/solana-go/programs/associated-token-account"
 	"github.com/gagliardetto/solana-go/rpc"
 
-	"core-ledger/internal/bridge"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
 )
 
 const (

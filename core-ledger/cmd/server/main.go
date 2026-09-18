@@ -6,12 +6,12 @@ import (
 	"os"
 	"strconv"
 
-	"core-ledger/internal/api"
-	"core-ledger/internal/bridge"
-	"core-ledger/internal/chainclients/ethereum"
-	"core-ledger/internal/chainclients/solana"
-	"core-ledger/internal/ledger"
-	"core-ledger/internal/reconciliation"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/api"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/chainclients/ethereum"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/chainclients/solana"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/reconciliation"
 
 	"github.com/gofiber/fiber/v2"
 )
