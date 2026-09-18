@@ -61,6 +61,11 @@ chains/ethereum/broadcast/**/dry-run/
 chains/solana/target/
 chains/solana/.anchor/
 chains/solana/test-ledger/
+# Program/deploy keypairs are secrets — usdx_bridge-keypair.json was
+# committed and pushed by mistake (purged from history 2026-09-18). Never
+# commit anything under deploy/ except a public addresses file.
+chains/solana/deploy/*.json
+!chains/solana/deploy/addresses.json
 **/node_modules/
 
 # Go
