@@ -63,6 +63,6 @@ chains/solana/test-ledger/
 core-ledger/bin/
 *.env
 
-# generated artifacts
-shared/abi/*.json
-!shared/abi/.gitkeep
+# shared/abi/USDX.json is a checked contract, not a build artifact — see
+# shared/abi/README.md. Only chain-local build output stays ignored above
+# (chains/ethereum/out/, chains/ethereum/cache/).
