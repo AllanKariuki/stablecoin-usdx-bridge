@@ -1,5 +1,9 @@
-pub mod initialize;
-pub mod increment;
+pub mod approve_bridge_delegate;
+pub mod bridge_burn;
+pub mod bridge_mint;
+pub mod init_authority;
 
-pub use initialize::*;
-pub use increment::*;
+pub use approve_bridge_delegate::*;
+pub use bridge_burn::*;
+pub use bridge_mint::*;
+pub use init_authority::*;

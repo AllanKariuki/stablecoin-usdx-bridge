@@ -1,42 +1,62 @@
 package ledger
 
 import (
-	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq"
+	"errors"
+	"log"
+	"math/big"
+	"os"
+	"time"
+
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type Repository struct {
-	db *sqlx.DB
+	db *gorm.DB
 }
 
+// NewRepository opens the connection and runs AutoMigrate, which now owns
+// schema management (replacing migrations/001_init.sql).
 func NewRepository(connString string) (*Repository, error) {
-	db, err := sqlx.Connect("postgres", connString)
+	// LatestTrustBankBalance treats gorm.ErrRecordNotFound as an expected,
+	// already-handled state (no snapshot from the Bank Adapter service yet)
+	// — IgnoreRecordNotFoundError keeps GORM from logging it as an error on
+	// every reconciliation tick, which would otherwise drown out the job's
+	// own "skipping comparison" log.
+	gormLogger := logger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), logger.Config{
+		SlowThreshold:             200 * time.Millisecond,
+		LogLevel:                  logger.Warn,
+		IgnoreRecordNotFoundError: true,
+	})
+	db, err := gorm.Open(postgres.Open(connString), &gorm.Config{Logger: gormLogger})
 	if err != nil {
+		return nil, err
+	}
+	if err := db.AutoMigrate(
+		&BridgeTransfer{},
+		&EthSupplySnapshot{},
+		&SolSupplySnapshot{},
+		&TrustBankSnapshot{},
+	); err != nil {
 		return nil, err
 	}
 	return &Repository{db: db}, nil
 }
 
 func (r *Repository) Insert(t *BridgeTransfer) error {
-	_, err := r.db.NamedExec(`
-		INSERT INTO bridge_transfers
-			(correlation_id, user_address, amount, source_chain, target_chain, status)
-		VALUES
-			(:correlation_id, :user_address, :amount, :source_chain, :target_chain, :status)
-	`, t)
-	return err
+	return r.db.Create(t).Error
 }
 
 func (r *Repository) UpdateStatus(correlationID string, status TransferStatus) error {
-	_, err := r.db.Exec(`
-		UPDATE bridge_transfers SET status = $1, updated_at = now() WHERE correlation_id = $2
-	`, status, correlationID)
-	return err
+	return r.db.Model(&BridgeTransfer{}).
+		Where("correlation_id = ?", correlationID).
+		Update("status", status).Error
 }
 
 func (r *Repository) FindByCorrelationID(correlationID string) (*BridgeTransfer, error) {
 	var t BridgeTransfer
-	err := r.db.Get(&t, `SELECT * FROM bridge_transfers WHERE correlation_id = $1`, correlationID)
+	err := r.db.First(&t, "correlation_id = ?", correlationID).Error
 	return &t, err
 }
 
@@ -44,9 +64,30 @@ func (r *Repository) FindByCorrelationID(correlationID string) (*BridgeTransfer,
 // crash and to net out of the reconciliation job's supply check.
 func (r *Repository) InFlight() ([]BridgeTransfer, error) {
 	var ts []BridgeTransfer
-	err := r.db.Select(&ts, `
-		SELECT * FROM bridge_transfers
-		WHERE status IN ('PENDING', 'BURN_CONFIRMED', 'MINT_SUBMITTED')
-	`)
+	err := r.db.Where(
+		"status IN ?", []TransferStatus{StatusPending, StatusBurnConfirmed, StatusMintSubmitted},
+	).Find(&ts).Error
 	return ts, err
+}
+
+// ErrNoTrustBankSnapshot means no bank balance has been recorded yet —
+// something upstream (the DAMP spec's Bank Adapter service, not part of
+// this repo) is expected to insert into trust_bank_snapshot as it observes
+// the custodian account, and reconciliation has nothing to compare against
+// until the first row lands.
+var ErrNoTrustBankSnapshot = errors.New("no trust bank snapshot recorded yet")
+
+// LatestTrustBankBalance returns the most recently recorded fiat reserve
+// balance and when it was captured, for the reconciliation job to compare
+// against circulating on-chain supply.
+func (r *Repository) LatestTrustBankBalance() (*big.Int, time.Time, error) {
+	var row TrustBankSnapshot
+	err := r.db.Order("as_of DESC").First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, time.Time{}, ErrNoTrustBankSnapshot
+	}
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return row.Balance, row.AsOf, nil
 }

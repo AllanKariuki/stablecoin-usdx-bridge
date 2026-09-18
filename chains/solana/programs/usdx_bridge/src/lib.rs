@@ -1,16 +1,27 @@
 // programs/usdx_bridge/src/lib.rs
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Burn, Mint, MintTo, Token, TokenAccount};
 
-declare_id!("YourProgramIdHere11111111111111111111111");
+pub mod constants;
+pub mod error;
+pub mod instructions;
+pub mod state;
+
+use instructions::*;
+
+// Matches the program address anchor keys already assigned in Anchor.toml
+// ([programs.localnet].usdx_bridge). Run `anchor keys sync` after any
+// redeploy that changes the program's keypair, rather than editing this by
+// hand — a mismatch here breaks `anchor build`/`anchor deploy` validation.
+declare_id!("9GFGtYxGtZg8Smk4yyya7zAT6V3WcLDsB9XWWQbxMS8");
 
 #[program]
 pub mod usdx_bridge {
     use super::*;
 
+    // PDA becomes the mint authority; the program signs on its behalf via
+    // invoke_signed, so no keypair ever needs to exist for this role.
     pub fn initialize_mint_authority(ctx: Context<InitAuthority>) -> Result<()> {
-        // PDA becomes the mint authority; program signs on its behalf
-        Ok(())
+        handle_init_authority(ctx)
     }
 
     pub fn bridge_mint(
@@ -18,24 +29,7 @@ pub mod usdx_bridge {
         amount: u64,
         correlation_id: [u8; 32],
     ) -> Result<()> {
-        let seeds = &[b"mint-authority".as_ref(), &[ctx.bumps.mint_authority]];
-        let signer = &[&seeds[..]];
-
-        token::mint_to(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                MintTo {
-                    mint: ctx.accounts.mint.to_account_info(),
-                    to: ctx.accounts.destination.to_account_info(),
-                    authority: ctx.accounts.mint_authority.to_account_info(),
-                },
-                signer,
-            ),
-            amount,
-        )?;
-
-        emit!(BridgeMinted { to: ctx.accounts.destination.key(), amount, correlation_id });
-        Ok(())
+        handle_bridge_mint(ctx, amount, correlation_id)
     }
 
     pub fn bridge_burn(
@@ -43,36 +37,26 @@ pub mod usdx_bridge {
         amount: u64,
         correlation_id: [u8; 32],
     ) -> Result<()> {
-        token::burn(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                Burn {
-                    mint: ctx.accounts.mint.to_account_info(),
-                    from: ctx.accounts.source.to_account_info(),
-                    authority: ctx.accounts.owner.to_account_info(),
-                },
-            ),
-            amount,
-        )?;
+        handle_bridge_burn(ctx, amount, correlation_id)
+    }
 
-        emit!(BridgeBurned { from: ctx.accounts.source.key(), amount, correlation_id });
-        Ok(())
+    // Called by the user's own wallet (never the relayer) to authorize the
+    // relayer-driven bridge_burn above.
+    pub fn approve_bridge_delegate(ctx: Context<ApproveBridgeDelegate>, amount: u64) -> Result<()> {
+        handle_approve_bridge_delegate(ctx, amount)
     }
 }
 
-#[derive(Accounts)]
-pub struct BridgeMint<'info> {
-    #[account(mut)] pub mint: Account<'info, Mint>,
-    #[account(seeds = [b"mint-authority"], bump)]
-    /// CHECK: PDA signer only
-    pub mint_authority: UncheckedAccount<'info>,
-    #[account(mut)] pub destination: Account<'info, TokenAccount>,
-    #[account(constraint = relayer.key() == RELAYER_PUBKEY)]
-    pub relayer: Signer<'info>,
-    pub token_program: Program<'info, Token>,
+#[event]
+pub struct BridgeMinted {
+    pub to: Pubkey,
+    pub amount: u64,
+    pub correlation_id: [u8; 32],
 }
 
 #[event]
-pub struct BridgeMinted { pub to: Pubkey, pub amount: u64, pub correlation_id: [u8; 32] }
-#[event]
-pub struct BridgeBurned { pub from: Pubkey, pub amount: u64, pub correlation_id: [u8; 32] }
+pub struct BridgeBurned {
+    pub from: Pubkey,
+    pub amount: u64,
+    pub correlation_id: [u8; 32],
+}
