@@ -1,7 +1,8 @@
-.PHONY: up down logs \
+.PHONY: help up down logs \
 	test test-unit test-integration test-eth test-sol \
 	build run \
 	lint fmt fmt-check \
+	hooks-install secrets-scan \
 	clean
 
 # macOS ships GNU Make 3.81, which predates .SHELLFLAGS (added in 3.82) — it
@@ -10,6 +11,24 @@
 SHELL := /bin/bash
 
 DATABASE_URL ?= postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
+
+.DEFAULT_GOAL := help
+
+## Show this list — every target with a `##` comment directly above it.
+# Plain `#` continuation lines between the `##` summary and the target
+# (extra detail not meant for this listing) don't break the association;
+# only a blank line or another target does.
+help:
+	@awk '/^## / { desc = $$0; next } \
+	      /^#/ { next } \
+	      /^[a-zA-Z_-]+:/ && desc != "" { \
+	          split($$0, parts, ":"); \
+	          gsub(/^## /, "", desc); \
+	          printf "  \033[36m%-18s\033[0m %s\n", parts[1], desc; \
+	          desc = ""; \
+	          next \
+	      } \
+	      { desc = "" }' $(MAKEFILE_LIST)
 
 # ---------------------------------------------------------------------------
 # Local infrastructure
@@ -43,9 +62,9 @@ test-unit:
 	go vet ./core-ledger/...
 	go test ./core-ledger/... -count=1 -race
 
-## Go integration tests against real Postgres. Fails (not skips) if
-## DATABASE_URL / the compose stack isn't reachable, or if a test that
-## should run against it got silently skipped.
+## Go integration tests against real Postgres — fails (not skips) if unreachable.
+# Also fails if a test that should run against Postgres got silently
+# skipped instead (see the grep below), not just on a hard test failure.
 test-integration: up
 	@set -euo pipefail; \
 	LEDGER_TEST_DATABASE_URL="$(DATABASE_URL)" \
@@ -55,14 +74,12 @@ test-integration: up
 		exit 1; \
 	fi
 
-## Foundry suite. Requires `forge install` to have pulled chains/ethereum/lib
-## at least once (see chains/ethereum/README.md).
+## Foundry suite — requires `forge install` once first (see chains/ethereum/README.md).
 test-eth:
 	cd chains/ethereum && forge test
 
-## Anchor/litesvm suite. Requires anchor build --arch v1 --ignore-keys first
-## (see chains/solana/README.md#testing) — plain `anchor build`/`anchor test`
-## defaults to an SBF arch litesvm 0.10.0 can't verify.
+## Anchor/litesvm suite (builds with --arch v1 first — see chains/solana/README.md#testing).
+# Plain `anchor build`/`anchor test` defaults to an SBF arch litesvm can't verify.
 test-sol:
 	cd chains/solana && anchor build --arch v1 --ignore-keys && cargo test -p usdx_bridge
 
@@ -96,6 +113,21 @@ fmt-check:
 lint: fmt-check
 	go vet ./core-ledger/...
 	cd chains/solana && cargo clippy -p usdx_bridge --tests -- -D warnings
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+
+## One-time per clone: installs the pre-commit secret scan.
+# Hooks in .git/hooks/ are never tracked by git — this points git at the
+# tracked .githooks/ directory instead, so the hook reaches every clone.
+hooks-install:
+	git config core.hooksPath .githooks
+	@echo "pre-commit secret scanning installed (requires: brew install gitleaks)"
+
+## Scan git history for leaked secrets (what the security CI job runs).
+secrets-scan:
+	gitleaks detect --source . -v
 
 # ---------------------------------------------------------------------------
 clean:

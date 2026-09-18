@@ -139,14 +139,24 @@ chain's README for the full breakdown and current deployed addresses.
 ## Local dev
 
 ```bash
-docker compose up -d              # Postgres (+ add anvil/solana-test-validator as needed)
-cd chains/ethereum && forge test
-cd chains/solana && anchor test
-cd core-ledger && go run ./cmd/server
+make hooks-install   # once per clone: installs the pre-commit secret scan
+                      # (requires `brew install gitleaks`)
+make up               # Postgres (+ add anvil/solana-test-validator as needed)
+make test              # Go (unit + integration), Foundry, Anchor/litesvm — everything
+make run               # core-ledger against local infra (needs core-ledger/.env)
 ```
 
+See `make` (no target) for the full list, or the Makefile itself — `test-unit`,
+`test-integration`, `test-eth`, `test-sol` run each suite individually, and
+`lint`/`fmt`/`fmt-check` cover formatting across all three languages.
+`chains/ethereum/README.md` and `chains/solana/README.md` have the exact
+commands `make test-eth`/`test-sol` wrap, including why `anchor build` needs
+`--arch v1 --ignore-keys` rather than its own defaults.
+
 After building the Ethereum contract, copy its ABI into `shared/abi/USDX.json`
-so `core-ledger`'s `abigen` step and any frontend stay on one source of truth.
+so `core-ledger`'s `abigen` step and any frontend stay on one source of truth
+— `shared/abi/USDX.json` is a tracked file, not a build artifact, and CI's
+`ci.yml` fails if it drifts from `chains/ethereum/out/USDX.sol/USDX.json`.
 
 ## Other services in the full DAMP spec (not yet in this repo)
 

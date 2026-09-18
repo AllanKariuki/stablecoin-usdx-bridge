@@ -1,0 +1,31 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same branch/PR rather than letting them
+# queue — this job is cheap, but no reason to burn minutes on stale pushes.
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gitleaks:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, not just the tip — a secret introduced in an
+          # earlier commit and later removed is still a leak. This is
+          # exactly the class of problem this job exists to catch: see
+          # chains/solana/deploy/usdx_bridge-keypair.json, committed and
+          # pushed to this repo's public remote, purged from history
+          # 2026-09-18 (git log won't show it — that's the point).
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
