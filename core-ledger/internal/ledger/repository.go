@@ -1,24 +1,49 @@
 package ledger
 
 import (
+	"database/sql"
+	"embed"
 	"errors"
+	"fmt"
 	"log"
 	"math/big"
 	"os"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
+	"github.com/pressly/goose/v3"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
 type Repository struct {
 	db *gorm.DB
 }
 
-// NewRepository opens the connection and runs AutoMigrate, which now owns
-// schema management (replacing migrations/001_init.sql).
+// NewRepository opens the connection, runs goose migrations (versioned SQL
+// files under migrations/, tracked in the goose_db_version table) to bring
+// the schema up to date, then hands the same *sql.DB to GORM for querying.
+// Schema management (constraints, defaults, indexes) lives entirely in
+// those SQL files now — GORM's struct tags here are for query-time type
+// mapping only, not a second source of schema truth.
 func NewRepository(connString string) (*Repository, error) {
+	sqlDB, err := sql.Open("pgx", connString)
+	if err != nil {
+		return nil, fmt.Errorf("opening postgres connection: %w", err)
+	}
+
+	goose.SetBaseFS(migrationsFS)
+	if err := goose.SetDialect("postgres"); err != nil {
+		return nil, fmt.Errorf("setting goose dialect: %w", err)
+	}
+	if err := goose.Up(sqlDB, "migrations"); err != nil {
+		return nil, fmt.Errorf("running migrations: %w", err)
+	}
+
 	// LatestTrustBankBalance treats gorm.ErrRecordNotFound as an expected,
 	// already-handled state (no snapshot from the Bank Adapter service yet)
 	// — IgnoreRecordNotFoundError keeps GORM from logging it as an error on
@@ -29,16 +54,8 @@ func NewRepository(connString string) (*Repository, error) {
 		LogLevel:                  logger.Warn,
 		IgnoreRecordNotFoundError: true,
 	})
-	db, err := gorm.Open(postgres.Open(connString), &gorm.Config{Logger: gormLogger})
+	db, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{Logger: gormLogger})
 	if err != nil {
-		return nil, err
-	}
-	if err := db.AutoMigrate(
-		&BridgeTransfer{},
-		&EthSupplySnapshot{},
-		&SolSupplySnapshot{},
-		&TrustBankSnapshot{},
-	); err != nil {
 		return nil, err
 	}
 	return &Repository{db: db}, nil
