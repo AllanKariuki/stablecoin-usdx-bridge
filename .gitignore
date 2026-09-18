@@ -51,7 +51,11 @@ Temporary files
 # Foundry
 chains/ethereum/out/
 chains/ethereum/cache/
-chains/ethereum/broadcast/
+# broadcast/ deployment receipts ARE tracked (they're proof of what's live on
+# Sepolia, not build output) — only local-chain and dry-run runs are ignored,
+# per lines 17-18 above.
+chains/ethereum/broadcast/*/31337/
+chains/ethereum/broadcast/**/dry-run/
 
 # Anchor / Solana
 chains/solana/target/
