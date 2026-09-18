@@ -14,4 +14,13 @@ libs = ["lib"]
 solc_version = "0.8.35"
 optimizer = false
 
+[fmt]
+# src/USDX.sol and script/USDX.s.sol are deliberately left in their
+# original (pre-forge-fmt) style — see the note above: reformatting them
+# changes the compiled bytecode's metadata hash even though it's a
+# whitespace-only source diff, which would throw away the exact match to
+# the deployed Sepolia bytecode. `forge fmt --check` (part of `make lint`)
+# would otherwise always fail on these two untouched files.
+ignore = ["src/USDX.sol", "script/USDX.s.sol"]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

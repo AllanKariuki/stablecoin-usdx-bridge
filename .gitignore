@@ -70,6 +70,7 @@ chains/solana/deploy/*.json
 
 # Go
 core-ledger/bin/
+/bin/
 *.env
 
 # shared/abi/USDX.json is a checked contract, not a build artifact — see
