@@ -91,6 +91,39 @@ npm run init-mint
 # 7. Copy the printed USDX_MINT_ADDRESS into .env
 ```
 
+## Testing
+
+```bash
+# 1. Build for litesvm. Anchor's own default (--arch v3) produces a binary
+#    litesvm 0.10.0 can't verify (InvalidAccountData) — pin v1 explicitly.
+#    --ignore-keys skips the "keypair doesn't match declare_id!" check,
+#    which only matters for a real `anchor deploy`, not a local test build.
+anchor build --arch v1 --ignore-keys
+
+# 2. Run the suite (loads target/deploy/usdx_bridge.so; doesn't compile it)
+cargo test -p usdx_bridge
+# or: anchor test --skip-build   (anchor test's own build step would
+#                                  re-trigger the v3 default above)
+```
+
+`programs/usdx_bridge/tests/bridge.rs` covers `initialize_mint_authority`,
+`bridge_mint`/`bridge_burn` (happy path, the relayer gate, replay
+protection), `approve_bridge_delegate` and the delegate-amount checks, and
+regression-locks that the `processed_marker` PDA is **shared** between mint
+and burn for the same `correlation_id` — unlike Ethereum's separate
+`processedMints`/`processedBurns` maps, this is intentional (core-ledger's
+saga suffixes bridge/compensation correlation ids so it never collides in
+practice), and this test exists so nobody "fixes" that asymmetry away
+without it being a deliberate, reviewed decision.
+
+Since `relayer_pubkey()` is a real devnet identity whose private key this
+repo never holds, the suite runs with `LiteSVM::new().with_sigverify(false)`
+and builds transactions naming that pubkey as a signer without a
+cryptographic signature — Anchor's `Signer<'info>` and the
+`constraint = relayer.key() == relayer_pubkey()` check both operate on the
+account metadata and pubkey value, not the signature bytes, so this still
+exercises the real authorization logic.
+
 ## Scripts (`scripts/`)
 
 - `initialize-mint.ts` — one-off: creates the SPL mint, hands mint authority

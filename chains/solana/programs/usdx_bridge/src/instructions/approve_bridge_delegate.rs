@@ -25,7 +25,10 @@ pub struct ApproveBridgeDelegate<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-pub fn handle_approve_bridge_delegate(ctx: Context<ApproveBridgeDelegate>, amount: u64) -> Result<()> {
+pub fn handle_approve_bridge_delegate(
+    ctx: Context<ApproveBridgeDelegate>,
+    amount: u64,
+) -> Result<()> {
     token::approve(
         CpiContext::new(
             ctx.accounts.token_program.key(),
