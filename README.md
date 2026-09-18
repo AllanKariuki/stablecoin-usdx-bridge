@@ -20,34 +20,91 @@ cross-chain supply always reconciles to bank reserves.
 |---|---|
 | [`chains/ethereum`](chains/ethereum/README.md) | Foundry project — UUPS-upgradeable ERC-20 (`USDX.sol`), proxy + implementation |
 | [`chains/solana`](chains/solana/README.md) | Anchor workspace — SPL mint owned by a program PDA |
-| `core-ledger` | Go service (Fiber): mint API, burn/mint saga orchestrator, reserve reconciliation job |
+| `core-ledger` | Go service (Fiber): double-entry ledger (accounts, wallets, journal), fiat/FX/issuance/redemption flows, burn/mint saga orchestrator, reserve reconciliation job |
 | `shared` | Generated ABI (`shared/abi`) and gRPC/proto contracts (`shared/proto`) shared across services |
 | `infra` | Kubernetes manifests and the Keycloak realm (IAM/OAuth2) config |
 
-## How a cross-chain transfer actually moves
+## The ledger
 
-1. A client calls `POST /mint` on `core-ledger` (`core-ledger/internal/api/handlers.go`)
-   with a `user_address`, decimal-string `amount`, source chain, and target
-   chain (see `shared/proto/bridge.proto` for the wire shapes).
-2. `bridge.Saga.Execute` (`core-ledger/internal/bridge/saga.go`) picks the
-   right chain clients via `bridge.Router` (`ETHEREUM` → `chainclients/ethereum`,
-   `SOLANA` → `chainclients/solana`), then:
-   - burns on the source chain,
-   - mints on the destination chain,
-   - on mint failure, compensates by reversing the burn rather than leaving
-     supply in a partial state.
-3. Every step is idempotent — a client-supplied `correlationId`
-   (`bridge.CorrelationIDHash`) is checked against `processedMints`/`processedBurns`
-   on Ethereum and a `processed_marker` PDA on Solana, so retries can never
-   double-mint or double-burn.
-4. `reconciliation.Job.RunForever` (`core-ledger/internal/reconciliation/job.go`)
-   runs on a timer, comparing on-chain circulating supply (both chains) against
-   recorded trust-bank reserves, and is where Proof-of-Reserves would be signed off.
-5. Every movement is a Core Ledger journal entry — double-entry, `SERIALIZABLE`
-   isolation on Postgres/CockroachDB, balances always *derived* from entries,
-   never stored as a mutable column. (Apache Fineract was evaluated and
-   rejected for this: too heavy for the P95 ≤100ms latency SLA and prone to
-   deadlocks under `SERIALIZABLE`.)
+`core-ledger` is a double-entry ledger first and a bridge orchestrator second.
+Nothing moves value except by posting a balanced journal entry.
+
+- **Chart of accounts** (`internal/ledger/chart.go`) — a hierarchy of GL accounts
+  where only leaf (`DETAIL`) accounts are postable and `HEADER` accounts roll
+  their subtree up for reporting. A customer's balance is a `LIABILITY`; the
+  custodian cash behind it is an `ASSET`.
+- **Wallets** (`internal/ledger/wallets.go`) — the product object in front of a
+  liability account, one per (user, currency, chain). A user holding USD-X on
+  both chains has two wallets, which makes a bridge a movement between two of
+  their own accounts.
+- **Journal** (`internal/ledger/posting.go`) — append-only, enforced by a
+  database trigger. Amounts are always positive and the direction carries the
+  sign; a correction is a reversal (contra-entry), never an edit. Each line
+  carries the account's running balance, so a current balance is an O(1) read
+  with no mutable balance column anywhere.
+- **Multi-currency** — a transaction balances *per currency*, not in aggregate.
+  An FX conversion's two legs are different units and can never sum to zero
+  together; the difference lands in per-currency FX position accounts, which is
+  where the house's currency exposure becomes visible rather than hidden in a
+  rounding difference.
+- **Flows** (`internal/ledger/flows.go`) — deposit, withdrawal, transfer, FX
+  conversion, USD-X issuance and redemption, and the bridge legs, each
+  expressed as the journal it produces.
+
+Apache Fineract was evaluated and rejected as the *engine* (too heavy for the
+P95 ≤100ms latency SLA, prone to deadlocks under `SERIALIZABLE`), but its
+accounting model is the reference this one is built on: the GL hierarchy and
+`HEADER`/`DETAIL` split, reversal-by-contra-entry with a `reversed` flag and
+cross-link, running balances on the entry row, the `entity_type`/`entity_id`
+back-reference from a journal line to the domain object that caused it, and
+period closures that reject back-dated posts.
+
+## How money actually moves
+
+1. **Fiat in.** `POST /deposits` credits the user's fiat wallet against the
+   custodian account.
+2. **FX, if needed.** `POST /fx/quotes` records a rate; `POST /fx/conversions`
+   applies it between two of the user's fiat wallets. USD-X is issued 1:1
+   against USD, so a KES holder converts to USD first.
+3. **Issuance.** `POST /issuances` turns a USD claim into a USD-X claim. The
+   cash never leaves the custodian — what changes is the shape of the claim on
+   it. The USD-X is *not* credited to the user's wallet yet: it sits in the
+   in-transit suspense account until the chain mint confirms, because the
+   tokens genuinely do not exist on chain yet.
+4. **The saga.** `bridge.Saga.Execute` (`core-ledger/internal/bridge/saga.go`)
+   picks the right chain clients via `bridge.Router` (`ETHEREUM` →
+   `chainclients/ethereum`, `SOLANA` → `chainclients/solana`), mints on the
+   destination, and on finality posts the journal entry releasing the USD-X
+   from suspense into the user's wallet. The ledger leg always precedes the
+   chain leg it represents, so a crash between them leaves value visibly parked
+   in suspense rather than silently doubled or lost.
+5. **Cross-chain.** `POST /bridges` moves a user's existing USD-X between their
+   own chain wallets: burn on the source, mint on the destination, with the
+   journal moving it wallet → suspense → wallet. No supply is created or
+   destroyed. On a failed destination mint the saga re-mints on the source and
+   posts a compensating entry.
+6. **Redemption.** `POST /redemptions` parks the USD-X pending burn;
+   `POST /redemptions/{id}/confirm` releases the fiat once the burn is final.
+   Paying out before the burn settles would let a user who front-runs the chain
+   spend the same value twice.
+7. **Idempotency.** Every write requires a client-supplied `Idempotency-Key`
+   header, unique-indexed on `transactions`; a retry returns the original
+   transaction. On chain, a correlation id (`bridge.CorrelationIDHash`) is
+   checked against `processedMints`/`processedBurns` on Ethereum and a
+   `processed_marker` PDA on Solana, so retries can never double-mint.
+8. **Reconciliation.** `reconciliation.Job.RunForever` runs on a timer and
+   proves three things agree, reporting which leg broke:
+
+   | Leg | Check |
+   |---|---|
+   | A | ledger says issued == on-chain supply + in transit |
+   | B | reserve backing == ledger says issued (the 1:1 peg) |
+   | C | custodian statement >= ledger says is in the bank |
+
+   `GET /ledger/trial-balance?currency=USD` and `GET /ledger/integrity` are the
+   two endpoints a monitor should poll: the first proves debits equal credits,
+   the second re-derives every account's balance from its entries and reports
+   any that disagree with the running balance the posting engine wrote.
 
 ## Minting authority: centralized by design, on both chains
 
