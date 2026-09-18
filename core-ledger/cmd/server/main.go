@@ -71,9 +71,24 @@ func main() {
 	app := fiber.New()
 	api.NewHandlers(repo, ledgerSvc, saga).Register(app)
 
-	addr := ":8080"
+	addr := ":" + portFromEnv("PORT", "8081")
 	log.Printf("core-ledger listening on %s", addr)
 	log.Fatal(app.Listen(addr))
+}
+
+// portFromEnv reads the port to bind, defaulting to 8081 rather than the
+// platform-wide 8080, which Keycloak owns (see infra/keycloak). Fails fast
+// on a non-numeric value instead of letting Listen() produce a confusing
+// bind error later.
+func portFromEnv(key, fallback string) string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		raw = fallback
+	}
+	if _, err := strconv.Atoi(raw); err != nil {
+		log.Fatalf("%s must be a valid port number, got %q", key, raw)
+	}
+	return raw
 }
 
 // bpsFromEnv reads a fee in basis points, defaulting to zero so a missing
