@@ -9,8 +9,11 @@ skip-lint = false
 [programs.localnet]
 usdx_bridge = "9GFGtYxGtZg8Smk4yyya7zAT6V3WcLDsB9XWWQbxMS8"
 
+[programs.devnet]
+usdx_bridge = "9GFGtYxGtZg8Smk4yyya7zAT6V3WcLDsB9XWWQbxMS8"
+
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

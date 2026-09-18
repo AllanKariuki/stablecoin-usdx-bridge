@@ -12,9 +12,12 @@ pub const PROCESSED_SEED: &[u8] = b"processed";
 // value if both chains agree on this.
 pub const USDX_DECIMALS: u8 = 6;
 
-// TODO: replace with the real relayer's pubkey before deploying — this is
-// a placeholder (the System Program's address) chosen only because it's a
-// valid base58 pubkey that compiles; it does NOT identify any real relayer,
-// so bridge_mint's relayer constraint will reject every signer until this
-// is swapped out.
-pub const RELAYER_PUBKEY: Pubkey = anchor_lang::system_program::ID;
+// core-ledger's relayer — see SOLANA_RELAYER_KEYPAIR_PATH in
+// core-ledger/.env.example. Only this account can call bridge_mint/
+// bridge_burn. Parsed at runtime (not a `const`) since this anchor-lang
+// version doesn't expose a compile-time base58 pubkey macro.
+pub fn relayer_pubkey() -> Pubkey {
+    "257pTZ4CBDLmQrdwpSHC6ahrJkxSaQFFEohpeXD3H3FJ"
+        .parse()
+        .expect("RELAYER_PUBKEY must be a valid base58 pubkey")
+}
