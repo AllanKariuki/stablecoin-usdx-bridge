@@ -750,22 +750,28 @@ func stringField(m map[string]any, key string) string {
 	return s
 }
 
+// badRequest covers request-shape problems (unparseable body, missing
+// required field) that never reach the posting engine, so they have no
+// ledger.PostingError to carry a specific code. INVALID_REQUEST keeps the
+// {error, code} envelope uniform rather than silently omitting code here.
 func badRequest(c *fiber.Ctx, msg string) error {
-	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": msg})
+	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": msg, "code": "INVALID_REQUEST"})
 }
 
 // fail maps a domain rejection to the right status code. A PostingError is
 // always the caller's to fix — unbalanced, overdrawn, frozen, closed period —
-// so it never becomes a 500 and its code travels to the client.
+// so it never becomes a 500 and its code travels to the client. Every branch
+// carries a code: a generated client typed against a required `code` field
+// must never see a response missing one.
 func fail(c *fiber.Ctx, err error) error {
 	var pe *ledger.PostingError
 	if errors.As(err, &pe) {
 		return c.Status(statusFor(pe.Code)).JSON(fiber.Map{"error": pe.Message, "code": pe.Code})
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found", "code": "NOT_FOUND"})
 	}
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error", "code": "INTERNAL"})
 }
 
 func statusFor(code string) int {
