@@ -27,7 +27,7 @@ pub struct BridgeMint<'info> {
     )]
     pub processed_marker: Account<'info, ProcessedMarker>,
 
-    #[account(mut, constraint = relayer.key() == RELAYER_PUBKEY @ ErrorCode::InvalidRelayer)]
+    #[account(mut, constraint = relayer.key() == relayer_pubkey() @ ErrorCode::InvalidRelayer)]
     pub relayer: Signer<'info>,
 
     pub token_program: Program<'info, Token>,
