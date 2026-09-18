@@ -3,4 +3,15 @@ src = "src"
 out = "out"
 libs = ["lib"]
 
+# Pinned 2026-09-18 after verifying byte-for-byte that this reproduces the
+# Sepolia deployment exactly: `cast code` against the live implementation
+# (0x535cf7ecb1018a523547df7be4ba29a595fb90f0) matches a local `forge build`
+# with these settings in every byte except the UUPS `immutable __self =
+# address(this)` slot, which necessarily differs per deployment address —
+# including the trailing IPFS metadata hash. Do not enable the optimizer or
+# change solc_version without redeploying; either changes the bytecode and
+# breaks Etherscan verification of what's already live.
+solc_version = "0.8.35"
+optimizer = false
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
