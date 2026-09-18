@@ -20,6 +20,8 @@ func main() {
 		log.Fatalf("connecting to postgres: %v", err)
 	}
 
+	log.Println("connected to postgres database")
+
 	ethClient, err := ethereum.NewClient(
 		os.Getenv("ETH_RPC_URL"),
 		os.Getenv("USDX_PROXY_ADDRESS"),
@@ -28,6 +30,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("connecting to ethereum: %v", err)
 	}
+
+	log.Println("connected to ethereum network")
 
 	solClient, err := solana.NewClient(
 		os.Getenv("SOLANA_RPC_URL"),
@@ -38,6 +42,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("connecting to solana: %v", err)
 	}
+
+	log.Println("connected to solana network")
 
 	router := bridge.NewRouter(ethClient, solClient)
 	saga := bridge.NewSaga(repo, router)
