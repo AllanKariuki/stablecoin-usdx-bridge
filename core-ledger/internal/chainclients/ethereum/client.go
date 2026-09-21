@@ -17,8 +17,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	"core-ledger/internal/bridge"
-	"core-ledger/internal/chainclients/ethereum/gen"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/chainclients/ethereum/gen"
 )
 
 // pollInterval/waitTimeout bound every polling loop below (receipt lookup,

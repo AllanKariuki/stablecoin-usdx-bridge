@@ -51,18 +51,28 @@ Temporary files
 # Foundry
 chains/ethereum/out/
 chains/ethereum/cache/
-chains/ethereum/broadcast/
+# broadcast/ deployment receipts ARE tracked (they're proof of what's live on
+# Sepolia, not build output) — only local-chain and dry-run runs are ignored,
+# per lines 17-18 above.
+chains/ethereum/broadcast/*/31337/
+chains/ethereum/broadcast/**/dry-run/
 
 # Anchor / Solana
 chains/solana/target/
 chains/solana/.anchor/
 chains/solana/test-ledger/
+# Program/deploy keypairs are secrets — usdx_bridge-keypair.json was
+# committed and pushed by mistake (purged from history 2026-09-18). Never
+# commit anything under deploy/ except a public addresses file.
+chains/solana/deploy/*.json
+!chains/solana/deploy/addresses.json
 **/node_modules/
 
 # Go
 core-ledger/bin/
+/bin/
 *.env
 
-# generated artifacts
-shared/abi/*.json
-!shared/abi/.gitkeep
+# shared/abi/USDX.json is a checked contract, not a build artifact — see
+# shared/abi/README.md. Only chain-local build output stays ignored above
+# (chains/ethereum/out/, chains/ethereum/cache/).

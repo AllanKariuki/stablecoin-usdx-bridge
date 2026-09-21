@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 
-	"core-ledger/internal/ledger"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 )
 
 type Saga struct {

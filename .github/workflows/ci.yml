@@ -1,0 +1,139 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------
+  # core-ledger — unit tests always run; integration tests run against a
+  # real Postgres service container. A skipped integration test fails the
+  # job (see the final step) rather than passing silently — this mirrors
+  # `make test-integration` locally, which enforces the same thing.
+  # ---------------------------------------------------------------------
+  go:
+    name: core-ledger (Go)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: bridge
+          POSTGRES_DB: bridge
+        ports:
+          - 55433:5432
+        options: >-
+          --health-cmd "pg_isready -U bridge"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: core-ledger/go.mod
+
+      - name: go vet
+        run: go vet ./core-ledger/...
+
+      - name: go test (unit + integration)
+        env:
+          LEDGER_TEST_DATABASE_URL: postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
+        run: |
+          set -euo pipefail
+          go test ./core-ledger/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
+          if grep -q '^--- SKIP: TestIntegration' /tmp/go-test.log; then
+            echo "::error::an integration test was skipped — LEDGER_TEST_DATABASE_URL must be reachable in CI"
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------
+  # Ethereum — Foundry. foundry.toml pins solc 0.8.35 / optimizer off to
+  # match what's verifiably live on Sepolia (see foundry.toml's own
+  # comment) — this job proves that pin still builds and passes.
+  # ---------------------------------------------------------------------
+  ethereum:
+    name: chains/ethereum (Foundry)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: forge install
+        working-directory: chains/ethereum
+        run: forge install
+
+      - name: forge fmt --check
+        working-directory: chains/ethereum
+        run: forge fmt --check
+
+      - name: forge build
+        working-directory: chains/ethereum
+        run: forge build --sizes
+
+      - name: forge test
+        working-directory: chains/ethereum
+        run: forge test -vvv
+
+      - name: ABI drift check
+        working-directory: chains/ethereum
+        run: |
+          diff <(jq -S '.abi' out/USDX.sol/USDX.json) <(jq -S . ../../shared/abi/USDX.json) || {
+            echo "::error::shared/abi/USDX.json is stale — rebuild and re-copy it (see shared/abi/README.md)"
+            exit 1
+          }
+
+  # ---------------------------------------------------------------------
+  # Solana — Anchor/litesvm. anchor build defaults to --arch v3, which
+  # litesvm 0.10.0 can't verify (InvalidAccountData) — --arch v1 is
+  # required, see chains/solana/README.md#testing.
+  # ---------------------------------------------------------------------
+  solana:
+    name: chains/solana (Anchor / litesvm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned Rust toolchain
+        id: rust
+        run: echo "channel=$(grep channel chains/solana/rust-toolchain.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+          components: rustfmt, clippy
+
+      - name: cargo fmt --check
+        working-directory: chains/solana
+        run: cargo fmt -p usdx_bridge -- --check
+
+      - name: Install Solana CLI + cargo build-sbf
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Install Anchor CLI
+        # Pinned to 1.2.0 to match programs/usdx_bridge/Cargo.toml's
+        # anchor-lang/anchor-spl version exactly — this is the version
+        # verified locally throughout this repo's test suite.
+        run: cargo install anchor-cli --version 1.2.0 --locked
+
+      - name: anchor build --arch v1
+        working-directory: chains/solana
+        run: anchor build --arch v1 --ignore-keys
+
+      - name: cargo clippy
+        working-directory: chains/solana
+        run: cargo clippy -p usdx_bridge --tests -- -D warnings
+
+      - name: cargo test (litesvm)
+        working-directory: chains/solana
+        run: cargo test -p usdx_bridge

@@ -71,10 +71,15 @@ forge build
 forge test
 
 # Deploy (writes to broadcast/USDX.s.sol/<chainId>/run-latest.json)
-forge script script/USDX.s.sol:USDXScript \
+forge script script/USDX.s.sol:DeployUSDX \
   --rpc-url $ETH_RPC_URL \
   --private-key $ETH_RELAYER_PRIVATE_KEY \
   --broadcast
+
+# Upgrade the proxy to an already-deployed, already-reviewed implementation
+# (see script/Upgrade.s.sol) — always dry-run against a fork first:
+forge script script/Upgrade.s.sol --fork-url $ETH_RPC_URL
+forge script script/Upgrade.s.sol --rpc-url $ETH_RPC_URL --broadcast
 
 # After build, copy the ABI for core-ledger/frontend consumption:
 cp out/USDX.sol/USDX.json ../../shared/abi/USDX.json

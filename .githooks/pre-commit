@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Blocks a commit that would introduce a secret (private key, API token,
+# etc.) into staged changes. Installed via `make hooks-install` (sets
+# core.hooksPath to this tracked directory — hooks in .git/hooks/ itself
+# are never committed, so this is how the check reaches every clone).
+#
+# Exists because chains/solana/deploy/usdx_bridge-keypair.json was
+# committed and pushed to this repo's public remote (purged from history
+# 2026-09-18) — this hook is what should have caught that before it ever
+# reached a commit.
+set -euo pipefail
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+	echo "pre-commit: gitleaks not installed (brew install gitleaks) — skipping secret scan" >&2
+	exit 0
+fi
+
+gitleaks protect --staged --redact -v

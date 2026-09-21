@@ -5,6 +5,9 @@ metadata:
   labels:
     app: core-ledger
 spec:
+  # Keep at 1 until the saga has a distributed lock (a Postgres advisory
+  # lock, planned for P2) — two replicas racing the same correlation_id can
+  # both attempt a mint before either commits status.
   replicas: 1
   selector:
     matchLabels:
@@ -16,20 +19,29 @@ spec:
     spec:
       containers:
         - name: core-ledger
+          # TODO(P0): point at the real registry once CI publishes an image,
+          # e.g. ghcr.io/allankariuki/stablecoin-usdx-bridge/core-ledger:<tag>
           image: <Image>
           ports:
-            - containerPort: 8281
+            - containerPort: 8081
           envFrom:
             - secretRef:
                 name: core-ledger-secrets
-          resources:
-            limits:
-              memory: "128Mi"
-              cpu: "500m"
           env:
+            - name: PORT
+              value: "8081"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: core-ledger-secrets
                   key: database_uri
-          
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+          # TODO(P0 middleware): add livenessProbe (/healthz) and
+          # readinessProbe (/readyz) once those endpoints exist — see the
+          # boot rewrite tracked alongside this fix.

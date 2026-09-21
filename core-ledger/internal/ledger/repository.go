@@ -61,7 +61,28 @@ func NewRepository(connString string) (*Repository, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Pool bounds were never set — an unbounded pool under a connection-per-
+	// request driver can exhaust Postgres's own max_connections during a
+	// traffic spike. Conservative defaults; revisit once there's real load
+	// data (see the platform config work planned for P0/shared/go/platform).
+	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(10)
+	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
+
 	return &Repository{db: db}, nil
+}
+
+// Ping reports whether the database is reachable — the one dependency
+// GET /readyz checks. It never mutates and never touches a chain, so a
+// chain RPC hiccup can't fail it.
+func (r *Repository) Ping(ctx context.Context) error {
+	sqlDB, err := r.db.DB()
+	if err != nil {
+		return fmt.Errorf("getting underlying sql.DB: %w", err)
+	}
+	return sqlDB.PingContext(ctx)
 }
 
 // ---------------------------------------------------------------------------
