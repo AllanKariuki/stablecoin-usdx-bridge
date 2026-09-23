@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint --fix .",
     "preview": "vite preview",
-    "prepare": "husky install"
+    "prepare": "echo \"husky skipped: frontend has no nested .git since de-nesting into usdx-bridge; hooks are managed centrally via ../.githooks (see 'make hooks-install' at the repo root)\""
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.8.2",

@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Override the base config's rootDir: "." (needed there so its
+    // src+test mixed file set has a valid common root for --noEmit
+    // typechecking) with "./src" so dist/ mirrors src/'s layout directly
+    // (dist/index.js, not dist/src/index.js) — package.json's "main" and
+    // "types" fields point at the former.
+    "rootDir": "./src"
+  },
+  "exclude": ["node_modules", "dist", "test", "**/*.spec.ts", "**/*.e2e-spec.ts"]
+}
