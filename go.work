@@ -2,6 +2,7 @@ go 1.26.5
 
 use (
 	./core-ledger
+	./services/auth-proxy
 	./shared/authz
 	./shared/go/platform
 )

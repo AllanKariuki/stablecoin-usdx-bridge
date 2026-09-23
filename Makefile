@@ -60,8 +60,8 @@ test: test-unit test-integration test-eth test-sol
 
 ## Go unit tests only — no Postgres required.
 test-unit:
-	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/...
-	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... -count=1 -race
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
+	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... -count=1 -race
 
 ## Go integration tests against real Postgres — fails (not skips) if unreachable.
 # Also fails if a test that should run against Postgres got silently
@@ -88,9 +88,10 @@ test-sol:
 # Build / run
 # ---------------------------------------------------------------------------
 
-## Build the core-ledger binary.
+## Build the core-ledger and auth-proxy binaries.
 build:
 	go build -o bin/core-ledger ./core-ledger/cmd/server
+	go build -o bin/auth-proxy ./services/auth-proxy/cmd/server
 
 ## Run core-ledger against local infra (needs core-ledger/.env — see .env.example).
 run: up
@@ -102,7 +103,7 @@ run: up
 
 ## Format everything in place.
 fmt:
-	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/...
+	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
 	cd chains/ethereum && forge fmt
 	cd chains/solana && cargo fmt -p usdx_bridge
 
@@ -112,7 +113,7 @@ fmt-check:
 	cd chains/solana && cargo fmt -p usdx_bridge -- --check
 
 lint: fmt-check
-	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/...
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
 	cd chains/solana && cargo clippy -p usdx_bridge --tests -- -D warnings
 
 # ---------------------------------------------------------------------------
