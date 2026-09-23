@@ -105,8 +105,10 @@ var Default = Table{
 	compile("POST", "/bridges", authz.PermissionBridgeCreate),
 
 	// Journal / ledger
+	compile("GET", "/transactions", authz.PermissionTransactionsReadOwn, authz.PermissionTransactionsReadAny),
 	compile("GET", "/transactions/:transactionId", authz.PermissionTransactionsReadOwn, authz.PermissionTransactionsReadAny),
 	compile("POST", "/transactions/:transactionId/reversal", authz.PermissionTransactionsReverse),
+	compile("GET", "/accounts", authz.PermissionLedgerRead),
 	compile("GET", "/accounts/:glCode/balance", authz.PermissionLedgerRead),
 	compile("GET", "/ledger/trial-balance", authz.PermissionLedgerRead),
 	compile("GET", "/ledger/integrity", authz.PermissionLedgerRead),

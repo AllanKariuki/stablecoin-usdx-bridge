@@ -213,6 +213,51 @@ func (r *Repository) TransactionsForEntity(ctx context.Context, typ EntityType, 
 	return ts, err
 }
 
+// ListTransactionsPage returns up to limit transactions newest-first. A zero
+// afterCreatedAt starts from the beginning; otherwise it positions a keyset
+// cursor at the row after (afterCreatedAt, afterID) — cheaper and stabler
+// under concurrent inserts than an OFFSET, which can skip or repeat rows as
+// new transactions land ahead of the page being read. userID, when
+// non-empty, restricts to transactions against that user's own wallets (via
+// a join on the accounts they own) — the BFF's cross-wallet transaction
+// list core-ledger doesn't otherwise have (see docs/building-plan.md's P1
+// section).
+func (r *Repository) ListTransactionsPage(ctx context.Context, userID string, afterCreatedAt time.Time, afterID string, limit int) ([]Transaction, error) {
+	q := r.db.WithContext(ctx).Preload("Entries", func(db *gorm.DB) *gorm.DB {
+		return db.Order("journal_entries.line_no")
+	}).Order("created_at DESC, id DESC").Limit(limit)
+
+	if userID != "" {
+		q = q.Where(
+			"id IN (SELECT DISTINCT transaction_id FROM journal_entries je "+
+				"JOIN accounts a ON a.id = je.account_id WHERE a.owner_user_id = ?)",
+			userID,
+		)
+	}
+	if !afterCreatedAt.IsZero() {
+		q = q.Where("(created_at, id) < (?, ?)", afterCreatedAt, afterID)
+	}
+
+	var ts []Transaction
+	err := q.Find(&ts).Error
+	return ts, err
+}
+
+// ListAccountsPage returns up to limit accounts ordered by the chart of
+// accounts' own natural key, gl_code — stable and human-meaningful (unlike
+// created_at, which mostly reflects bootstrap/seed order for a chart that's
+// otherwise close to static). afterGLCode positions a keyset cursor; ""
+// starts from the beginning.
+func (r *Repository) ListAccountsPage(ctx context.Context, afterGLCode string, limit int) ([]Account, error) {
+	q := r.db.WithContext(ctx).Order("gl_code ASC").Limit(limit)
+	if afterGLCode != "" {
+		q = q.Where("gl_code > ?", afterGLCode)
+	}
+	var accounts []Account
+	err := q.Find(&accounts).Error
+	return accounts, err
+}
+
 // ---------------------------------------------------------------------------
 // FX quotes
 // ---------------------------------------------------------------------------

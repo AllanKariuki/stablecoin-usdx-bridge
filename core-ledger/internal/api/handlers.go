@@ -44,8 +44,10 @@ func (h *Handlers) Register(app *fiber.App) {
 	app.Post("/bridges", h.bridgeTransfer)
 
 	// Journal
+	app.Get("/transactions", h.listTransactions)
 	app.Get("/transactions/:transactionId", h.getTransaction)
 	app.Post("/transactions/:transactionId/reversal", h.reverseTransaction)
+	app.Get("/accounts", h.listAccounts)
 	app.Get("/accounts/:glCode/balance", h.accountBalance)
 	app.Get("/ledger/trial-balance", h.trialBalance)
 	app.Get("/ledger/integrity", h.integrity)
@@ -125,7 +127,15 @@ func (h *Handlers) getStatement(c *fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err)
 	}
-	entries, err := h.repo.Statement(c.Context(), w.AccountID, time.Time{}, time.Time{}, c.QueryInt("limit", 100))
+	from, err := parseDateParam(c, "from")
+	if err != nil {
+		return badRequest(c, "from must be YYYY-MM-DD")
+	}
+	to, err := parseDateParam(c, "to")
+	if err != nil {
+		return badRequest(c, "to must be YYYY-MM-DD")
+	}
+	entries, err := h.repo.Statement(c.Context(), w.AccountID, from, to, clampLimit(c.QueryInt("limit"), 100, 500))
 	if err != nil {
 		return fail(c, err)
 	}
@@ -519,6 +529,45 @@ func (h *Handlers) getTransaction(c *fiber.Ctx) error {
 	return c.JSON(h.renderTransaction(c, tx))
 }
 
+// listTransactions is the cross-wallet transaction feed core-ledger didn't
+// have before — a single user's transactions in one page instead of one
+// GET /wallets/:id/statement per wallet, which is what the BFF's dashboard
+// aggregation would otherwise cost. user_id is optional so an operator
+// (with transactions:read:any) can browse the full journal; a caller
+// scoped to transactions:read:own only is expected to always pass their
+// own id — enforcement of that is the gateway/BFF's job (see
+// services/auth-proxy's route table), not this handler's.
+func (h *Handlers) listTransactions(c *fiber.Ctx) error {
+	afterCreatedAt, afterID, err := decodeTxCursor(c.Query("cursor"))
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+	limit := clampLimit(c.QueryInt("limit"), 50, 200)
+
+	// Fetch one extra row to know whether a next page exists without a
+	// separate COUNT query — trimmed back to limit before rendering.
+	txs, err := h.repo.ListTransactionsPage(c.Context(), c.Query("user_id"), afterCreatedAt, afterID, limit+1)
+	if err != nil {
+		return fail(c, err)
+	}
+	hasMore := len(txs) > limit
+	if hasMore {
+		txs = txs[:limit]
+	}
+
+	out := make([]fiber.Map, 0, len(txs))
+	for i := range txs {
+		out = append(out, h.renderTransaction(c, &txs[i]))
+	}
+
+	nextCursor := ""
+	if hasMore {
+		last := txs[len(txs)-1]
+		nextCursor = encodeTxCursor(last.CreatedAt, last.ID)
+	}
+	return c.JSON(fiber.Map{"transactions": out, "next_cursor": nextCursor})
+}
+
 func (h *Handlers) reverseTransaction(c *fiber.Ctx) error {
 	var req struct {
 		Reason string `json:"reason"`
@@ -556,6 +605,59 @@ func (h *Handlers) accountBalance(c *fiber.Ctx) error {
 		"currency": acct.Currency,
 		"balance":  ledger.FormatDecimal(bal, decimals),
 	})
+}
+
+// listAccounts is the chart of accounts, paginated — used by treasury/audit
+// tooling to browse it rather than pulling every account (which will keep
+// growing: one liability account per wallet, see GLCode's
+// "2100.<CCY>.<walletID>" shape) in a single response.
+func (h *Handlers) listAccounts(c *fiber.Ctx) error {
+	afterGLCode, err := decodeAccountCursor(c.Query("cursor"))
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
+	limit := clampLimit(c.QueryInt("limit"), 50, 200)
+
+	accounts, err := h.repo.ListAccountsPage(c.Context(), afterGLCode, limit+1)
+	if err != nil {
+		return fail(c, err)
+	}
+	hasMore := len(accounts) > limit
+	if hasMore {
+		accounts = accounts[:limit]
+	}
+
+	decimals := map[string]int32{}
+	out := make([]fiber.Map, 0, len(accounts))
+	for _, a := range accounts {
+		d, ok := decimals[a.Currency]
+		if !ok && a.Currency != "" {
+			if cur, err := h.repo.Currency(c.Context(), a.Currency); err == nil {
+				d = cur.Decimals
+				decimals[a.Currency] = d
+			}
+		}
+		bal, err := h.repo.Balance(c.Context(), a.ID)
+		balance := ""
+		if err == nil {
+			balance = ledger.FormatDecimal(bal, d)
+		}
+		out = append(out, fiber.Map{
+			"id":       a.ID,
+			"gl_code":  a.GLCode,
+			"name":     a.Name,
+			"type":     a.Type,
+			"currency": a.Currency,
+			"status":   a.Status,
+			"balance":  balance,
+		})
+	}
+
+	nextCursor := ""
+	if hasMore {
+		nextCursor = encodeAccountCursor(accounts[len(accounts)-1].GLCode)
+	}
+	return c.JSON(fiber.Map{"accounts": out, "next_cursor": nextCursor})
 }
 
 func (h *Handlers) trialBalance(c *fiber.Ctx) error {
@@ -633,7 +735,7 @@ func (h *Handlers) closePeriod(c *fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err)
 	}
-	return c.Status(fiber.StatusCreated).JSON(closure)
+	return c.Status(fiber.StatusCreated).JSON(renderClosure(closure))
 }
 
 func (h *Handlers) getTransfer(c *fiber.Ctx) error {
@@ -641,7 +743,7 @@ func (h *Handlers) getTransfer(c *fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err)
 	}
-	return c.JSON(t)
+	return c.JSON(renderTransfer(t))
 }
 
 // ---------------------------------------------------------------------------
@@ -739,7 +841,46 @@ func (h *Handlers) renderTransaction(c *fiber.Ctx, tx *ledger.Transaction) fiber
 		"value_date":   tx.ValueDate.Format("2006-01-02"),
 		"description":  tx.Description,
 		"external_ref": tx.ExternalRef,
+		"created_at":   tx.CreatedAt.UTC().Format(time.RFC3339),
 		"entries":      lines,
+	}
+}
+
+// renderClosure gives LedgerClosure — a raw GORM model with no json tags of
+// its own — the same explicit snake_case shape every other endpoint uses,
+// instead of leaking Go's default PascalCase field names.
+func renderClosure(cl *ledger.LedgerClosure) fiber.Map {
+	return fiber.Map{
+		"id":           cl.ID,
+		"currency":     cl.Currency,
+		"closing_date": cl.ClosingDate.Format("2006-01-02"),
+		"reason":       cl.Reason,
+		"closed_by":    cl.ClosedBy,
+		"created_at":   cl.CreatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// renderTransfer does the same for BridgeTransfer, and formats Amount as
+// the decimal-string USD-X is displayed everywhere else — a bare *big.Int
+// marshals as an unquoted JSON number, breaking the "amounts are always
+// strings" contract the frontend's Money handling depends on (see
+// docs/building-plan.md's P1 decision on why a float/number amount never
+// appears in a response body).
+func renderTransfer(t *ledger.BridgeTransfer) fiber.Map {
+	return fiber.Map{
+		"correlation_id":   t.CorrelationID,
+		"user_id":          t.UserID,
+		"user_address":     t.UserAddress,
+		"amount":           ledger.FormatDecimal(t.Amount, ledger.USDXDecimals),
+		"source_chain":     t.SourceChain,
+		"target_chain":     t.TargetChain,
+		"status":           t.Status,
+		"source_tx_hash":   t.SourceTxHash,
+		"dest_tx_hash":     t.DestTxHash,
+		"source_wallet_id": t.SourceWalletID,
+		"target_wallet_id": t.TargetWalletID,
+		"created_at":       t.CreatedAt.UTC().Format(time.RFC3339),
+		"updated_at":       t.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
