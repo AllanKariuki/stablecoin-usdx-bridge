@@ -2,6 +2,7 @@
 	test test-unit test-integration test-eth test-sol \
 	build run \
 	lint fmt fmt-check \
+	authz-gen \
 	hooks-install secrets-scan \
 	clean
 
@@ -59,8 +60,8 @@ test: test-unit test-integration test-eth test-sol
 
 ## Go unit tests only — no Postgres required.
 test-unit:
-	go vet ./core-ledger/... ./shared/go/platform/...
-	go test ./core-ledger/... ./shared/go/platform/... -count=1 -race
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/...
+	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... -count=1 -race
 
 ## Go integration tests against real Postgres — fails (not skips) if unreachable.
 # Also fails if a test that should run against Postgres got silently
@@ -101,7 +102,7 @@ run: up
 
 ## Format everything in place.
 fmt:
-	go fmt ./core-ledger/... ./shared/go/platform/...
+	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/...
 	cd chains/ethereum && forge fmt
 	cd chains/solana && cargo fmt -p usdx_bridge
 
@@ -111,8 +112,17 @@ fmt-check:
 	cd chains/solana && cargo fmt -p usdx_bridge -- --check
 
 lint: fmt-check
-	go vet ./core-ledger/... ./shared/go/platform/...
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/...
 	cd chains/solana && cargo clippy -p usdx_bridge --tests -- -D warnings
+
+# ---------------------------------------------------------------------------
+# Authorization (RBAC)
+# ---------------------------------------------------------------------------
+
+## Regenerate the Go/TS/Keycloak authz artifacts from shared/authz/permissions.yaml.
+## Run this and commit the result whenever permissions.yaml changes.
+authz-gen:
+	go run ./shared/authz/gen
 
 # ---------------------------------------------------------------------------
 # Secrets

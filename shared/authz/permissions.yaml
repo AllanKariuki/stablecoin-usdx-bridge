@@ -1,0 +1,177 @@
+# Single source of truth for DAMP's RBAC model: 6 roles, 24 permissions.
+#
+# Generates (see shared/authz/gen, `make authz-gen`):
+#   - shared/authz/generated/permissions.go   — services/auth-proxy's role→permission
+#     expansion map, and any other Go service that needs to check a permission.
+#   - shared/authz/generated/permissions.ts   — @damp/authz for the frontend (route
+#     guards, conditional rendering).
+#   - shared/authz/generated/keycloak-roles.json — merged into
+#     infra/keycloak/realms/damp-realm.json's `roles.realm` array.
+#
+# Tokens carry roles only, never permission strings directly (see
+# docs/building-plan.md's P1 section) — auth-proxy expands a role to its
+# permission set on every request using this table, so a permission change
+# takes effect immediately instead of waiting for every already-issued token
+# to expire.
+#
+# Design note on why `admin` doesn't hold all 24: four permissions are
+# deliberately excluded from `admin` as a segregation-of-duties control
+# common to regulated fintech — a platform/IT administrator should not be
+# able to unilaterally approve KYC, manage a compliance case, blacklist an
+# address, or perform ledger-level financial administration (period
+# closures, manual journals, fee schedule changes). Those stay exclusive to
+# `compliance` and `treasury` respectively, even for `admin`.
+
+permissions:
+  # --- Wallets (core-ledger) ---
+  wallets:read:own:
+    description: Read the caller's own wallets and balances.
+  wallets:read:any:
+    description: Read any wallet and balance, regardless of owner.
+  wallets:write:own:
+    description: Deposit, withdraw, or transfer from the caller's own wallets.
+  wallets:write:any:
+    description: Deposit, withdraw, or transfer from any wallet (operator/treasury actions).
+  wallets:status:manage:
+    description: Freeze or unfreeze a wallet.
+
+  # --- Transactions / journal (core-ledger) ---
+  transactions:read:own:
+    description: Read the caller's own transaction history and statements.
+  transactions:read:any:
+    description: Read any transaction history, regardless of owner.
+  transactions:reverse:
+    description: Reverse a posted transaction by contra-entry.
+
+  # --- Money movement (core-ledger) ---
+  issuance:create:
+    description: Issue (mint) USD-X against fiat backing.
+  redemption:create:
+    description: Redeem (burn) USD-X back to fiat.
+  bridge:create:
+    description: Bridge USD-X between chains.
+  fx:quote:
+    description: Request an FX quote.
+  fx:convert:
+    description: Execute a currency conversion against a quote.
+
+  # --- Ledger administration (core-ledger, treasury-only) ---
+  ledger:read:
+    description: Read trial balance, integrity checks, and account balances.
+  ledger:admin:
+    description: Period closures, manual journal entries, and fee schedule changes.
+
+  # --- Payments (services/payments, P4) ---
+  payments:read:own:
+    description: Read the caller's own payment intents, invoices, and payouts.
+  payments:write:own:
+    description: Create payment intents, invoices, and payouts for the caller.
+  payments:manage:any:
+    description: Manage payments across an organization's sub-accounts.
+
+  # --- KYC (services/kyc, P5) ---
+  kyc:submit:
+    description: Submit KYC documents and profile information.
+  kyc:review:
+    description: Review and approve/reject KYC submissions.
+
+  # --- Compliance (services/compliance, P5) ---
+  compliance:cases:manage:
+    description: Investigate and resolve compliance alerts and cases, including SAR filing.
+  compliance:blacklist:manage:
+    description: Blacklist/pause an address or contract on-chain via the signer service.
+
+  # --- Reporting (services/reporting, P7) ---
+  reports:read:
+    description: Read trial balance packs, reconciliation reports, and dashboards.
+
+  # --- Identity / platform administration (services/identity) ---
+  admin:users:manage:
+    description: Manage parties, organizations, memberships, and role assignments.
+
+roles:
+  customer:
+    description: A retail individual acting on their own behalf.
+    permissions:
+      - wallets:read:own
+      - wallets:write:own
+      - transactions:read:own
+      - issuance:create
+      - redemption:create
+      - bridge:create
+      - fx:quote
+      - fx:convert
+      - payments:read:own
+      - payments:write:own
+      - kyc:submit
+
+  company:
+    description: An organization account acting on behalf of itself and its sub-accounts.
+    permissions:
+      - wallets:read:own
+      - wallets:write:own
+      - transactions:read:own
+      - issuance:create
+      - redemption:create
+      - bridge:create
+      - fx:quote
+      - fx:convert
+      - payments:read:own
+      - payments:write:own
+      - payments:manage:any
+      - kyc:submit
+
+  admin:
+    description: Platform/IT administrator. Deliberately excludes kyc:review,
+      compliance:cases:manage, compliance:blacklist:manage, and ledger:admin — see the
+      segregation-of-duties note above.
+    permissions:
+      - wallets:read:own
+      - wallets:read:any
+      - wallets:write:own
+      - wallets:write:any
+      - wallets:status:manage
+      - transactions:read:own
+      - transactions:read:any
+      - transactions:reverse
+      - issuance:create
+      - redemption:create
+      - bridge:create
+      - fx:quote
+      - fx:convert
+      - ledger:read
+      - payments:read:own
+      - payments:write:own
+      - payments:manage:any
+      - kyc:submit
+      - reports:read
+      - admin:users:manage
+
+  compliance:
+    description: AML/KYC compliance officer.
+    permissions:
+      - wallets:read:any
+      - wallets:status:manage
+      - transactions:read:any
+      - kyc:review
+      - compliance:cases:manage
+      - compliance:blacklist:manage
+      - reports:read
+
+  auditor:
+    description: Independent read-only oversight.
+    permissions:
+      - wallets:read:any
+      - transactions:read:any
+      - ledger:read
+      - reports:read
+
+  treasury:
+    description: Financial/ledger administration, reserves, and fee schedules.
+    permissions:
+      - wallets:read:any
+      - transactions:read:any
+      - transactions:reverse
+      - ledger:read
+      - ledger:admin
+      - reports:read

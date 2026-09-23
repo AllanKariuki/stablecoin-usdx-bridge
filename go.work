@@ -2,5 +2,6 @@ go 1.26.5
 
 use (
 	./core-ledger
+	./shared/authz
 	./shared/go/platform
 )
