@@ -7,6 +7,7 @@ import (
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -753,9 +754,10 @@ func stringField(m map[string]any, key string) string {
 // badRequest covers request-shape problems (unparseable body, missing
 // required field) that never reach the posting engine, so they have no
 // ledger.PostingError to carry a specific code. INVALID_REQUEST keeps the
-// {error, code} envelope uniform rather than silently omitting code here.
+// {error, code, request_id} envelope uniform rather than silently omitting
+// code here.
 func badRequest(c *fiber.Ctx, msg string) error {
-	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": msg, "code": "INVALID_REQUEST"})
+	return platform.WriteError(c, fiber.StatusBadRequest, "INVALID_REQUEST", msg)
 }
 
 // fail maps a domain rejection to the right status code. A PostingError is
@@ -766,12 +768,12 @@ func badRequest(c *fiber.Ctx, msg string) error {
 func fail(c *fiber.Ctx, err error) error {
 	var pe *ledger.PostingError
 	if errors.As(err, &pe) {
-		return c.Status(statusFor(pe.Code)).JSON(fiber.Map{"error": pe.Message, "code": pe.Code})
+		return platform.WriteError(c, statusFor(pe.Code), pe.Code, pe.Message)
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found", "code": "NOT_FOUND"})
+		return platform.WriteError(c, fiber.StatusNotFound, "NOT_FOUND", "not found")
 	}
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error", "code": "INTERNAL"})
+	return platform.WriteError(c, fiber.StatusInternalServerError, "INTERNAL", "internal error")
 }
 
 func statusFor(code string) int {
