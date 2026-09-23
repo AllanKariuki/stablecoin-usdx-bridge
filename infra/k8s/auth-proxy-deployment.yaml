@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-proxy
+  labels:
+    app: auth-proxy
+spec:
+  # Stateless verifier — safe to run more than one replica (unlike
+  # core-ledger's saga, there's no shared mutable state here to race).
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth-proxy
+  template:
+    metadata:
+      labels:
+        app: auth-proxy
+    spec:
+      containers:
+        - name: auth-proxy
+          # TODO(P1): point at the real registry once CI publishes an
+          # image, e.g.
+          # ghcr.io/allankariuki/stablecoin-usdx-bridge/auth-proxy:<tag>
+          image: <Image>
+          ports:
+            - containerPort: 8090
+          envFrom:
+            - secretRef:
+                name: auth-proxy-secrets
+          env:
+            - name: PORT
+              value: "8090"
+            - name: KEYCLOAK_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: OIDC_AUDIENCE
+              value: "damp-portal"
+            - name: IDENTITY_SERVICE_URL
+              value: "http://identity.default.svc.cluster.local:3001"
+            - name: REDIS_URL
+              value: "redis://redis.default.svc.cluster.local:6379/0"
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "50m"
+            limits:
+              memory: "64Mi"
+              cpu: "250m"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+      terminationGracePeriodSeconds: 30

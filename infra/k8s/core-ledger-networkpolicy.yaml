@@ -1,0 +1,49 @@
+# Closes the gap the P1 DoD names explicitly (docs/building-plan.md):
+# "a forged X-User-Id against :8082 is rejected, and :8081 isn't
+# reachable." auth-proxy enforces the first half at the application layer;
+# this enforces the second half at the network layer — core-ledger accepts
+# traffic only from the pod that actually forwards requests to it, never
+# from outside the cluster and never from an arbitrary pod bypassing the
+# gateway.
+#
+# Traffic path: Traefik calls auth-proxy's /verify as a side call (a
+# decision, not a proxy hop — see infra/traefik/dynamic.yaml's
+# require-auth middleware), then Traefik ITSELF forwards the original
+# request to core-ledger if auth-proxy approved it. So the pod that needs
+# ingress here is Traefik's, not auth-proxy's — allowing `app: auth-proxy`
+# instead would be a real gap dressed up as a fix, since auth-proxy is
+# never the one making this call. `app: gateway` below is a placeholder
+# label pending an actual k8s Traefik Deployment (today Traefik only runs
+# via local docker-compose, see docker-compose.yaml) — set it to match
+# whatever that manifest's pod labels turn out to be, likely
+# `app.kubernetes.io/name: traefik` if installed via its official chart.
+#
+# A NetworkPolicy's podSelector-based rules are additive only (there's no
+# explicit "deny" verb) — as soon as any NetworkPolicy selects a pod, that
+# pod's ingress becomes default-deny except for what's explicitly allowed
+# here. This assumes a CNI plugin that enforces NetworkPolicy (Calico,
+# Cilium, etc. — not the no-op default on managed clusters without one
+# enabled).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: core-ledger-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: core-ledger
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway # TODO(P1): match the real Traefik Deployment's labels once one exists
+        # TODO: add `app: bff` once services/bff exists and becomes a
+        # second legitimate direct caller (see infra/traefik/dynamic.yaml's
+        # matching TODO — bff will eventually replace the gateway calling
+        # core-ledger directly, not add to it, but both may briefly
+        # coexist during that migration).
+      ports:
+        - protocol: TCP
+          port: 8081
