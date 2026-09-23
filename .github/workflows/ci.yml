@@ -11,13 +11,14 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------
-  # core-ledger — unit tests always run; integration tests run against a
-  # real Postgres service container. A skipped integration test fails the
-  # job (see the final step) rather than passing silently — this mirrors
-  # `make test-integration` locally, which enforces the same thing.
+  # Go workspace (core-ledger, shared/go/platform, shared/authz,
+  # services/auth-proxy) — one job, since go.work makes them one build.
+  # core-ledger's integration tests run against a real Postgres service
+  # container; a skipped one fails the job (see the final step) rather
+  # than passing silently — this mirrors `make test-integration` locally.
   # ---------------------------------------------------------------------
   go:
-    name: core-ledger (Go)
+    name: Go workspace
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -38,21 +39,33 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: core-ledger/go.mod
+          go-version-file: go.work
 
       - name: go vet
-        run: go vet ./core-ledger/...
+        run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
 
       - name: go test (unit + integration)
         env:
           LEDGER_TEST_DATABASE_URL: postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
         run: |
           set -euo pipefail
-          go test ./core-ledger/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
+          go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
           if grep -q '^--- SKIP: TestIntegration' /tmp/go-test.log; then
             echo "::error::an integration test was skipped — LEDGER_TEST_DATABASE_URL must be reachable in CI"
             exit 1
           fi
+
+      - name: authz-gen produces no drift
+        # permissions.yaml is the single source of truth (see
+        # shared/authz/permissions.yaml) — this catches someone hand-editing
+        # a generated file, or editing permissions.yaml without re-running
+        # `make authz-gen` before committing.
+        run: |
+          go run ./shared/authz/gen
+          git diff --exit-code shared/authz/generated/ || {
+            echo "::error::shared/authz/generated/ is stale — run 'make authz-gen' and commit the result"
+            exit 1
+          }
 
   # ---------------------------------------------------------------------
   # Ethereum — Foundry. foundry.toml pins solc 0.8.35 / optimizer off to
