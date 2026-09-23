@@ -1,8 +1,9 @@
 // Login.tsx - ROPC Login component
 import React, { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { login, clearError, selectAuthLoading, selectAuthError, selectIsAuthenticated } from '../../redux/slices/oauth-web-sockets/authSlice';
+import { startPkceLogin } from '../../utils/authUtils';
 import type { AppDispatch } from '../../redux/store';
 
 interface LoginFormData {
@@ -13,9 +14,26 @@ interface LoginFormData {
 const Login: React.FC = () => {
     const dispatch = useDispatch<AppDispatch>();
     const navigate = useNavigate();
+    const location = useLocation();
     const isLoading = useSelector(selectAuthLoading);
     const error = useSelector(selectAuthError) as string | null;
     const isAuthenticated = useSelector(selectIsAuthenticated);
+    // Callback.tsx redirects here with an error in location.state on a
+    // failed/denied SSO login — surfaced the same way a password-grant
+    // failure is, via the same error banner below.
+    const ssoError = (location.state as { error?: string } | null)?.error ?? null;
+    const [isSsoRedirecting, setIsSsoRedirecting] = useState(false);
+
+    const handleSsoLogin = async () => {
+        setIsSsoRedirecting(true);
+        try {
+            await startPkceLogin();
+            // startPkceLogin navigates the whole page away on success; this
+            // component unmounts before the promise below would matter.
+        } catch {
+            setIsSsoRedirecting(false);
+        }
+    };
 
     const [formData, setFormData] = useState<LoginFormData>({
         username: '',
@@ -102,10 +120,43 @@ const Login: React.FC = () => {
                         Sign in to your account
                     </h2>
                     <p className="mt-2 text-center text-sm text-gray-600">
-                        Enter your credentials to access your account
+                        Sign in with your DAMP account
                     </p>
                 </div>
-                
+
+                {ssoError && (
+                    <div className="rounded-md bg-red-50 p-4">
+                        <p className="text-sm text-red-700">{ssoError}</p>
+                    </div>
+                )}
+
+                <div>
+                    <button
+                        type="button"
+                        onClick={handleSsoLogin}
+                        disabled={isSsoRedirecting}
+                        className={`group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white cursor-pointer ${
+                            isSsoRedirecting
+                                ? 'bg-gray-400 cursor-not-allowed'
+                                : 'bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500'
+                        } transition-colors duration-200`}
+                    >
+                        {isSsoRedirecting ? 'Redirecting…' : 'Sign in'}
+                    </button>
+                    <p className="mt-2 text-center text-xs text-gray-500">
+                        Redirects to Keycloak — PKCE-secured, no password touches this site.
+                    </p>
+                </div>
+
+                <div className="relative">
+                    <div className="absolute inset-0 flex items-center">
+                        <div className="w-full border-t border-gray-300" />
+                    </div>
+                    <div className="relative flex justify-center text-sm">
+                        <span className="px-2 backdrop-blur-md text-gray-500">or, legacy direct sign-in</span>
+                    </div>
+                </div>
+
                 <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
                     <div className=" space-y-4">
                         {/* Username Field */}
@@ -232,7 +283,7 @@ const Login: React.FC = () => {
                                             <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
                                         </svg>
                                     </span>
-                                    Sign in
+                                    Sign in directly
                                 </>
                             )}
                         </button>
@@ -271,8 +322,8 @@ const Login: React.FC = () => {
                         </div>
                         <div className="mt-4 text-center">
                             <p className="text-xs text-gray-500">
-                                This login uses OAuth 2.0 Resource Owner Password Credentials flow. 
-                                Your credentials are securely transmitted and processed.
+                                Direct sign-in sends your password to this site — kept available during
+                                migration, but the button above is the recommended path.
                             </p>
                         </div>
                     </div>

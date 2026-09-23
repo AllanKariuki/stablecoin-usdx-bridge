@@ -3,6 +3,7 @@ import { lazy } from 'react'
 // Lazy load components
 const LandingPage = lazy(() => import('../pages/Oauth/LandingPage'));
 const Login = lazy(() => import('../pages/Oauth/Login'));
+const Callback = lazy(() => import('../pages/Oauth/Callback'));
 const Dashboard = lazy(() => import('../pages/Dashboard'));
 const EnhancedDashboard = lazy(() => import('../pages/EnhancedDashboard'));
 
@@ -118,6 +119,7 @@ export const componentMap = {
     // Special routes
     '/': LandingPage,
     '/login': Login,
+    '/auth/callback': Callback,
     '/dashboard': Dashboard,
     '/enhanced-dashboard': EnhancedDashboard,
 

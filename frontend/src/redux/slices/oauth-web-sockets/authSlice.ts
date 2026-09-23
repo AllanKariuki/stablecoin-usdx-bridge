@@ -1,5 +1,5 @@
 import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
-import { decodeTokenPayload, getToken, loginWithCridentials, refreshAuthToken, setRefreshToken } from "../../../utils/authUtils";
+import { clearIdToken, completePkceLogin, decodeTokenPayload, getToken, loginWithCridentials, refreshAuthToken } from "../../../utils/authUtils";
 import type { LoginPayload, AuthState } from "../../../types/auth-and-websocket/auth";
 // import { store } from ".";
 
@@ -31,6 +31,21 @@ export const login = createAsyncThunk(
     }
 );
 
+// loginWithPkceCode completes the auth-code + PKCE flow startPkceLogin
+// (authUtils.ts) began — the P1 replacement for the `login` thunk above,
+// which stays as-is since directAccessGrantsEnabled keeps grant_type:
+// 'password' working at the Keycloak client level during migration.
+export const loginWithPkceCode = createAsyncThunk(
+    'auth/loginWithPkceCode',
+    async ({ code, state }: { code: string; state: string }, { rejectWithValue }) => {
+        const result = await completePkceLogin(code, state);
+        if (result.success) {
+            return result.tokens;
+        }
+        return rejectWithValue(result.error);
+    }
+);
+
 export const refreshToken = createAsyncThunk(
     'auth/refreshToken',
     async (_, { rejectWithValue, getState }) => {
@@ -42,12 +57,14 @@ export const refreshToken = createAsyncThunk(
                 return rejectWithValue('No refresh token available');
             }
 
+            // refreshAuthToken already persists the new access/refresh
+            // tokens via setToken/setRefreshToken (the JSON-wrapped
+            // {value, expiresAt} shape getToken() expects) — writing
+            // sessionStorage.setItem('token', <raw JWT string>) here too
+            // was overwriting that with an unwrapped string getToken()'s
+            // JSON.parse would then throw on, corrupting the session right
+            // after every refresh.
             const newTokens = await refreshAuthToken(currentRefreshToken);
-            console.log('New tokens received:', newTokens);
-            sessionStorage.setItem('token', newTokens.access_token);
-            if (newTokens.refresh_token) {
-                setRefreshToken(newTokens.refresh_token);
-            }
             return newTokens;
         } catch (error: any) {
             return rejectWithValue(error.message || 'Token refresh failed');
@@ -95,12 +112,11 @@ export const restoreSession = createAsyncThunk(
             if (tokenData.exp && tokenData.exp < currentTime) {
                 // Token expired, try to refresh
                 if (refreshToken) {
+                    // See the identical fix in the refreshToken thunk above
+                    // — refreshAuthToken already persists both tokens
+                    // correctly; writing them again here in the wrong
+                    // (unwrapped) shape corrupted them for the next read.
                     const newTokens = await refreshAuthToken(refreshToken);
-                    sessionStorage.setItem('token', newTokens.access_token);
-
-                    if (newTokens.refresh_token) {
-                        sessionStorage.setItem('refresh_token', newTokens.refresh_token);
-                    }
                     return {
                         access_token: newTokens.access_token,
                         refresh_token: newTokens.refresh_token || refreshToken,
@@ -118,9 +134,10 @@ export const restoreSession = createAsyncThunk(
             }
 
         } catch (error: any) {
-            sessionStorage.removeItem('access_token');
+            sessionStorage.removeItem('token'); // matches setToken's actual key
             sessionStorage.removeItem('refresh_token');
             sessionStorage.removeItem('session_start_time');
+            clearIdToken();
             return rejectWithValue(error.message || 'Failed to restore session');
         }
     }
@@ -138,9 +155,10 @@ const authSlice = createSlice({
             state.error = null;
             state.sessionStartTime = null;
             // Clear session storage
-            sessionStorage.removeItem('access_token');
+            sessionStorage.removeItem('token'); // matches setToken's actual key
             sessionStorage.removeItem('refresh_token');
             sessionStorage.removeItem('session_start_time');
+            clearIdToken();
         },
         clearError: (state) => {
             state.error = null;
@@ -171,6 +189,22 @@ const authSlice = createSlice({
                 state.isLoading = false;
                 state.error = action.payload || 'Login failed';
             })
+            .addCase(loginWithPkceCode.pending, (state) => {
+                state.isLoading = true;
+                state.error = null;
+            })
+            .addCase(loginWithPkceCode.fulfilled, (state, action) => {
+                state.isLoading = false;
+                state.isAuthenticated = true;
+                state.accessToken = action.payload.access_token;
+                state.refreshToken = action.payload.refresh_token;
+                state.sessionStartTime = new Date().getTime();
+                state.user = decodeTokenPayload(action.payload.access_token);
+            })
+            .addCase(loginWithPkceCode.rejected, (state, action) => {
+                state.isLoading = false;
+                state.error = action.payload || 'Login failed';
+            })
             .addCase(refreshToken.pending, (state) => {
                 state.isLoading = true;
             })
@@ -192,9 +226,10 @@ const authSlice = createSlice({
                 state.refreshToken = null;
                 state.user = null;
                 state.sessionStartTime = null;
-                sessionStorage.removeItem('access_token');
+                sessionStorage.removeItem('token'); // matches setToken's actual key
                 sessionStorage.removeItem('refresh_token');
                 sessionStorage.removeItem('session_start_time');
+                clearIdToken();
             })
             .addCase(restoreSession.pending, (state) => {
                 state.isLoading = true;

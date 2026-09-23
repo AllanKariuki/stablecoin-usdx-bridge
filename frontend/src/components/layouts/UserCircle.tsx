@@ -1,6 +1,7 @@
 import React from 'react'
 import { useSelector } from 'react-redux';
 import { logout, selectUser } from '../../redux/slices/oauth-web-sockets/authSlice';
+import { getIdToken, logoutRedirect } from '../../utils/authUtils';
 import { useDispatch } from 'react-redux';
 import { useNavigate } from 'react-router-dom';
 import Dropdown from '../general/Dropdown';
@@ -44,7 +45,14 @@ const UserCircle: React.FC<UserCircleProps> = ({
     };
 
     const handleLogout = () => {
+        // Read the id_token before logout() clears sessionStorage, then end
+        // Keycloak's SSO session too — dispatch(logout()) alone only ends
+        // this tab's local session; Keycloak's own session cookie would
+        // otherwise silently re-authenticate the next /auth redirect with
+        // no login prompt.
+        const idToken = getIdToken();
         dispatch(logout());
+        logoutRedirect(idToken ?? undefined);
     };
 
     const userCircle = (
