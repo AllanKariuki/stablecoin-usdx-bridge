@@ -1,0 +1,17 @@
+# Traefik static configuration. Dynamic routing/middleware lives in
+# dynamic.yaml (the file provider below) so it can change without a
+# container restart.
+entryPoints:
+  web:
+    address: ":8082"
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yaml
+    watch: true
+
+api:
+  dashboard: false
+
+log:
+  level: INFO

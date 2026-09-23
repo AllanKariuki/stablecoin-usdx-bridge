@@ -1,0 +1,253 @@
+{
+  "realm": "damp",
+  "enabled": true,
+  "displayName": "DAMP",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "roles": {
+    "realm": [
+      {
+        "name": "admin",
+        "description": "Platform/IT administrator. Deliberately excludes kyc:review, compliance:cases:manage, compliance:blacklist:manage, and ledger:admin — see the segregation-of-duties note above."
+      },
+      {
+        "name": "auditor",
+        "description": "Independent read-only oversight."
+      },
+      {
+        "name": "company",
+        "description": "An organization account acting on behalf of itself and its sub-accounts."
+      },
+      {
+        "name": "compliance",
+        "description": "AML/KYC compliance officer."
+      },
+      {
+        "name": "customer",
+        "description": "A retail individual acting on their own behalf."
+      },
+      {
+        "name": "treasury",
+        "description": "Financial/ledger administration, reserves, and fee schedules."
+      }
+    ]
+  },
+  "groups": [
+    {
+      "name": "orgs",
+      "subGroups": [
+        {
+          "name": "damp-demo-co",
+          "attributes": {
+            "org_id": [
+              "org_demo_co"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "damp-portal",
+      "name": "DAMP Portal (frontend)",
+      "description": "Public SPA client — matches frontend/public/runtime-config.js. PKCE pre-configured; directAccessGrantsEnabled stays on until authUtils.ts migrates off password grant (see docs/building-plan.md P1).",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:5173/auth/callback",
+        "http://localhost:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-damp-portal",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "damp-portal",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "org-id-group-attribute",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "identity-service",
+      "name": "services/identity (confidential)",
+      "description": "Service account with Keycloak Admin API access, scoped to exactly the realm-management roles services/identity needs (fullScopeAllowed off).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "__CHANGE_ME_IN_A_REAL_ENVIRONMENT__"
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-identity-service",
+      "enabled": true,
+      "serviceAccountClientId": "identity-service",
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "view-users",
+          "query-users",
+          "manage-realm"
+        ]
+      }
+    },
+    {
+      "username": "customer@damp.local",
+      "email": "customer@damp.local",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Cust",
+      "lastName": "Omer",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "damp-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "customer"
+      ]
+    },
+    {
+      "username": "company@damp.local",
+      "email": "company@damp.local",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Damp",
+      "lastName": "Demo Co",
+      "attributes": {
+        "org_id": [
+          "org_demo_co"
+        ]
+      },
+      "groups": [
+        "/orgs/damp-demo-co"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "damp-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "company"
+      ]
+    },
+    {
+      "username": "admin@damp.local",
+      "email": "admin@damp.local",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Ad",
+      "lastName": "Min",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "damp-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "admin"
+      ]
+    },
+    {
+      "username": "compliance@damp.local",
+      "email": "compliance@damp.local",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Compli",
+      "lastName": "Ance",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "damp-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "compliance"
+      ]
+    },
+    {
+      "username": "auditor@damp.local",
+      "email": "auditor@damp.local",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Audit",
+      "lastName": "Or",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "damp-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "auditor"
+      ]
+    },
+    {
+      "username": "treasury@damp.local",
+      "email": "treasury@damp.local",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Treas",
+      "lastName": "Ury",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "damp-dev-only",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "treasury"
+      ]
+    }
+  ]
+}

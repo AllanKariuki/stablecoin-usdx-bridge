@@ -2,7 +2,7 @@
 	test test-unit test-integration test-eth test-sol \
 	build run \
 	lint fmt fmt-check \
-	authz-gen \
+	authz-gen keycloak-realm \
 	hooks-install secrets-scan \
 	clean
 
@@ -124,6 +124,16 @@ lint: fmt-check
 ## Run this and commit the result whenever permissions.yaml changes.
 authz-gen:
 	go run ./shared/authz/gen
+
+## Compose the importable realm JSON from the template + the generated roles
+## fragment. Run after authz-gen (or `make authz-gen keycloak-realm` together)
+## whenever permissions.yaml or the template changes.
+keycloak-realm: authz-gen
+	@jq \
+		--slurpfile roles shared/authz/generated/keycloak-roles.json \
+		'(walk(if type == "object" then with_entries(select(.key | startswith("_comment") | not)) else . end)) | .roles.realm = $$roles[0]' \
+		infra/keycloak/templates/damp-realm.template.json > infra/keycloak/realms/damp-realm.json
+	@jq empty infra/keycloak/realms/damp-realm.json && echo "wrote infra/keycloak/realms/damp-realm.json"
 
 # ---------------------------------------------------------------------------
 # Secrets
