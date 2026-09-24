@@ -78,20 +78,26 @@ func (r *Rule) Allows(permissions []authz.Permission) bool {
 	return false
 }
 
-// Default is the platform's known route surface as of P1: core-ledger's
-// money-movement and read endpoints, reachable through the BFF's pass-
-// through routes at the same paths (see docs/building-plan.md: "thin in
-// this phase — auth passthrough"). Extend this table as later phases add
-// services/routes; it is intentionally not derived from core-ledger's own
-// route registration, since the gateway must keep working even if a
-// downstream service's internal routing changes shape.
+// Default is the platform's known route surface as of P1: services/bff's
+// own routes (see services/bff/src/*/*.controller.ts), which is what the
+// gateway actually forwards to at :8082/api — not core-ledger's raw shapes.
+// The two aren't identical: bff's GET /wallets (list the caller's own,
+// no :userId param — see services/bff/src/wallets/wallets.controller.ts)
+// replaces core-ledger's GET /users/:userId/wallets, and bff adds routes
+// core-ledger has no equivalent of at all (GET /dashboard). Extend this
+// table as later phases add services/routes; it is intentionally not
+// derived from any service's own route registration, since the gateway
+// must keep working even if a downstream service's internal routing
+// changes shape.
 var Default = Table{
 	// Wallets
-	compile("POST", "/wallets", authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny),
-	compile("GET", "/users/:userId/wallets", authz.PermissionWalletsReadOwn, authz.PermissionWalletsReadAny),
+	compile("GET", "/wallets", authz.PermissionWalletsReadOwn, authz.PermissionWalletsReadAny),
 	compile("GET", "/wallets/:walletId", authz.PermissionWalletsReadOwn, authz.PermissionWalletsReadAny),
 	compile("GET", "/wallets/:walletId/statement", authz.PermissionWalletsReadOwn, authz.PermissionWalletsReadAny),
 	compile("POST", "/wallets/:walletId/status", authz.PermissionWalletsStatusManage),
+
+	// Dashboard (bff-only aggregation, no core-ledger equivalent)
+	compile("GET", "/dashboard", authz.PermissionWalletsReadOwn, authz.PermissionWalletsReadAny),
 
 	// Money movement
 	compile("POST", "/deposits", authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny),

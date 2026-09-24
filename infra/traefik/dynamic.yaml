@@ -1,28 +1,26 @@
 # Traefik dynamic configuration: the gateway at :8082 the frontend's
 # runtime-config.js points VITE_API_BASE_URL at (http://localhost:8082/api).
 #
-# Local dev topology: Traefik runs in Docker, but core-ledger and auth-proxy
-# still run on the host (`make run`, `cd services/auth-proxy && go run
-# ./cmd/server`) rather than in containers — host.docker.internal is Docker
-# Desktop's bridge back to the host. Once services/bff lands (see
-# docs/building-plan.md's P1 section), its address replaces core-ledger's
-# here as the /api upstream — the frontend never calls core-ledger directly,
-# but bff doesn't exist yet, so this is wired directly to core-ledger as an
-# interim, clearly-labeled step so the gateway's auth chain is provable
-# today instead of waiting on every downstream service to exist first.
+# Local dev topology: Traefik runs in Docker, but core-ledger, auth-proxy,
+# and bff still run on the host (`make run`, `cd services/auth-proxy && go
+# run ./cmd/server`, `cd services/bff && pnpm start`) rather than in
+# containers — host.docker.internal is Docker Desktop's bridge back to the
+# host. The frontend never calls core-ledger directly — bff is the /api
+# upstream, translating camelCase + Money and aggregating (see
+# docs/building-plan.md's P1 "Build the BFF" decision).
 http:
   routers:
     api:
       rule: "PathPrefix(`/api`)"
       entryPoints: ["web"]
       middlewares: ["cors", "strip-api-prefix", "require-auth"]
-      service: core-ledger # TODO(P1): repoint to services/bff once it exists
+      service: bff
 
   services:
-    core-ledger:
+    bff:
       loadBalancer:
         servers:
-          - url: "http://host.docker.internal:8081"
+          - url: "http://host.docker.internal:3002"
 
   middlewares:
     # Order matters: cors first so an OPTIONS preflight is answered here and

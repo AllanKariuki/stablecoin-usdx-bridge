@@ -47,10 +47,10 @@ func New(t *testing.T) *Server {
 func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"issuer":                 s.URL,
-		"jwks_uri":               s.URL + "/jwks",
-		"authorization_endpoint": s.URL + "/auth",
-		"token_endpoint":         s.URL + "/token",
+		"issuer":                                s.URL,
+		"jwks_uri":                              s.URL + "/jwks",
+		"authorization_endpoint":                s.URL + "/auth",
+		"token_endpoint":                        s.URL + "/token",
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 	})
 }

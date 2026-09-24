@@ -2,21 +2,21 @@
 # "a forged X-User-Id against :8082 is rejected, and :8081 isn't
 # reachable." auth-proxy enforces the first half at the application layer;
 # this enforces the second half at the network layer — core-ledger accepts
-# traffic only from the pod that actually forwards requests to it, never
-# from outside the cluster and never from an arbitrary pod bypassing the
+# traffic only from the pod that actually calls it directly, never from
+# outside the cluster and never from an arbitrary pod bypassing the
 # gateway.
 #
-# Traffic path: Traefik calls auth-proxy's /verify as a side call (a
-# decision, not a proxy hop — see infra/traefik/dynamic.yaml's
-# require-auth middleware), then Traefik ITSELF forwards the original
-# request to core-ledger if auth-proxy approved it. So the pod that needs
-# ingress here is Traefik's, not auth-proxy's — allowing `app: auth-proxy`
-# instead would be a real gap dressed up as a fix, since auth-proxy is
-# never the one making this call. `app: gateway` below is a placeholder
-# label pending an actual k8s Traefik Deployment (today Traefik only runs
-# via local docker-compose, see docker-compose.yaml) — set it to match
-# whatever that manifest's pod labels turn out to be, likely
-# `app.kubernetes.io/name: traefik` if installed via its official chart.
+# Traffic path, now that services/bff exists: Traefik calls auth-proxy's
+# /verify as a side call (a decision, not a proxy hop — see
+# infra/traefik/dynamic.yaml's require-auth middleware), then forwards the
+# request to bff, which is the one that calls core-ledger (see
+# services/bff/src/core-ledger/core-ledger.client.ts) — the frontend never
+# reaches core-ledger directly, and neither does Traefik anymore (local dev's
+# dynamic.yaml routes /api straight to bff). `app: bff` is real —
+# infra/k8s/bff isn't created yet (bff runs via local docker-compose/pnpm
+# today, no k8s Deployment), so this is forward-looking the same way
+# core-ledger's own Deployment was before this policy existed, but the label
+# itself matches what that future manifest's pod labels will be.
 #
 # A NetworkPolicy's podSelector-based rules are additive only (there's no
 # explicit "deny" verb) — as soon as any NetworkPolicy selects a pod, that
@@ -38,12 +38,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app: gateway # TODO(P1): match the real Traefik Deployment's labels once one exists
-        # TODO: add `app: bff` once services/bff exists and becomes a
-        # second legitimate direct caller (see infra/traefik/dynamic.yaml's
-        # matching TODO — bff will eventually replace the gateway calling
-        # core-ledger directly, not add to it, but both may briefly
-        # coexist during that migration).
+              app: bff
       ports:
         - protocol: TCP
           port: 8081
