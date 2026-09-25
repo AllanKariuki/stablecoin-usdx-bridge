@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useConversion } from '@src/hooks/useConversion';
+import { conversionClient } from '@src/api/conversionClient';
 import * as fixtures from '@src/test-data/conversion-fixtures';
 
 // Mock API client
@@ -83,8 +84,17 @@ describe('useConversion Hook', () => {
   it('should handle quote expiry', async () => {
     const { result } = renderHook(() => useConversion(), { wrapper: createWrapper() });
 
+    // The default mock (top of file) always returns a fresh 5-minute quote,
+    // which would never expire inside this test's 2s window — override it
+    // once so the quote useConversion.ts's getQuoteMutation.onSuccess
+    // receives is already expired, giving its `setTimeout(..., ttl)`
+    // cache-invalidation a ~0ms delay to fire on.
     const expiredQuote = fixtures.createMockQuote({
       expiresAt: new Date(Date.now() - 1000).toISOString(), // Already expired
+    });
+    vi.mocked(conversionClient.getQuote).mockResolvedValueOnce({
+      success: true,
+      data: expiredQuote,
     });
 
     result.current.getQuote({
@@ -138,7 +148,9 @@ describe('useConversion Hook', () => {
 
     result.current.clearQuote();
 
-    expect(result.current.currentQuote).toBeNull();
+    await waitFor(() => {
+      expect(result.current.currentQuote).toBeNull();
+    });
   });
 
   it('should reset state when requested', async () => {

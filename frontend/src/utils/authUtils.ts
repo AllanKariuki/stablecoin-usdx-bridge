@@ -199,52 +199,6 @@ export const getIdToken = (): string | null => sessionStorage.getItem('id_token'
 
 export const clearIdToken = () => sessionStorage.removeItem('id_token');
 
-export const loginWithCridentials = async (username: string, password: string) => {
-    const { VITE_KEYCLOAK_AUTHORITY, VITE_KEYCLOAK_CLIENT_ID } = getConfig();
-
-    try {
-        // ROPC: Resource Owner Password Credentials(enable in Keycloak)
-        const response= await fetch(`${VITE_KEYCLOAK_AUTHORITY}/protocol/openid-connect/token`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: new URLSearchParams({
-                grant_type: 'password',
-                client_id: VITE_KEYCLOAK_CLIENT_ID,
-                username: username,
-                password: password,
-                scope: 'openid profile email'
-            })
-        });
-
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error_description || 'Login failed');
-        }
-
-        const tokens = await response.json();
-
-        // Store tokens and set sessions
-        setToken(tokens.access_token);
-        setRefreshToken(tokens.refresh_token);
-        if (tokens.id_token) {
-            setIdToken(tokens.id_token);
-        }
-        setSessionStartTime();
-
-        return {
-            success: true,
-            tokens: tokens
-        };
-    } catch (error: any) {
-        return {
-            success: false,
-            error: error.message || 'An error occurred during login'
-        }
-    }
-}
-
 export const refreshAuthToken = async (currentRefreshToken: string) => {
     if (!currentRefreshToken) {
         throw new Error('No refresh token available');

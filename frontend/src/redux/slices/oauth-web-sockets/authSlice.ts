@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
-import { clearIdToken, completePkceLogin, decodeTokenPayload, getToken, loginWithCridentials, refreshAuthToken } from "../../../utils/authUtils";
-import type { LoginPayload, AuthState } from "../../../types/auth-and-websocket/auth";
+import { clearIdToken, completePkceLogin, decodeTokenPayload, getToken, refreshAuthToken } from "../../../utils/authUtils";
+import type { AuthState } from "../../../types/auth-and-websocket/auth";
 // import { store } from ".";
 
 
@@ -15,26 +15,11 @@ const IntialState: AuthState = {
 };
 
 // Async thunks
-export const login = createAsyncThunk(
-    'auth/login',
-    async ({ username, password }: LoginPayload, { rejectWithValue }) => {
-        try {
-            const result = await loginWithCridentials(username, password);
-            if (result.success) {
-                return result.tokens;
-            } else {
-                return rejectWithValue(result.error);
-            }
-        } catch (error: any) {
-            return rejectWithValue(error.message || 'Login failed');
-        }
-    }
-);
 
 // loginWithPkceCode completes the auth-code + PKCE flow startPkceLogin
-// (authUtils.ts) began — the P1 replacement for the `login` thunk above,
-// which stays as-is since directAccessGrantsEnabled keeps grant_type:
-// 'password' working at the Keycloak client level during migration.
+// (authUtils.ts) began — the sole login path now that P1's migration off
+// password-grant is complete (docs/building-plan.md's P1 DoD requires
+// `grep -r "password" dist/` to come back empty).
 export const loginWithPkceCode = createAsyncThunk(
     'auth/loginWithPkceCode',
     async ({ code, state }: { code: string; state: string }, { rejectWithValue }) => {
@@ -172,23 +157,6 @@ const authSlice = createSlice({
     },
     extraReducers: (builder) => {
         builder
-            .addCase(login.pending, (state) => {
-                state.isLoading = true;
-                state.error = null;
-            })
-            .addCase(login.fulfilled, (state, action) => {
-                state.isLoading = false;
-                state.isAuthenticated = true;
-                state.accessToken = action.payload.access_token;
-                state.refreshToken = action.payload.refresh_token;
-                state.sessionStartTime = new Date().getTime();
-                // You might want to decode the token to get user info
-                state.user = decodeTokenPayload(action.payload.access_token);
-            })
-            .addCase(login.rejected, (state, action) => {
-                state.isLoading = false;
-                state.error = action.payload || 'Login failed';
-            })
             .addCase(loginWithPkceCode.pending, (state) => {
                 state.isLoading = true;
                 state.error = null;

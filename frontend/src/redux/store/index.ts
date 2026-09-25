@@ -13,7 +13,7 @@ import unifiedNotificationsReducer from '../slices/navigation/unifiedNotificatio
 // import loansReducer from '../slices/loans/loansSlice';
 // import accountsReducer from '../slices/accounts/accountsSlice';
 import paymentsReducer from '../slices/payments/paymentsSlice';
-// import transactionsReducer from '../slices/transactions/transactionsSlice';
+import transactionsReducer from '../slices/transactions/transactionsSlice';
 import walletReducer from '../slices/wallet/walletSlice';
 import dashboardReducer from '../slices/dashboard/dashboardSlice';
 import conversionReducer from '../slices/conversion/conversionSlice';
@@ -43,7 +43,7 @@ export const store = configureStore({
         // loans: loansReducer,
         // accounts: accountsReducer,
         payments: paymentsReducer,
-        // transactions: transactionsReducer,
+        transactions: transactionsReducer,
         wallet: walletReducer,
         dashboard: dashboardReducer,
         conversion: conversionReducer,

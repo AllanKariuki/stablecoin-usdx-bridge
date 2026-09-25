@@ -31,7 +31,7 @@ const initialState: PaymentsState = {
 // Async thunks
 export const fetchPayments = createAsyncThunk(
   'payments/fetchPayments',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const response = await get('/payments');
       return response as { data: Payment[] };
@@ -44,7 +44,7 @@ export const fetchPayments = createAsyncThunk(
 
 export const fetchBillPayments = createAsyncThunk(
   'payments/fetchBillPayments',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const response = await get('/payments/bills');
       return response as { data: BillPayment[] };
@@ -57,7 +57,7 @@ export const fetchBillPayments = createAsyncThunk(
 
 export const fetchScheduledPayments = createAsyncThunk(
   'payments/fetchScheduledPayments',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const response = await get('/payments/scheduled');
       return response as { data: ScheduledPayment[] };
@@ -70,7 +70,7 @@ export const fetchScheduledPayments = createAsyncThunk(
 
 export const fetchMerchants = createAsyncThunk(
   'payments/fetchMerchants',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const response = await get('/payments/merchants');
       return response as { data: Merchant[] };
@@ -83,7 +83,7 @@ export const fetchMerchants = createAsyncThunk(
 
 export const fetchPaymentRequests = createAsyncThunk(
   'payments/fetchPaymentRequests',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const response = await get('/payments/requests');
       return response as { data: PaymentRequest[] };

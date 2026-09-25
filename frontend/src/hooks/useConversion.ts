@@ -101,19 +101,20 @@ export function useConversion() {
         currentQuote: quote,
       }));
 
-      // Cache invalidation after quote expires
+      // Cache invalidation after quote expires. An already-expired quote
+      // (ttl clamped to 0 below) must still be scheduled for clearing —
+      // `ttl > 0` skipped that case entirely, leaving a stale/unusable
+      // quote sitting in currentQuote forever.
       const expiresAt = new Date(quote.expiresAt).getTime();
       const now = Date.now();
       const ttl = Math.max(0, expiresAt - now);
 
-      if (ttl > 0) {
-        setTimeout(() => {
-          setState((prev) => ({
-            ...prev,
-            currentQuote: null,
-          }));
-        }, ttl);
-      }
+      setTimeout(() => {
+        setState((prev) => ({
+          ...prev,
+          currentQuote: null,
+        }));
+      }, ttl);
     },
   });
 
