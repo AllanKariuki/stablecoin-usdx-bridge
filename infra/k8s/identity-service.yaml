@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity
+spec:
+  selector:
+    app: identity
+  ports:
+    - port: 3001
+      targetPort: 3001
+  # Not LoadBalancer/NodePort — only auth-proxy calls this, cluster-
+  # internally (services/auth-proxy/internal/identityclient's
+  # IdentityHTTPResolver), and only its /internal/parties/* routes at that.
+  # See identity-networkpolicy.yaml for the enforcement half of that.
+  type: ClusterIP

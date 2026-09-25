@@ -1,0 +1,27 @@
+# identity serves exactly one consumer today: services/auth-proxy, calling
+# GET /internal/parties/by-subject/:subject on every uncached request (see
+# services/auth-proxy/internal/identityclient/resolver.go). No other
+# service reads identity's data directly yet — kyc/payments/compliance
+# will need their own party lookups from P4/P5 onward, at which point this
+# policy grows another podSelector entry, the same way core-ledger's own
+# NetworkPolicy grew one for identity in this change. Same
+# additive-only/default-deny-once-selected semantics as
+# core-ledger-networkpolicy.yaml — see that file's own comment.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: identity
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: auth-proxy
+      ports:
+        - protocol: TCP
+          port: 3001

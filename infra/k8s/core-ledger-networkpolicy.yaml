@@ -6,17 +6,23 @@
 # outside the cluster and never from an arbitrary pod bypassing the
 # gateway.
 #
-# Traffic path, now that services/bff exists: Traefik calls auth-proxy's
-# /verify as a side call (a decision, not a proxy hop — see
-# infra/traefik/dynamic.yaml's require-auth middleware), then forwards the
-# request to bff, which is the one that calls core-ledger (see
-# services/bff/src/core-ledger/core-ledger.client.ts) — the frontend never
-# reaches core-ledger directly, and neither does Traefik anymore (local dev's
-# dynamic.yaml routes /api straight to bff). `app: bff` is real —
-# infra/k8s/bff isn't created yet (bff runs via local docker-compose/pnpm
-# today, no k8s Deployment), so this is forward-looking the same way
-# core-ledger's own Deployment was before this policy existed, but the label
-# itself matches what that future manifest's pod labels will be.
+# Traffic path, now that services/bff and services/identity exist: Traefik
+# calls auth-proxy's /verify as a side call (a decision, not a proxy hop —
+# see infra/traefik/dynamic.yaml's require-auth middleware), which itself
+# calls identity to resolve a party id (see
+# services/auth-proxy/internal/identityclient/resolver.go), then Traefik
+# forwards the original request to bff, which is the one that calls
+# core-ledger (see services/bff/src/core-ledger/core-ledger.client.ts) —
+# the frontend never reaches core-ledger directly, and neither does Traefik
+# anymore (local dev's dynamic.yaml routes /api straight to bff). identity
+# is the second legitimate caller: it calls POST /wallets once, the first
+# time a given party is provisioned (see
+# services/identity/src/core-ledger/core-ledger.client.ts). `app: bff` /
+# `app: identity` are real — infra/k8s/bff and infra/k8s/identity aren't
+# created yet (both run via local docker-compose/pnpm today, no k8s
+# Deployment), so this is forward-looking the same way core-ledger's own
+# Deployment was before this policy existed, but the labels themselves
+# match what those future manifests' pod labels will be.
 #
 # A NetworkPolicy's podSelector-based rules are additive only (there's no
 # explicit "deny" verb) — as soon as any NetworkPolicy selects a pod, that
@@ -39,6 +45,9 @@ spec:
         - podSelector:
             matchLabels:
               app: bff
+        - podSelector:
+            matchLabels:
+              app: identity
       ports:
         - protocol: TCP
           port: 8081
