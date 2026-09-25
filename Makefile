@@ -1,5 +1,5 @@
 .PHONY: help up down logs \
-	test test-unit test-integration test-eth test-sol \
+	test test-unit test-integration test-eth test-sol test-node \
 	build run \
 	lint fmt fmt-check \
 	authz-gen keycloak-realm \
@@ -55,8 +55,8 @@ logs:
 # A skipped integration test is treated as a failure: see test-integration.
 # ---------------------------------------------------------------------------
 
-## Run every test suite: Go (unit + integration), Foundry, Anchor/litesvm.
-test: test-unit test-integration test-eth test-sol
+## Run every test suite: Go (unit + integration), Foundry, Anchor/litesvm, Node.
+test: test-unit test-integration test-eth test-sol test-node
 
 ## Go unit tests only — no Postgres required.
 test-unit:
@@ -83,6 +83,14 @@ test-eth:
 # Plain `anchor build`/`anchor test` defaults to an SBF arch litesvm can't verify.
 test-sol:
 	cd chains/solana && anchor build --arch v1 --ignore-keys && cargo test -p usdx_bridge
+
+## Node workspace tests (shared/node/nest-platform, services/bff,
+## services/identity). identity's suite needs real Postgres (see
+## services/identity/test/fixtures/bootstrap.ts) — depends on `up` the same
+## way test-integration does. --if-present skips frontend, which has no
+## test script yet.
+test-node: up
+	pnpm -r --if-present run test
 
 # ---------------------------------------------------------------------------
 # Build / run
@@ -115,6 +123,7 @@ fmt-check:
 lint: fmt-check
 	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
 	cd chains/solana && cargo clippy -p usdx_bridge --tests -- -D warnings
+	pnpm -r --if-present run lint
 
 # ---------------------------------------------------------------------------
 # Authorization (RBAC)

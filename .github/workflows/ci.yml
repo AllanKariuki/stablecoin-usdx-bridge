@@ -68,6 +68,67 @@ jobs:
           }
 
   # ---------------------------------------------------------------------
+  # Node workspace (shared/node/nest-platform, services/bff,
+  # services/identity) — one pnpm workspace, one job. identity's e2e specs
+  # need a real Postgres (see services/identity/test/fixtures/bootstrap.ts,
+  # mirroring the Go job's own LEDGER_TEST_DATABASE_URL reasoning); bff and
+  # nest-platform's specs are self-contained (fakes / in-process fixtures)
+  # but running everything through one `pnpm -r` catches a workspace-wide
+  # break in any of the three, not just identity's.
+  # ---------------------------------------------------------------------
+  node:
+    name: Node workspace (pnpm)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bridge
+          POSTGRES_PASSWORD: bridge
+          POSTGRES_DB: bridge
+        ports:
+          - 55433:5432
+        options: >-
+          --health-cmd "pg_isready -U bridge"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'pnpm'
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Create identity's databases
+        # GitHub Actions service containers don't support mounting
+        # docker-entrypoint-initdb.d/ the way docker-compose.yaml does (see
+        # infra/postgres/init/01-identity-db.sql) — this is that same SQL,
+        # run by hand against the already-running service container.
+        run: |
+          PGPASSWORD=bridge psql -h localhost -p 55433 -U bridge -d bridge \
+            -c "CREATE ROLE identity WITH LOGIN PASSWORD 'identity';" \
+            -c "CREATE DATABASE identity OWNER identity;" \
+            -c "CREATE DATABASE identity_test OWNER identity;"
+
+      - name: pnpm -r test
+        run: pnpm -r --if-present run test
+
+      - name: pnpm -r lint
+        run: pnpm -r --if-present run lint
+
+      - name: pnpm -r typecheck
+        run: pnpm -r --if-present run typecheck
+
+  # ---------------------------------------------------------------------
   # Ethereum — Foundry. foundry.toml pins solc 0.8.35 / optimizer off to
   # match what's verifiably live on Sepolia (see foundry.toml's own
   # comment) — this job proves that pin still builds and passes.

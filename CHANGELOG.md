@@ -3,6 +3,63 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-09-25
+
+### Added
+- **`services/identity`** (NestJS) — the last unbuilt P1 service from
+  `docs/building-plan.md`. Owns parties, orgs and memberships in its own
+  Postgres database (`migrations/001_parties_orgs_memberships.sql`, applied
+  by a small hand-rolled migration runner — `pg` + a `schema_migrations`
+  table, not a new ORM/migration framework for one table set; see
+  `src/db/migration-runner.ts`'s doc comment for why this isn't goose).
+  - **Just-in-time provisioning**, not a separate signup endpoint: the
+    first time `services/auth-proxy`'s `IdentityHTTPResolver` resolves a
+    Keycloak subject it hasn't seen (`GET /internal/parties/by-subject/
+    :subject`), identity calls the Keycloak Admin API (as the
+    `identity-service` confidential client already provisioned in
+    `infra/keycloak/realms/damp-realm.json`) to look up the user, creates a
+    `PERSON` or (if the user carries an `org_id` attribute — a company
+    login acting as itself) `ORGANIZATION` party plus an org + membership,
+    and calls core-ledger's idempotent `POST /wallets` to ensure the
+    default fiat wallet. A concurrent first-login for the same subject
+    loses the race on `keycloak_subject`'s UNIQUE constraint and re-reads
+    the winner's row rather than erroring. This closes the
+    `SubjectPassthroughResolver` seam `services/auth-proxy` shipped with in
+    the previous session's `internal/identityclient` package.
+  - Party ids (`party_<uuid>`) are intentionally **not** the raw Keycloak
+    subject — core-ledger's `wallets.user_id` treats the party id as an
+    opaque key per the plan's "Identity is three layers" decision. One
+    practical consequence: any wallet created earlier under the passthrough
+    resolver (keyed by the raw subject) becomes unreachable once
+    `IDENTITY_SERVICE_URL` is set on auth-proxy — expected for a dev/demo
+    environment reseeded from `damp-realm.json` on every fresh Keycloak
+    start; reset the Postgres volume (`docker compose down -v`) for a clean
+    demo rather than trying to re-key old rows.
+  - Tested against real Postgres with a fake Keycloak + fake core-ledger
+    (real HTTP servers, same pattern as `services/bff`'s own
+    `FakeCoreLedger`) — 7 tests: PERSON/ORGANIZATION provisioning, the
+    default-wallet-ensure call, idempotent re-resolution, and the migration
+    runner's own apply-once behavior.
+- **`infra/postgres/init/01-identity-db.sql`** — creates identity's own
+  Postgres role + database (`identity`) and a separate test database
+  (`identity_test`), mounted into the postgres container via
+  `docker-entrypoint-initdb.d/` (only applied on a fresh volume — an
+  existing local `pgdata` needs `docker compose down -v && make up`).
+- **`infra/k8s/identity-{deployment,service,networkpolicy}.yaml`** —
+  mirrors `auth-proxy`'s manifests; the NetworkPolicy restricts ingress to
+  the `auth-proxy` pod only, identity's one real consumer today.
+  `core-ledger-networkpolicy.yaml` gains identity as a second allowed
+  caller (`POST /wallets`), alongside `bff`.
+- **CI: a `node` job** (`.github/workflows/ci.yml`) — `pnpm -r test/lint/
+  typecheck` across `shared/node/nest-platform`, `services/bff` and
+  `services/identity`, with a Postgres service container for identity's
+  specs. `nest-platform` and `bff` had zero CI coverage before this (their
+  own prior sessions never wired a Node job in); this closes that gap as a
+  side effect of adding identity's own.
+- **`make test-node`** (folded into `make test`) and `pnpm -r lint` folded
+  into `make lint` — the Node-workspace equivalents of `test-unit`/
+  `test-integration`.
+
 ## 2026-09-18
 
 ### Added
