@@ -10,10 +10,57 @@ services:
       POSTGRES_DB: bridge
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Only applied on a fresh (empty) pgdata volume — see
+      # infra/postgres/init/01-identity-db.sql's own comment.
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bridge}"]
       interval: 5s
       timeout: 3s
       retries: 20
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: usdx-keycloak
+    command: ["start-dev", "--import-realm", "--health-enabled=true"]
+    ports:
+      - "8080:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # dev-file storage (embedded, on the container's own volume) is
+      # intentional here — a dedicated Postgres for Keycloak is more
+      # infrastructure than local dev needs; --import-realm re-seeds it from
+      # infra/keycloak/realms/damp-realm.json on every fresh start anyway.
+    volumes:
+      - ./infra/keycloak/realms:/opt/keycloak/data/import:ro
+      - kcdata:/opt/keycloak/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: usdx-redis
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  traefik:
+    image: traefik:v3.1
+    container_name: usdx-traefik
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./infra/traefik/traefik.yaml:/etc/traefik/traefik.yaml:ro
+      - ./infra/traefik/dynamic.yaml:/etc/traefik/dynamic.yaml:ro
+    command: ["--configFile=/etc/traefik/traefik.yaml"]
+    extra_hosts:
+      # host.docker.internal is built into Docker Desktop on macOS/Windows;
+      # explicit on Linux, where it isn't automatic.
+      - "host.docker.internal:host-gateway"
+
 volumes:
   pgdata:
+  kcdata:

@@ -1,8 +1,8 @@
 import React, { useEffect } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import { useDispatch } from 'react-redux';
 import { useSessionMonitor } from '../../hooks/useSessionMonitor';
 import { authInitialized, restoreSession } from '../../redux/slices/oauth-web-sockets/authSlice';
-import type { AppDispatch, RootState } from '../../redux/store';
+import type { AppDispatch } from '../../redux/store';
 
 interface AppProviderProps {
     children: React.ReactNode;
@@ -10,34 +10,22 @@ interface AppProviderProps {
 
 const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     const dispatch = useDispatch<AppDispatch>();
-    const { isLoading } = useSelector((state: RootState) => state.auth);
-    
+
     // Global session monitoring
     useSessionMonitor();
 
-    // Add this logic to your AppProvider to check for existing tokens/sessions
+    // Restore an existing session (if any) once, on app boot. `state.auth.isLoading`
+    // is shared with every other auth thunk (loginWithPkceCode, refreshToken, …) —
+    // gating this component's own children on it used to unmount/remount the whole
+    // routed app every time ANY of those thunks toggled it, which is exactly what a
+    // route like Callback.tsx does on its own mount. That turned "app boot" loading
+    // into a permanent unmount-remount storm the moment a login round-trip landed
+    // back on a route that itself dispatches an auth thunk. Per-route loading UI
+    // (see ProtectedRoute) already covers the cases that actually need one.
     useEffect(() => {
-        const initializeAuth = async () => {
-            dispatch(authInitialized()); // or whatever action sets loading to false
-        };
-        
-        initializeAuth();
-    }, [dispatch]);
-
-
-    useEffect(() => {
-        // Try to restore session on app start
+        dispatch(authInitialized());
         dispatch(restoreSession());
     }, [dispatch]);
-
-    // Show loading spinner while checking authentication
-    if (isLoading) {
-        return (
-            <div className="flex items-center absolute inset-0 z-10 backdrop-blur justify-center min-h-screen">
-                <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-500"></div>
-            </div>
-        );
-    }
 
     return <>{children}</>;
 };

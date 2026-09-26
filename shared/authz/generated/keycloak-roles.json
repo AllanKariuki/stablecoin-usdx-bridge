@@ -1,0 +1,8 @@
+[
+  {"name": "admin", "description": "Platform/IT administrator. Deliberately excludes kyc:review, compliance:cases:manage, compliance:blacklist:manage, and ledger:admin — see the segregation-of-duties note above."},
+  {"name": "auditor", "description": "Independent read-only oversight."},
+  {"name": "company", "description": "An organization account acting on behalf of itself and its sub-accounts."},
+  {"name": "compliance", "description": "AML/KYC compliance officer."},
+  {"name": "customer", "description": "A retail individual acting on their own behalf."},
+  {"name": "treasury", "description": "Financial/ledger administration, reserves, and fee schedules."}
+]

@@ -1,0 +1,53 @@
+# Closes the gap the P1 DoD names explicitly (docs/building-plan.md):
+# "a forged X-User-Id against :8082 is rejected, and :8081 isn't
+# reachable." auth-proxy enforces the first half at the application layer;
+# this enforces the second half at the network layer — core-ledger accepts
+# traffic only from the pod that actually calls it directly, never from
+# outside the cluster and never from an arbitrary pod bypassing the
+# gateway.
+#
+# Traffic path, now that services/bff and services/identity exist: Traefik
+# calls auth-proxy's /verify as a side call (a decision, not a proxy hop —
+# see infra/traefik/dynamic.yaml's require-auth middleware), which itself
+# calls identity to resolve a party id (see
+# services/auth-proxy/internal/identityclient/resolver.go), then Traefik
+# forwards the original request to bff, which is the one that calls
+# core-ledger (see services/bff/src/core-ledger/core-ledger.client.ts) —
+# the frontend never reaches core-ledger directly, and neither does Traefik
+# anymore (local dev's dynamic.yaml routes /api straight to bff). identity
+# is the second legitimate caller: it calls POST /wallets once, the first
+# time a given party is provisioned (see
+# services/identity/src/core-ledger/core-ledger.client.ts). `app: bff` /
+# `app: identity` are real — infra/k8s/bff and infra/k8s/identity aren't
+# created yet (both run via local docker-compose/pnpm today, no k8s
+# Deployment), so this is forward-looking the same way core-ledger's own
+# Deployment was before this policy existed, but the labels themselves
+# match what those future manifests' pod labels will be.
+#
+# A NetworkPolicy's podSelector-based rules are additive only (there's no
+# explicit "deny" verb) — as soon as any NetworkPolicy selects a pod, that
+# pod's ingress becomes default-deny except for what's explicitly allowed
+# here. This assumes a CNI plugin that enforces NetworkPolicy (Calico,
+# Cilium, etc. — not the no-op default on managed clusters without one
+# enabled).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: core-ledger-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: core-ledger
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: bff
+        - podSelector:
+            matchLabels:
+              app: identity
+      ports:
+        - protocol: TCP
+          port: 8081

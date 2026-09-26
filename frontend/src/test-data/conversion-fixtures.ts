@@ -22,54 +22,63 @@ export const mockCurrencies: Currency[] = [
     name: 'US Dollar',
     symbol: '$',
     flagEmoji: '🇺🇸',
+    type: 'fiat',
   },
   {
     code: 'EUR',
     name: 'Euro',
     symbol: '€',
     flagEmoji: '🇪🇺',
+    type: 'fiat',
   },
   {
     code: 'GBP',
     name: 'British Pound',
     symbol: '£',
     flagEmoji: '🇬🇧',
+    type: 'fiat',
   },
   {
     code: 'JPY',
     name: 'Japanese Yen',
     symbol: '¥',
     flagEmoji: '🇯🇵',
+    type: 'fiat',
   },
   {
     code: 'AUD',
     name: 'Australian Dollar',
     symbol: 'A$',
     flagEmoji: '🇦🇺',
+    type: 'fiat',
   },
   {
     code: 'CAD',
     name: 'Canadian Dollar',
     symbol: 'C$',
     flagEmoji: '🇨🇦',
+    type: 'fiat',
   },
   {
     code: 'CHF',
     name: 'Swiss Franc',
     symbol: 'CHF',
     flagEmoji: '🇨🇭',
+    type: 'fiat',
   },
   {
     code: 'CNY',
     name: 'Chinese Yuan',
     symbol: '¥',
     flagEmoji: '🇨🇳',
+    type: 'fiat',
   },
   {
     code: 'INR',
     name: 'Indian Rupee',
     symbol: '₹',
     flagEmoji: '🇮🇳',
+    type: 'fiat',
   },
 ];
 
@@ -93,6 +102,7 @@ export const mockQuote: ConversionQuote = {
   netAmount: 902.5,
   expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
   createdAt: new Date().toISOString(),
+  conversionType: 'fiat_to_fiat',
 };
 
 /**
@@ -102,6 +112,7 @@ export const mockWallets: Wallet[] = [
   {
     id: 'wallet-usd-001',
     currency: 'USD',
+    type: 'fiat',
     balance: 5000,
     available: 4500,
     lastUpdated: new Date().toISOString(),
@@ -109,6 +120,7 @@ export const mockWallets: Wallet[] = [
   {
     id: 'wallet-eur-001',
     currency: 'EUR',
+    type: 'fiat',
     balance: 2000,
     available: 1800,
     lastUpdated: new Date().toISOString(),
@@ -116,6 +128,7 @@ export const mockWallets: Wallet[] = [
   {
     id: 'wallet-gbp-001',
     currency: 'GBP',
+    type: 'fiat',
     balance: 1500,
     available: 1400,
     lastUpdated: new Date().toISOString(),
@@ -194,6 +207,7 @@ export const mockTransactionHistory: TransactionHistory[] = [
     createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
     completedAt: new Date(Date.now() - 7 * 86400000 + 3600000).toISOString(),
     direction: 'sent',
+    conversionType: 'fiat_to_fiat',
   },
   {
     transactionId: 'TX-002',
@@ -205,6 +219,7 @@ export const mockTransactionHistory: TransactionHistory[] = [
     createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
     completedAt: new Date(Date.now() - 5 * 86400000 + 1800000).toISOString(),
     direction: 'sent',
+    conversionType: 'fiat_to_fiat',
   },
   {
     transactionId: 'TX-003',
@@ -216,6 +231,7 @@ export const mockTransactionHistory: TransactionHistory[] = [
     createdAt: new Date(Date.now() - 3 * 86400000).toISOString(),
     completedAt: new Date(Date.now() - 3 * 86400000 + 2400000).toISOString(),
     direction: 'received',
+    conversionType: 'fiat_to_fiat',
   },
   {
     transactionId: 'TX-004',
@@ -226,6 +242,7 @@ export const mockTransactionHistory: TransactionHistory[] = [
     status: 'processing',
     createdAt: new Date(Date.now() - 1 * 86400000).toISOString(),
     direction: 'sent',
+    conversionType: 'fiat_to_fiat',
   },
   {
     transactionId: 'TX-005',
@@ -236,6 +253,7 @@ export const mockTransactionHistory: TransactionHistory[] = [
     status: 'pending',
     createdAt: new Date(Date.now() - 12 * 3600000).toISOString(),
     direction: 'sent',
+    conversionType: 'fiat_to_fiat',
   },
   {
     transactionId: 'TX-006',
@@ -246,6 +264,7 @@ export const mockTransactionHistory: TransactionHistory[] = [
     status: 'failed',
     createdAt: new Date(Date.now() - 6 * 3600000).toISOString(),
     direction: 'sent',
+    conversionType: 'fiat_to_fiat',
   },
 ];
 
@@ -272,6 +291,13 @@ export const mockKYCData: KYCData = {
       uploadDate: new Date(Date.now() - 25 * 86400000).toISOString(),
     },
   ],
+  limits: {
+    dailyLimit: 10000,
+    monthlyLimit: 100000,
+    singleTransactionLimit: 5000,
+    remainingDaily: 8500,
+    remainingMonthly: 76000,
+  },
 };
 
 /**

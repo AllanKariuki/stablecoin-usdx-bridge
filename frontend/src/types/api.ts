@@ -13,7 +13,7 @@
 
 export type Currency = 'USD' | 'EUR' | 'KES' | 'BTC' | 'ETH' | 'USDC' | 'USDT';
 
-export type KYCStatus = 'NONE' | 'PENDING' | 'VERIFIED' | 'REJECTED';
+export type KYCStatusValue = 'NONE' | 'PENDING' | 'VERIFIED' | 'REJECTED';
 
 export type OrderSide = 'BUY' | 'SELL';
 
@@ -412,7 +412,7 @@ export interface KYCSubmission {
 }
 
 export interface KYCStatus {
-  status: KYCStatus;
+  status: KYCStatusValue;
   submittedAt?: string;
   verifiedAt?: string;
   rejectedAt?: string;

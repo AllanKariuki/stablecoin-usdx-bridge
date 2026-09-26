@@ -1,7 +1,8 @@
 .PHONY: help up down logs \
-	test test-unit test-integration test-eth test-sol \
+	test test-unit test-integration test-eth test-sol test-node \
 	build run \
 	lint fmt fmt-check \
+	authz-gen keycloak-realm \
 	hooks-install secrets-scan \
 	clean
 
@@ -54,13 +55,13 @@ logs:
 # A skipped integration test is treated as a failure: see test-integration.
 # ---------------------------------------------------------------------------
 
-## Run every test suite: Go (unit + integration), Foundry, Anchor/litesvm.
-test: test-unit test-integration test-eth test-sol
+## Run every test suite: Go (unit + integration), Foundry, Anchor/litesvm, Node.
+test: test-unit test-integration test-eth test-sol test-node
 
 ## Go unit tests only — no Postgres required.
 test-unit:
-	go vet ./core-ledger/...
-	go test ./core-ledger/... -count=1 -race
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
+	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... -count=1 -race
 
 ## Go integration tests against real Postgres — fails (not skips) if unreachable.
 # Also fails if a test that should run against Postgres got silently
@@ -83,13 +84,22 @@ test-eth:
 test-sol:
 	cd chains/solana && anchor build --arch v1 --ignore-keys && cargo test -p usdx_bridge
 
+## Node workspace tests (shared/node/nest-platform, services/bff,
+## services/identity). identity's suite needs real Postgres (see
+## services/identity/test/fixtures/bootstrap.ts) — depends on `up` the same
+## way test-integration does. --if-present skips frontend, which has no
+## test script yet.
+test-node: up
+	pnpm -r --if-present run test
+
 # ---------------------------------------------------------------------------
 # Build / run
 # ---------------------------------------------------------------------------
 
-## Build the core-ledger binary.
+## Build the core-ledger and auth-proxy binaries.
 build:
 	go build -o bin/core-ledger ./core-ledger/cmd/server
+	go build -o bin/auth-proxy ./services/auth-proxy/cmd/server
 
 ## Run core-ledger against local infra (needs core-ledger/.env — see .env.example).
 run: up
@@ -101,7 +111,7 @@ run: up
 
 ## Format everything in place.
 fmt:
-	go fmt ./core-ledger/...
+	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
 	cd chains/ethereum && forge fmt
 	cd chains/solana && cargo fmt -p usdx_bridge
 
@@ -111,8 +121,28 @@ fmt-check:
 	cd chains/solana && cargo fmt -p usdx_bridge -- --check
 
 lint: fmt-check
-	go vet ./core-ledger/...
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
 	cd chains/solana && cargo clippy -p usdx_bridge --tests -- -D warnings
+	pnpm -r --if-present run lint
+
+# ---------------------------------------------------------------------------
+# Authorization (RBAC)
+# ---------------------------------------------------------------------------
+
+## Regenerate the Go/TS/Keycloak authz artifacts from shared/authz/permissions.yaml.
+## Run this and commit the result whenever permissions.yaml changes.
+authz-gen:
+	go run ./shared/authz/gen
+
+## Compose the importable realm JSON from the template + the generated roles
+## fragment. Run after authz-gen (or `make authz-gen keycloak-realm` together)
+## whenever permissions.yaml or the template changes.
+keycloak-realm: authz-gen
+	@jq \
+		--slurpfile roles shared/authz/generated/keycloak-roles.json \
+		'(walk(if type == "object" then with_entries(select(.key | startswith("_comment") | not)) else . end)) | .roles.realm = $$roles[0]' \
+		infra/keycloak/templates/damp-realm.template.json > infra/keycloak/realms/damp-realm.json
+	@jq empty infra/keycloak/realms/damp-realm.json && echo "wrote infra/keycloak/realms/damp-realm.json"
 
 # ---------------------------------------------------------------------------
 # Secrets

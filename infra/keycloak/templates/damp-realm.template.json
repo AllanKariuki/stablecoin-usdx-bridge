@@ -1,0 +1,164 @@
+{
+  "realm": "damp",
+  "enabled": true,
+  "displayName": "DAMP",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+
+  "_comment_roles": "roles.realm is injected from shared/authz/generated/keycloak-roles.json by `make keycloak-realm` — see permissions.yaml, the single source for DAMP's RBAC model. Do not hand-edit a roles list here; it will be overwritten.",
+  "roles": {
+    "realm": []
+  },
+
+  "_comment_groups": "Orgs live under /orgs/<slug> as Groups, created at runtime by services/identity when an organization is onboarded (POST to the Keycloak Admin API) — not seeded here. The parent group exists so every org has a consistent path prefix and so the org_id attribute mapper below has somewhere to read from. damp-demo-co is one seed example so 'company@damp.local' below has an org_id to log in with.",
+  "groups": [
+    {
+      "name": "orgs",
+      "subGroups": [
+        {
+          "name": "damp-demo-co",
+          "attributes": {
+            "org_id": ["org_demo_co"]
+          }
+        }
+      ]
+    }
+  ],
+
+  "clients": [
+    {
+      "clientId": "damp-portal",
+      "name": "DAMP Portal (frontend)",
+      "description": "Public SPA client — matches frontend/public/runtime-config.js. PKCE pre-configured; directAccessGrantsEnabled stays on until authUtils.ts migrates off password grant (see docs/building-plan.md P1).",
+      "_comment_description": "Kept under Keycloak's 255-char DESCRIPTION column limit (a dev-mode H2 schema constraint that bit the first, longer draft of this string) — see docs/building-plan.md's P1 note on migrating grant_type:'password' to auth-code+PKCE for the full rationale.",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:5173/auth/callback",
+        "http://localhost:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-damp-portal",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "damp-portal",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "Mandatory — see docs/building-plan.md's P1 section. Without this, Keycloak issues aud: [\"account\"] for a public client and services/auth-proxy's JWT verification rejects every request. This is 'the single most likely day-one bug' per the plan."
+        },
+        {
+          "name": "org-id-group-attribute",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          },
+          "_comment": "org_id is set on the user (copied from their org Group's org_id attribute by services/identity at membership time), not read live from group membership on every token issuance — a user can belong to exactly one primary org for token purposes."
+        }
+      ]
+    },
+    {
+      "clientId": "identity-service",
+      "name": "services/identity (confidential)",
+      "description": "Service account with Keycloak Admin API access, scoped to exactly the realm-management roles services/identity needs (fullScopeAllowed off).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "__CHANGE_ME_IN_A_REAL_ENVIRONMENT__",
+      "_comment_secret": "Dev-only placeholder. A real environment injects this via a secrets manager, never commits it — see docs/building-plan.md's P6 key-custody phase for the pattern the rest of the platform's secrets follow."
+    }
+  ],
+
+  "_comment_clientScopeMappings": "identity-service's service account HAS these realm-management roles via users[].clientRoles below, but fullScopeAllowed:false on the client means having a role isn't enough for it to appear in that client's own tokens — it also needs an explicit scope mapping granting it permission to include them. Without this, KeycloakAdminClient.getUser()/getUserGroups() 403 and JIT provisioning (services/identity/src/provisioning) can never complete a first login.",
+  "clientScopeMappings": {
+    "realm-management": [
+      {
+        "client": "identity-service",
+        "roles": ["view-users", "query-users", "manage-realm", "manage-users"]
+      }
+    ]
+  },
+
+  "_comment_users": "Six seed users, one per DAMP role, for local dev/demo login (matches the P1 DoD in docs/building-plan.md: 'log in as customer@damp.local' / 'compliance@damp.local'), plus one synthetic service-account user granting identity-service's client its realm-management roles — that's how a client's service account gets roles in a realm import, there's no serviceAccountRoles field on ClientRepresentation itself. Password is the dev-only literal below for every human seed user — never used outside a local --import-realm bootstrap.",
+  "users": [
+    {
+      "username": "service-account-identity-service",
+      "enabled": true,
+      "serviceAccountClientId": "identity-service",
+      "clientRoles": {
+        "realm-management": ["manage-users", "view-users", "query-users", "manage-realm"]
+      }
+    },
+    {
+      "username": "customer@damp.local", "email": "customer@damp.local", "enabled": true, "emailVerified": true,
+      "firstName": "Cust", "lastName": "Omer",
+      "credentials": [{"type": "password", "value": "damp-dev-only", "temporary": false}],
+      "realmRoles": ["customer"]
+    },
+    {
+      "username": "company@damp.local", "email": "company@damp.local", "enabled": true, "emailVerified": true,
+      "firstName": "Damp", "lastName": "Demo Co",
+      "attributes": {"org_id": ["org_demo_co"]},
+      "groups": ["/orgs/damp-demo-co"],
+      "credentials": [{"type": "password", "value": "damp-dev-only", "temporary": false}],
+      "realmRoles": ["company"]
+    },
+    {
+      "username": "admin@damp.local", "email": "admin@damp.local", "enabled": true, "emailVerified": true,
+      "firstName": "Ad", "lastName": "Min",
+      "credentials": [{"type": "password", "value": "damp-dev-only", "temporary": false}],
+      "realmRoles": ["admin"]
+    },
+    {
+      "username": "compliance@damp.local", "email": "compliance@damp.local", "enabled": true, "emailVerified": true,
+      "firstName": "Compli", "lastName": "Ance",
+      "credentials": [{"type": "password", "value": "damp-dev-only", "temporary": false}],
+      "realmRoles": ["compliance"]
+    },
+    {
+      "username": "auditor@damp.local", "email": "auditor@damp.local", "enabled": true, "emailVerified": true,
+      "firstName": "Audit", "lastName": "Or",
+      "credentials": [{"type": "password", "value": "damp-dev-only", "temporary": false}],
+      "realmRoles": ["auditor"]
+    },
+    {
+      "username": "treasury@damp.local", "email": "treasury@damp.local", "enabled": true, "emailVerified": true,
+      "firstName": "Treas", "lastName": "Ury",
+      "credentials": [{"type": "password", "value": "damp-dev-only", "temporary": false}],
+      "realmRoles": ["treasury"]
+    }
+  ]
+}

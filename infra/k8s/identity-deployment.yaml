@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity
+  labels:
+    app: identity
+spec:
+  # Every replica reads/writes the same Postgres database — JIT
+  # provisioning's only concurrency guard is keycloak_subject's UNIQUE
+  # constraint (see ProvisioningService's doc comment), which is exactly
+  # what makes more than one replica safe.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: identity
+  template:
+    metadata:
+      labels:
+        app: identity
+    spec:
+      containers:
+        - name: identity
+          # TODO(P1): point at the real registry once CI publishes an
+          # image, e.g.
+          # ghcr.io/allankariuki/stablecoin-usdx-bridge/identity:<tag>
+          image: <Image>
+          ports:
+            - containerPort: 3001
+          envFrom:
+            - secretRef:
+                name: identity-secrets
+          env:
+            - name: PORT
+              value: "3001"
+            - name: DATABASE_URL
+              value: "postgres://identity:identity@postgres.default.svc.cluster.local:5432/identity?sslmode=disable"
+            - name: CORE_LEDGER_URL
+              value: "http://core-ledger.default.svc.cluster.local:8081"
+            - name: KEYCLOAK_BASE_URL
+              value: "http://keycloak.default.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "damp"
+            - name: KEYCLOAK_ADMIN_CLIENT_ID
+              value: "identity-service"
+            # KEYCLOAK_ADMIN_CLIENT_SECRET comes from identity-secrets —
+            # never hardcode the real value here (damp-realm.json's
+            # placeholder is dev-only).
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+      terminationGracePeriodSeconds: 30

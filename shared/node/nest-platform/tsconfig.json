@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    // TS 6 renamed the classic CJS resolution strategy "node" -> "node10"
+    // and marked it deprecated ahead of removal in TS 7 (the native/"tsgo"
+    // compiler line) in favor of "node16"/"nodenext"/"bundler". This package
+    // deliberately still targets plain CommonJS (see package.json's note on
+    // why: NestJS 12 went ESM-only and broke nestjs-pino, so this pins to
+    // the still-CommonJS @nestjs 11.x line instead) so it opts into the
+    // documented transitional flag rather than migrating resolution
+    // strategy — see https://aka.ms/ts6.
+    "ignoreDeprecations": "6.0",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "outDir": "./dist",
+    "rootDir": ".",
+    "incremental": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "strictNullChecks": true,
+    "noImplicitAny": true,
+    "strictBindCallApply": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "resolveJsonModule": true,
+    "sourceMap": true,
+    "types": ["node", "jest"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

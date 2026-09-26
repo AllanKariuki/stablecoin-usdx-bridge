@@ -1,0 +1,59 @@
+# Traefik dynamic configuration: the gateway at :8082 the frontend's
+# runtime-config.js points VITE_API_BASE_URL at (http://localhost:8082/api).
+#
+# Local dev topology: Traefik runs in Docker, but core-ledger, auth-proxy,
+# and bff still run on the host (`make run`, `cd services/auth-proxy && go
+# run ./cmd/server`, `cd services/bff && pnpm start`) rather than in
+# containers — host.docker.internal is Docker Desktop's bridge back to the
+# host. The frontend never calls core-ledger directly — bff is the /api
+# upstream, translating camelCase + Money and aggregating (see
+# docs/building-plan.md's P1 "Build the BFF" decision).
+http:
+  routers:
+    api:
+      rule: "PathPrefix(`/api`)"
+      entryPoints: ["web"]
+      middlewares: ["cors", "strip-api-prefix", "require-auth"]
+      service: bff
+
+  services:
+    bff:
+      loadBalancer:
+        servers:
+          - url: "http://host.docker.internal:3002"
+
+  middlewares:
+    # Order matters: cors first so an OPTIONS preflight is answered here and
+    # never reaches auth-forward (Traefik's headers middleware short-circuits
+    # a CORS preflight on its own); strip-api-prefix next so auth-forward
+    # (and the backend) see paths matching core-ledger's own route shapes
+    # (/wallets/:id, not /api/wallets/:id) — see
+    # services/auth-proxy/internal/authztable, whose rules are written
+    # against the stripped shape; require-auth last since it's the most
+    # expensive check (a JWT verify + a permission-table lookup) and
+    # shouldn't run for a request CORS or the path strip would reject anyway.
+    cors:
+      headers:
+        accessControlAllowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+        accessControlAllowOriginList: ["http://localhost:5173"]
+        # Idempotency-Key is required here or all 7 money-moving writes fail
+        # preflight — see docs/building-plan.md's P1 note calling this out
+        # as "the single most likely day-one bug".
+        accessControlAllowHeaders: ["Authorization", "Content-Type", "Idempotency-Key"]
+        accessControlAllowCredentials: true
+        accessControlMaxAge: 600
+
+    strip-api-prefix:
+      stripPrefix:
+        prefixes: ["/api"]
+
+    require-auth:
+      forwardAuth:
+        address: "http://host.docker.internal:8090/verify"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - "X-User-Id"
+          - "X-Org-Id"
+          - "X-Roles"
+          - "X-Permissions"
+          - "X-Request-Id"

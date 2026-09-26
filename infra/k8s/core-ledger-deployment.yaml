@@ -42,6 +42,28 @@ spec:
             limits:
               memory: "128Mi"
               cpu: "500m"
-          # TODO(P0 middleware): add livenessProbe (/healthz) and
-          # readinessProbe (/readyz) once those endpoints exist — see the
-          # boot rewrite tracked alongside this fix.
+          # Liveness never touches a dependency (shared/go/platform's
+          # /healthz is a static 200) — a slow Postgres should take this
+          # pod out of rotation via readiness, not trigger a kubelet
+          # restart. Readiness (/readyz) does check the DB and degrades to
+          # 503 while it's unreachable — see shared/go/platform/health.go.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Give graceful shutdown's 5s drain + up to 15s bounded
+          # ShutdownWithContext room to finish before SIGKILL — see
+          # shared/go/platform/shutdown.go's defaults.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+      terminationGracePeriodSeconds: 30

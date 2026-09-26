@@ -4,6 +4,7 @@ import { type MenuItem } from "../types/navigation/sidebar";
 export const specialRoutes = {
     '/': { layout: 'none' as const, protected: false, component: 'LandingPage' },
     '/login': { layout: 'none' as const, protected: false, component: 'Login'},
+    '/auth/callback': { layout: 'none' as const, protected: false, component: 'Callback'},
     '/404': {layout: 'none' as const, protected: false, component: 'NotFound'},
     '/profile': { layout: 'main' as const, protected: true, component: 'Profile'},
 } as const;
