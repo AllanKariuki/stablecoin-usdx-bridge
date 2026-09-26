@@ -119,6 +119,19 @@
       "secret": "__CHANGE_ME_IN_A_REAL_ENVIRONMENT__"
     }
   ],
+  "clientScopeMappings": {
+    "realm-management": [
+      {
+        "client": "identity-service",
+        "roles": [
+          "view-users",
+          "query-users",
+          "manage-realm",
+          "manage-users"
+        ]
+      }
+    ]
+  },
   "users": [
     {
       "username": "service-account-identity-service",

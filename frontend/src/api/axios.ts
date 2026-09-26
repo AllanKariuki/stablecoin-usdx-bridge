@@ -38,5 +38,11 @@ const setUpInterceptors = () => {
     });
 };
 
+// Nothing else ever called this — every request/response went through
+// axiosInstance with no Authorization header attached at all (the backend's
+// own error, not a client no-op) until this session's live end-to-end
+// verification caught it via bff's "missing bearer token" response.
+setUpInterceptors();
+
 export default axiosInstance;
 export { setUpInterceptors };

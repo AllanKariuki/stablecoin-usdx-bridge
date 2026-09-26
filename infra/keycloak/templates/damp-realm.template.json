@@ -102,6 +102,16 @@
     }
   ],
 
+  "_comment_clientScopeMappings": "identity-service's service account HAS these realm-management roles via users[].clientRoles below, but fullScopeAllowed:false on the client means having a role isn't enough for it to appear in that client's own tokens — it also needs an explicit scope mapping granting it permission to include them. Without this, KeycloakAdminClient.getUser()/getUserGroups() 403 and JIT provisioning (services/identity/src/provisioning) can never complete a first login.",
+  "clientScopeMappings": {
+    "realm-management": [
+      {
+        "client": "identity-service",
+        "roles": ["view-users", "query-users", "manage-realm", "manage-users"]
+      }
+    ]
+  },
+
   "_comment_users": "Six seed users, one per DAMP role, for local dev/demo login (matches the P1 DoD in docs/building-plan.md: 'log in as customer@damp.local' / 'compliance@damp.local'), plus one synthetic service-account user granting identity-service's client its realm-management roles — that's how a client's service account gets roles in a realm import, there's no serviceAccountRoles field on ClientRepresentation itself. Password is the dev-only literal below for every human seed user — never used outside a local --import-realm bootstrap.",
   "users": [
     {
