@@ -94,7 +94,7 @@ func main() {
 
 	health.Register(app)
 	app.Get("/metrics", metrics.Handler())
-	api.NewHandlers(repo, ledgerSvc, logger).Register(app)
+	api.NewHandlers(repo, ledgerSvc, logger, clients).Register(app)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	if err := platform.Run(app, addr, health, logger, platform.ShutdownConfig{}); err != nil {

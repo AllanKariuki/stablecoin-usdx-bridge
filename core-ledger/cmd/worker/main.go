@@ -63,6 +63,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Solana USD-X is platform-custodied (docs/building-plan.md, Open decision
+	// 1): the platform owns the token account and delegates burn authority
+	// over it to the mint-authority PDA. Without that delegation, every
+	// SOL->ETH bridge and every Solana redemption fails the program's
+	// NoDelegateApproval constraint — which is precisely the asymmetry that
+	// made SOL->ETH impossible before P2.
+	//
+	// Both instructions are idempotent, so this runs at boot rather than as a
+	// migration someone has to remember; re-running also refreshes the
+	// allowance. A failure here is logged rather than fatal: the Ethereum side
+	// of the queue is unaffected, and a Solana burn that fails for want of the
+	// delegation dead-letters visibly instead of disappearing.
+	if sig, err := clients.Solana.EnsureCustody(context.Background()); err != nil {
+		logger.Warn("could not establish Solana custody delegation; Solana burns will fail until this succeeds",
+			slog.Any("error", err))
+	} else {
+		logger.Info("Solana custody delegation granted",
+			slog.String("custody_address", clients.Solana.CustodyAddress()),
+			slog.String("signature", sig))
+	}
+
 	ledgerSvc := ledger.NewService(repo, cfg.Fees())
 	saga := bridge.NewSaga(repo, ledgerSvc, clients.Router, logger)
 	saga.Finality = cfg.ChainFinality

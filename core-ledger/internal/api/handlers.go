@@ -15,18 +15,27 @@ import (
 	"gorm.io/gorm"
 )
 
+// CustodyResolver reports the platform's own on-chain address for a chain
+// whose balances the platform custodies, so wallet creation can stamp an
+// address the bridge is actually able to burn from. Nil is valid: a deployment
+// with no custodied chain just takes whatever address the caller supplies.
+type CustodyResolver interface {
+	CustodyAddress(chain string) (string, bool)
+}
+
 type Handlers struct {
-	repo   *ledger.Repository
-	ledger *ledger.Service
-	logger *slog.Logger
+	repo    *ledger.Repository
+	ledger  *ledger.Service
+	logger  *slog.Logger
+	custody CustodyResolver
 }
 
 // NewHandlers no longer takes a saga. The API's job on a money-moving write
 // ends at persisting the intent: cmd/worker claims it from the queue and runs
 // it. That split is what makes the saga survive a restart of the process that
 // accepted the request.
-func NewHandlers(repo *ledger.Repository, svc *ledger.Service, logger *slog.Logger) *Handlers {
-	return &Handlers{repo: repo, ledger: svc, logger: logger}
+func NewHandlers(repo *ledger.Repository, svc *ledger.Service, logger *slog.Logger, custody CustodyResolver) *Handlers {
+	return &Handlers{repo: repo, ledger: svc, logger: logger, custody: custody}
 }
 
 func (h *Handlers) Register(app *fiber.App) {
@@ -88,11 +97,36 @@ func (h *Handlers) createWallet(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return badRequest(c, "invalid request body")
 	}
-	w, err := h.repo.EnsureWallet(c.Context(), req.UserID, req.Currency, req.Chain, req.Address, req.Label)
+	w, err := h.repo.EnsureWallet(c.Context(), req.UserID, req.Currency, req.Chain, h.addressFor(req.Chain, req.Address), req.Label)
 	if err != nil {
 		return fail(c, err)
 	}
 	return c.Status(fiber.StatusCreated).JSON(h.renderWallet(c, w))
+}
+
+// addressFor overrides a caller-supplied address on a chain the platform
+// custodies.
+//
+// It is an override rather than a validation because the caller cannot know
+// the right answer: the custody account is derived from the relayer key this
+// process holds. A wallet stamped with a user's own Solana address would be
+// one the bridge can never burn from — SPL burns need a delegation only that
+// address's owner could grant — so accepting it would create a wallet that
+// looks fine until the first redemption fails.
+func (h *Handlers) addressFor(chain, requested string) string {
+	if h.custody == nil {
+		return requested
+	}
+	if custody, ok := h.custody.CustodyAddress(chain); ok {
+		if requested != "" && requested != custody {
+			h.logger.Info("ignoring the requested address on a platform-custodied chain",
+				slog.String("chain", chain),
+				slog.String("requested", requested),
+				slog.String("custody", custody))
+		}
+		return custody
+	}
+	return requested
 }
 
 func (h *Handlers) listWallets(c *fiber.Ctx) error {

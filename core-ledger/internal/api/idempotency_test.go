@@ -69,7 +69,7 @@ func newHarness(t *testing.T) *harness {
 	svc := ledger.NewService(apiRepo, ledger.FeeSchedule{})
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true, ErrorHandler: platform.ErrorHandler})
-	NewHandlers(apiRepo, svc, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(app)
+	NewHandlers(apiRepo, svc, slog.New(slog.NewTextHandler(io.Discard, nil)), nil).Register(app)
 
 	h := &harness{app: app, repo: apiRepo, svc: svc, ctx: ctx,
 		user: "api-" + t.Name() + "-" + time.Now().UTC().Format("20060102150405.000000000")}

@@ -135,6 +135,10 @@ func (c *Client) sendInstructions(ctx context.Context, instructions ...solanago.
 func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (string, error) {
 	ctx := context.Background()
 
+	if err := c.requireCustodyAddress("mint destination", to); err != nil {
+		return "", err
+	}
+
 	destWallet, err := solanago.PublicKeyFromBase58(to)
 	if err != nil {
 		return "", fmt.Errorf("parsing destination address: %w", err)
@@ -176,8 +180,16 @@ func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (s
 // mint-authority PDA as SPL delegate — the owner must have already called
 // approve_bridge_delegate (see chains/solana .../instructions/approve_bridge_delegate.rs)
 // granting that delegation, since the relayer never holds the owner's key.
+//
+// That delegation is what made SOL->ETH bridging impossible before P2: nothing
+// drove the call, and no user could be asked to. It is now the platform's own
+// account being delegated at boot — see custody.go.
 func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) (string, error) {
 	ctx := context.Background()
+
+	if err := c.requireCustodyAddress("burn source", from); err != nil {
+		return "", err
+	}
 
 	ownerWallet, err := solanago.PublicKeyFromBase58(from)
 	if err != nil {

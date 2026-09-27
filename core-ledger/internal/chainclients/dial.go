@@ -56,6 +56,20 @@ func Dial(logger *slog.Logger, p Params) (*Clients, error) {
 	return &Clients{Ethereum: eth, Solana: sol, Router: bridge.NewRouter(eth, sol)}, nil
 }
 
+// CustodyAddress reports the platform's own on-chain address for a chain it
+// custodies balances on, so a wallet created for that chain is stamped with an
+// address the bridge can actually burn from.
+//
+// Only Solana answers. Ethereum's bridgeBurn works against any holder under
+// BRIDGE_ROLE, so an Ethereum USD-X wallet keeps the user's own address —
+// self-custody there costs nothing and is already possible.
+func (c *Clients) CustodyAddress(chain string) (string, bool) {
+	if chain == "SOLANA" {
+		return c.Solana.CustodyAddress(), true
+	}
+	return "", false
+}
+
 // retryDial bounds how long boot waits on a flaky chain RPC endpoint before
 // giving up, so a single transient blip doesn't turn an equally transient
 // outage into a hard boot failure.

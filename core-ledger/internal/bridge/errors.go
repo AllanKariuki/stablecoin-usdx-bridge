@@ -71,6 +71,9 @@ func Classify(err error) Class {
 		"no delegate approval", // ErrorCode::NoDelegateApproval
 		"delegated amount",     // ErrorCode::InsufficientDelegatedAmount
 		"only the configured relayer",
+		// A wallet stamped with an address this platform does not custody.
+		// Retrying cannot change which address the wallet names.
+		"platform-custodied",
 	} {
 		if strings.Contains(msg, s) {
 			return ClassTerminal
