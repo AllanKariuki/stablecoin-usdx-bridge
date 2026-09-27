@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -88,7 +89,8 @@ func (r *Repository) ClaimTransfer(ctx context.Context, owner string, lease time
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1`).Row()
 		if err := row.Scan(&correlationID); err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) || err.Error() == "sql: no rows in result set" {
+			// An empty queue is the common case, not an error.
+			if errors.Is(err, sql.ErrNoRows) || errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil
 			}
 			return err

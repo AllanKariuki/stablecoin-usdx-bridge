@@ -128,8 +128,10 @@ func (s *Saga) run(ctx context.Context, correlationID string) Result {
 	default:
 		// Unreachable through the API — the CHECK constraint and
 		// UpsertTransfer both reject it — but a hand-edited row shouldn't
-		// silently do nothing.
-		return settled(StageRoute, fmt.Errorf("saga %s has unknown kind %q", correlationID, t.Kind))
+		// silently do nothing, and must not be re-claimed forever either.
+		err := fmt.Errorf("saga %s has unknown kind %q", correlationID, t.Kind)
+		s.settleFailed(ctx, t, StageRoute, err)
+		return settled(StageRoute, err)
 	}
 }
 
