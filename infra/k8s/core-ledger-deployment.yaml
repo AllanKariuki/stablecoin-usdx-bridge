@@ -5,9 +5,15 @@ metadata:
   labels:
     app: core-ledger
 spec:
-  # Keep at 1 until the saga has a distributed lock (a Postgres advisory
-  # lock, planned for P2) — two replicas racing the same correlation_id can
-  # both attempt a mint before either commits status.
+  # The saga reason for this cap is gone as of P2: this process no longer
+  # runs sagas at all, it enqueues them, and core-ledger-worker claims them
+  # under a lease plus a pg_try_advisory_lock on the correlation id.
+  #
+  # Still 1, for a different reason: cmd/server/main.go's reconciliation
+  # ticker runs once per replica, so a second one doubles every comparison and
+  # every alert. P3 extracts it into a leader-elected CronJob, and this can go
+  # up then. See infra/k8s/core-ledger-worker-deployment.yaml, which is
+  # already at 2.
   replicas: 1
   selector:
     matchLabels:

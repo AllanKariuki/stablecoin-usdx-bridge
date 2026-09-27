@@ -31,7 +31,7 @@ type Client struct {
 	rpc       *rpc.Client
 	programID solanago.PublicKey
 	mint      solanago.PublicKey
-	relayer   solanago.PrivateKey
+	signer    Signer
 }
 
 // NewClient dials rpcURL and prepares to call usdx_bridge at programID
@@ -40,6 +40,16 @@ type Client struct {
 // RELAYER_PUBKEY in constants.rs — the only signer bridge_mint/bridge_burn
 // accept.
 func NewClient(rpcURL, programID, mintAddress, relayerKeypairPath string) (*Client, error) {
+	signer, err := NewLocalSigner(relayerKeypairPath)
+	if err != nil {
+		return nil, err
+	}
+	return NewClientWithSigner(rpcURL, programID, mintAddress, signer)
+}
+
+// NewClientWithSigner is the constructor P6 will call, handing in a signer
+// backed by the signer service instead of a keypair file on disk.
+func NewClientWithSigner(rpcURL, programID, mintAddress string, signer Signer) (*Client, error) {
 	programPk, err := solanago.PublicKeyFromBase58(programID)
 	if err != nil {
 		return nil, fmt.Errorf("parsing program id: %w", err)
@@ -48,16 +58,12 @@ func NewClient(rpcURL, programID, mintAddress, relayerKeypairPath string) (*Clie
 	if err != nil {
 		return nil, fmt.Errorf("parsing mint address: %w", err)
 	}
-	relayer, err := solanago.PrivateKeyFromSolanaKeygenFile(relayerKeypairPath)
-	if err != nil {
-		return nil, fmt.Errorf("loading relayer keypair: %w", err)
-	}
 
 	return &Client{
 		rpc:       rpc.New(rpcURL),
 		programID: programPk,
 		mint:      mintPk,
-		relayer:   relayer,
+		signer:    signer,
 	}, nil
 }
 
@@ -99,24 +105,21 @@ func encodeBridgeArgs(discriminator []byte, amount *big.Int, correlationID strin
 	return data
 }
 
-func (c *Client) sendInstructions(ctx context.Context, feePayer solanago.PrivateKey, instructions ...solanago.Instruction) (string, error) {
+func (c *Client) sendInstructions(ctx context.Context, instructions ...solanago.Instruction) (string, error) {
 	latest, err := c.rpc.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil {
 		return "", fmt.Errorf("fetching latest blockhash: %w", err)
 	}
 
-	tx, err := solanago.NewTransaction(instructions, latest.Value.Blockhash, solanago.TransactionPayer(feePayer.PublicKey()))
+	tx, err := solanago.NewTransaction(instructions, latest.Value.Blockhash, solanago.TransactionPayer(c.signer.PublicKey()))
 	if err != nil {
 		return "", fmt.Errorf("building transaction: %w", err)
 	}
 
-	if _, err := tx.Sign(func(key solanago.PublicKey) *solanago.PrivateKey {
-		if key.Equals(feePayer.PublicKey()) {
-			return &feePayer
-		}
-		return nil
-	}); err != nil {
-		return "", fmt.Errorf("signing transaction: %w", err)
+	// Not tx.Sign: its callback must hand back the private key by value,
+	// which a signer that does not hold one cannot do. See signer.go.
+	if err := signTransaction(tx, c.signer); err != nil {
+		return "", err
 	}
 
 	sig, err := c.rpc.SendTransactionWithOpts(ctx, tx, rpc.TransactionOpts{PreflightCommitment: rpc.CommitmentConfirmed})
@@ -149,14 +152,14 @@ func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (s
 		return "", fmt.Errorf("deriving destination ATA: %w", err)
 	}
 
-	createATA := ata.NewCreateIdempotentInstruction(c.relayer.PublicKey(), destWallet, c.mint)
+	createATA := ata.NewCreateIdempotentInstruction(c.signer.PublicKey(), destWallet, c.mint)
 
 	accounts := solanago.AccountMetaSlice{
 		solanago.Meta(c.mint).WRITE(),
 		solanago.Meta(mintAuthority),
 		solanago.Meta(destATA).WRITE(),
 		solanago.Meta(processedMarker).WRITE(),
-		solanago.Meta(c.relayer.PublicKey()).WRITE().SIGNER(),
+		solanago.Meta(c.signer.PublicKey()).WRITE().SIGNER(),
 		solanago.Meta(solanago.TokenProgramID),
 		solanago.Meta(solanago.SystemProgramID),
 	}
@@ -166,7 +169,7 @@ func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (s
 		encodeBridgeArgs(anchorDiscriminator("bridge_mint"), amount, correlationID),
 	)
 
-	return c.sendInstructions(ctx, c.relayer, createATA.Build(), bridgeMint)
+	return c.sendInstructions(ctx, createATA.Build(), bridgeMint)
 }
 
 // BridgeBurn burns from `from`'s associated token account, using the
@@ -198,7 +201,7 @@ func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) 
 		solanago.Meta(mintAuthority),
 		solanago.Meta(sourceATA).WRITE(),
 		solanago.Meta(processedMarker).WRITE(),
-		solanago.Meta(c.relayer.PublicKey()).WRITE().SIGNER(),
+		solanago.Meta(c.signer.PublicKey()).WRITE().SIGNER(),
 		solanago.Meta(solanago.TokenProgramID),
 		solanago.Meta(solanago.SystemProgramID),
 	}
@@ -208,7 +211,7 @@ func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) 
 		encodeBridgeArgs(anchorDiscriminator("bridge_burn"), amount, correlationID),
 	)
 
-	return c.sendInstructions(ctx, c.relayer, bridgeBurn)
+	return c.sendInstructions(ctx, bridgeBurn)
 }
 
 // WaitForFinality matches bridge.ChainClient's signature (the same string
