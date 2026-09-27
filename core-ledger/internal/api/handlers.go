@@ -2,10 +2,11 @@ package api
 
 import (
 	"errors"
+	"fmt"
+	"log/slog"
 	"math/big"
 	"time"
 
-	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
 
@@ -17,11 +18,15 @@ import (
 type Handlers struct {
 	repo   *ledger.Repository
 	ledger *ledger.Service
-	saga   *bridge.Saga
+	logger *slog.Logger
 }
 
-func NewHandlers(repo *ledger.Repository, svc *ledger.Service, saga *bridge.Saga) *Handlers {
-	return &Handlers{repo: repo, ledger: svc, saga: saga}
+// NewHandlers no longer takes a saga. The API's job on a money-moving write
+// ends at persisting the intent: cmd/worker claims it from the queue and runs
+// it. That split is what makes the saga survive a restart of the process that
+// accepted the request.
+func NewHandlers(repo *ledger.Repository, svc *ledger.Service, logger *slog.Logger) *Handlers {
+	return &Handlers{repo: repo, ledger: svc, logger: logger}
 }
 
 func (h *Handlers) Register(app *fiber.App) {
@@ -32,16 +37,17 @@ func (h *Handlers) Register(app *fiber.App) {
 	app.Get("/wallets/:walletId/statement", h.getStatement)
 	app.Post("/wallets/:walletId/status", h.setWalletStatus)
 
-	// Money movement
-	app.Post("/deposits", h.deposit)
-	app.Post("/withdrawals", h.withdraw)
-	app.Post("/transfers", h.transfer)
+	// Money movement. Every one of these goes through h.idempotent, so a
+	// retry replays the first call's bytes instead of re-running the handler.
+	app.Post("/deposits", h.idempotent, h.deposit)
+	app.Post("/withdrawals", h.idempotent, h.withdraw)
+	app.Post("/transfers", h.idempotent, h.transfer)
 	app.Post("/fx/quotes", h.createQuote)
-	app.Post("/fx/conversions", h.convert)
-	app.Post("/issuances", h.issue)
-	app.Post("/redemptions", h.redeem)
-	app.Post("/redemptions/:transactionId/confirm", h.confirmRedemption)
-	app.Post("/bridges", h.bridgeTransfer)
+	app.Post("/fx/conversions", h.idempotent, h.convert)
+	app.Post("/issuances", h.idempotent, h.issue)
+	app.Post("/redemptions", h.idempotent, h.redeem)
+	app.Post("/redemptions/:transactionId/confirm", h.idempotent, h.confirmRedemption)
+	app.Post("/bridges", h.idempotent, h.bridgeTransfer)
 
 	// Journal
 	app.Get("/transactions", h.listTransactions)
@@ -53,8 +59,16 @@ func (h *Handlers) Register(app *fiber.App) {
 	app.Get("/ledger/integrity", h.integrity)
 	app.Post("/ledger/closures", h.closePeriod)
 
-	// Bridge saga state (pre-existing)
+	// Operator surface. TxFee and TxManualJournal have been declared and
+	// validated by the engine since it was written and unreachable the whole
+	// time; treasury needs both in P3.
+	app.Post("/ledger/fees", h.idempotent, h.chargeFee)
+	app.Post("/ledger/journals", h.idempotent, h.manualJournal)
+
+	// Bridge saga state
 	app.Get("/transfers/:correlationId", h.getTransfer)
+	app.Get("/sagas/dead-letters", h.listDeadLetters)
+	app.Post("/sagas/dead-letters/:correlationId/resolve", h.resolveDeadLetter)
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +178,11 @@ type walletAmountRequest struct {
 	WalletID string               `json:"wallet_id"`
 	Amount   ledger.DecimalAmount `json:"amount"`
 	Ref      string               `json:"reference"`
+
+	// entityRef lets the caller say what this movement settles. See
+	// ledger.ValidateCallerEntity for why it is an allow-list.
+	EntityType ledger.EntityType `json:"entity_type"`
+	EntityID   string            `json:"entity_id"`
 }
 
 func (h *Handlers) deposit(c *fiber.Ctx) error {
@@ -213,6 +232,8 @@ func (h *Handlers) withdraw(c *fiber.Ctx) error {
 		IdempotencyKey: key,
 		BankRef:        req.Ref,
 		InitiatedBy:    actor(c),
+		EntityType:     req.EntityType,
+		EntityID:       req.EntityID,
 	})
 	if err != nil {
 		return fail(c, err)
@@ -226,6 +247,8 @@ func (h *Handlers) transfer(c *fiber.Ctx) error {
 		ToWalletID   string               `json:"to_wallet_id"`
 		Amount       ledger.DecimalAmount `json:"amount"`
 		Reference    string               `json:"reference"`
+		EntityType   ledger.EntityType    `json:"entity_type"`
+		EntityID     string               `json:"entity_id"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return badRequest(c, "invalid request body")
@@ -246,6 +269,8 @@ func (h *Handlers) transfer(c *fiber.Ctx) error {
 		IdempotencyKey: key,
 		Reference:      req.Reference,
 		InitiatedBy:    actor(c),
+		EntityType:     req.EntityType,
+		EntityID:       req.EntityID,
 	})
 	if err != nil {
 		return fail(c, err)
@@ -313,6 +338,8 @@ func (h *Handlers) convert(c *fiber.Ctx) error {
 		ToWalletID   string               `json:"to_wallet_id"`
 		Amount       ledger.DecimalAmount `json:"amount"`
 		QuoteID      string               `json:"quote_id"`
+		EntityType   ledger.EntityType    `json:"entity_type"`
+		EntityID     string               `json:"entity_id"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return badRequest(c, "invalid request body")
@@ -333,6 +360,8 @@ func (h *Handlers) convert(c *fiber.Ctx) error {
 		QuoteID:        req.QuoteID,
 		IdempotencyKey: key,
 		InitiatedBy:    actor(c),
+		EntityType:     req.EntityType,
+		EntityID:       req.EntityID,
 	})
 	if err != nil {
 		return fail(c, err)
@@ -386,8 +415,13 @@ func (h *Handlers) issue(c *fiber.Ctx) error {
 		return fail(c, errors.New("issuance transaction is missing its USD-X amount"))
 	}
 
-	transfer := &ledger.BridgeTransfer{
+	// Enqueue, don't execute. The old `go h.saga.Execute(...)` put the whole
+	// mint inside a goroutine belonging to this request's process, so a deploy
+	// or a crash between here and the on-chain confirmation stranded the USD-X
+	// in suspense with nothing in the system that would ever look for it.
+	transfer, err := h.repo.UpsertTransfer(c.Context(), &ledger.BridgeTransfer{
 		CorrelationID:  correlationID,
+		Kind:           ledger.SagaMint,
 		UserAddress:    usdxWallet.Address,
 		Amount:         usdxAmount,
 		SourceChain:    "", // fresh mint: nothing is burned
@@ -395,17 +429,27 @@ func (h *Handlers) issue(c *fiber.Ctx) error {
 		Status:         ledger.StatusPending,
 		UserID:         usdxWallet.UserID,
 		TargetWalletID: usdxWallet.ID,
-	}
-	if err := h.repo.Insert(transfer); err != nil {
+		LedgerTxID:     tx.ID,
+	})
+	if err != nil {
 		return fail(c, err)
 	}
-	go h.saga.Execute(correlationID)
 
 	out := h.renderTransaction(c, tx)
-	out["correlation_id"] = correlationID
+	out["correlation_id"] = transfer.CorrelationID
+	out["saga_status"] = transfer.Status
 	return c.Status(fiber.StatusAccepted).JSON(out)
 }
 
+// redeem takes the user's USD-X out of their wallet into the in-transit
+// account and enqueues the burn saga that destroys it on chain and releases
+// their fiat.
+//
+// The saga is the part that did not exist. Until now this endpoint posted the
+// journal, returned 202 and stopped: no burn was ever submitted, and
+// /redemptions/:id/confirm waited for a chain_tx_hash that nothing in the
+// repository produced. USD-X entered the suspense account and never left, so
+// the peg was one-way — and a stablecoin you cannot exit is not one.
 func (h *Handlers) redeem(c *fiber.Ctx) error {
 	var req struct {
 		USDXWalletID string               `json:"usdx_wallet_id"`
@@ -423,34 +467,100 @@ func (h *Handlers) redeem(c *fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err)
 	}
+	usdxWallet, err := h.repo.Wallet(c.Context(), req.USDXWalletID)
+	if err != nil {
+		return fail(c, err)
+	}
+	if usdxWallet.Chain == "" {
+		return badRequest(c, "a redemption burns USD-X on a chain; this wallet names none")
+	}
+
+	correlationID := deriveCorrelationID(key)
 
 	tx, err := h.ledger.Redeem(c.Context(), ledger.RedeemRequest{
 		USDXWalletID:   req.USDXWalletID,
 		FiatWalletID:   req.FiatWalletID,
 		Amount:         amount,
 		IdempotencyKey: key,
+		CorrelationID:  correlationID,
 		InitiatedBy:    actor(c),
 	})
 	if err != nil {
 		return fail(c, err)
 	}
-	return c.Status(fiber.StatusAccepted).JSON(h.renderTransaction(c, tx))
+
+	// target_chain is empty: a redemption burns on its source chain and mints
+	// on none. ledger_tx_id is carried explicitly because Redeem stamps
+	// EntityType=WALLET, so walking the entity back-reference would match
+	// every redemption that wallet has ever made rather than this one.
+	transfer, err := h.repo.UpsertTransfer(c.Context(), &ledger.BridgeTransfer{
+		CorrelationID:  correlationID,
+		Kind:           ledger.SagaRedeem,
+		UserAddress:    usdxWallet.Address,
+		Amount:         amount,
+		SourceChain:    usdxWallet.Chain,
+		TargetChain:    "",
+		Status:         ledger.StatusPending,
+		UserID:         usdxWallet.UserID,
+		SourceWalletID: usdxWallet.ID,
+		LedgerTxID:     tx.ID,
+	})
+	if err != nil {
+		return fail(c, err)
+	}
+
+	out := h.renderTransaction(c, tx)
+	out["correlation_id"] = transfer.CorrelationID
+	out["saga_status"] = transfer.Status
+	return c.Status(fiber.StatusAccepted).JSON(out)
 }
 
-// confirmRedemption is called once the on-chain burn is final, releasing the
-// user's fiat. It is separate from redeem on purpose: paying out before the
-// burn settles would let a user who front-runs the chain spend twice.
+// confirmRedemption is operator break-glass, not the happy path.
+//
+// The worker settles a redemption automatically once it has burned on chain
+// and seen finality. This route exists for the case the worker cannot get
+// there — the burn landed but the process died before observing it, an RPC
+// endpoint that will not serve the receipt — where the alternative is a
+// customer's fiat held indefinitely against USD-X that is already destroyed.
+//
+// It therefore demands a reason, records who used it, and marks the saga
+// settled so the worker does not also burn. Putting it behind maker-checker is
+// P5's job (services/workflow); until then the audit trail is the control.
 func (h *Handlers) confirmRedemption(c *fiber.Ctx) error {
 	var req struct {
 		ChainTxHash string `json:"chain_tx_hash"`
+		Reason      string `json:"reason"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return badRequest(c, "invalid request body")
 	}
-	tx, err := h.ledger.ConfirmRedemption(c.Context(), c.Params("transactionId"), req.ChainTxHash, "", actor(c))
+	if req.ChainTxHash == "" {
+		return badRequest(c, "chain_tx_hash is required: break-glass settlement must name the burn it is settling")
+	}
+	if req.Reason == "" {
+		return badRequest(c, "reason is required: this route bypasses the saga and must say why")
+	}
+
+	redeemTxID := c.Params("transactionId")
+	h.logger.Warn("break-glass redemption settlement",
+		slog.String("transaction_id", redeemTxID),
+		slog.String("chain_tx_hash", req.ChainTxHash),
+		slog.String("actor", actor(c)),
+		slog.String("reason", req.Reason))
+
+	tx, err := h.ledger.ConfirmRedemption(c.Context(), redeemTxID, req.ChainTxHash, "", actor(c))
 	if err != nil {
 		return fail(c, err)
 	}
+
+	// Settle the saga too, or the worker will submit the burn this route just
+	// declared already done.
+	if t, err := h.repo.TransferForLedgerTx(c.Context(), redeemTxID); err == nil {
+		_ = h.repo.RecordChainTx(c.Context(), t.CorrelationID, "source_tx_hash", req.ChainTxHash)
+		_ = h.repo.SettleTransfer(c.Context(), t.CorrelationID, ledger.StatusCompleted,
+			"settled by operator break-glass: "+req.Reason)
+	}
+
 	return c.JSON(h.renderTransaction(c, tx))
 }
 
@@ -492,9 +602,9 @@ func (h *Handlers) bridgeTransfer(c *fiber.Ctx) error {
 		return fail(c, err)
 	}
 
-	correlationID := deriveCorrelationID(key)
-	transfer := &ledger.BridgeTransfer{
-		CorrelationID:  correlationID,
+	transfer, err := h.repo.UpsertTransfer(c.Context(), &ledger.BridgeTransfer{
+		CorrelationID:  deriveCorrelationID(key),
+		Kind:           ledger.SagaBridge,
 		UserAddress:    to.Address,
 		Amount:         amount,
 		SourceChain:    from.Chain,
@@ -503,18 +613,12 @@ func (h *Handlers) bridgeTransfer(c *fiber.Ctx) error {
 		UserID:         from.UserID,
 		SourceWalletID: from.ID,
 		TargetWalletID: to.ID,
-	}
-	if err := h.repo.Insert(transfer); err != nil {
+	})
+	if err != nil {
 		return fail(c, err)
 	}
-	go h.saga.Execute(correlationID)
 
-	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
-		"correlation_id": correlationID,
-		"status":         transfer.Status,
-		"source_chain":   transfer.SourceChain,
-		"target_chain":   transfer.TargetChain,
-	})
+	return c.Status(fiber.StatusAccepted).JSON(renderTransfer(transfer))
 }
 
 // ---------------------------------------------------------------------------
@@ -747,6 +851,153 @@ func (h *Handlers) getTransfer(c *fiber.Ctx) error {
 }
 
 // ---------------------------------------------------------------------------
+// Operator surface
+// ---------------------------------------------------------------------------
+
+// chargeFee books a standalone fee. TxFee has been a valid transaction type
+// with a chart account behind it since the engine was written, and no route
+// could produce one.
+func (h *Handlers) chargeFee(c *fiber.Ctx) error {
+	var req struct {
+		WalletID  string               `json:"wallet_id"`
+		Amount    ledger.DecimalAmount `json:"amount"`
+		FeeGLCode string               `json:"fee_gl_code"`
+		Reason    string               `json:"reason"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return badRequest(c, "invalid request body")
+	}
+	key, err := idempotencyKey(c)
+	if err != nil {
+		return fail(c, err)
+	}
+	if req.FeeGLCode == "" {
+		return badRequest(c, "fee_gl_code is required: a fee has to land in a named revenue account")
+	}
+	amount, err := h.amountForWallet(c, req.WalletID, req.Amount)
+	if err != nil {
+		return fail(c, err)
+	}
+
+	tx, err := h.ledger.ChargeFee(c.Context(), ledger.ChargeFeeRequest{
+		WalletID:       req.WalletID,
+		Amount:         amount,
+		FeeGLCode:      req.FeeGLCode,
+		IdempotencyKey: key,
+		Reason:         req.Reason,
+		InitiatedBy:    actor(c),
+	})
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(h.renderTransaction(c, tx))
+}
+
+// manualJournal posts an operator-entered adjustment. The engine's
+// ManualEntriesAllowed guard is what keeps this from being a way around the
+// invariants: every account carrying one rejects a hand-posted line.
+func (h *Handlers) manualJournal(c *fiber.Ctx) error {
+	var req struct {
+		Reason string `json:"reason"`
+		Lines  []struct {
+			GLCode      string               `json:"gl_code"`
+			Direction   ledger.Direction     `json:"direction"`
+			Amount      ledger.DecimalAmount `json:"amount"`
+			Description string               `json:"description"`
+		} `json:"lines"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return badRequest(c, "invalid request body")
+	}
+	key, err := idempotencyKey(c)
+	if err != nil {
+		return fail(c, err)
+	}
+
+	lines := make([]ledger.ManualLine, 0, len(req.Lines))
+	for i, l := range req.Lines {
+		acct, err := h.repo.AccountByGLCode(c.Context(), l.GLCode)
+		if err != nil {
+			return fail(c, err)
+		}
+		cur, err := h.repo.Currency(c.Context(), acct.Currency)
+		if err != nil {
+			return fail(c, err)
+		}
+		// Each line is parsed at its own account's scale: a journal touching
+		// a USD account and a USD-X one has two different meanings for "10.00"
+		// and reading both at one scale is off by four orders of magnitude.
+		amount, err := l.Amount.In(cur)
+		if err != nil {
+			return badRequest(c, fmt.Sprintf("line %d: %s", i+1, err.Error()))
+		}
+		lines = append(lines, ledger.ManualLine{
+			GLCode:      l.GLCode,
+			Direction:   l.Direction,
+			Amount:      amount,
+			Description: l.Description,
+		})
+	}
+
+	tx, err := h.ledger.ManualJournal(c.Context(), ledger.ManualJournalRequest{
+		Lines:          lines,
+		IdempotencyKey: key,
+		Reason:         req.Reason,
+		InitiatedBy:    actor(c),
+	})
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(h.renderTransaction(c, tx))
+}
+
+// listDeadLetters is the operator's queue of sagas that stopped moving. It is
+// the answer to "what is stuck", which before P2 could only be reconstructed
+// by reading logs and guessing.
+func (h *Handlers) listDeadLetters(c *fiber.Ctx) error {
+	entries, err := h.repo.OpenDeadLetters(c.Context(), clampLimit(c.QueryInt("limit"), 50, 200))
+	if err != nil {
+		return fail(c, err)
+	}
+	out := make([]fiber.Map, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, fiber.Map{
+			"correlation_id": e.CorrelationID,
+			"kind":           e.Kind,
+			"stage":          e.Stage,
+			"attempts":       e.Attempts,
+			"last_error":     e.LastError,
+			"failed_at":      e.FailedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return c.JSON(fiber.Map{"dead_letters": out})
+}
+
+// resolveDeadLetter closes an entry and, if the saga never reached a terminal
+// state, hands it back to the workers with a fresh attempt budget — resolving
+// is the operator's "I fixed the thing that was broken", and retrying is what
+// that means in practice.
+func (h *Handlers) resolveDeadLetter(c *fiber.Ctx) error {
+	var req struct {
+		Resolution string `json:"resolution"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return badRequest(c, "invalid request body")
+	}
+	if req.Resolution == "" {
+		return badRequest(c, "resolution is required: say what was done about it")
+	}
+	if err := h.repo.ResolveDeadLetter(c.Context(), c.Params("correlationId"), actor(c), req.Resolution); err != nil {
+		return fail(c, err)
+	}
+	t, err := h.repo.FindByCorrelationID(c.Params("correlationId"))
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.JSON(renderTransfer(t))
+}
+
+// ---------------------------------------------------------------------------
 // Plumbing
 // ---------------------------------------------------------------------------
 
@@ -869,6 +1120,7 @@ func renderClosure(cl *ledger.LedgerClosure) fiber.Map {
 func renderTransfer(t *ledger.BridgeTransfer) fiber.Map {
 	return fiber.Map{
 		"correlation_id":   t.CorrelationID,
+		"kind":             t.Kind,
 		"user_id":          t.UserID,
 		"user_address":     t.UserAddress,
 		"amount":           ledger.FormatDecimal(t.Amount, ledger.USDXDecimals),
@@ -879,8 +1131,15 @@ func renderTransfer(t *ledger.BridgeTransfer) fiber.Map {
 		"dest_tx_hash":     t.DestTxHash,
 		"source_wallet_id": t.SourceWalletID,
 		"target_wallet_id": t.TargetWalletID,
-		"created_at":       t.CreatedAt.UTC().Format(time.RFC3339),
-		"updated_at":       t.UpdatedAt.UTC().Format(time.RFC3339),
+		"ledger_tx_id":     t.LedgerTxID,
+		// The retry state a client polling this endpoint needs to tell "still
+		// working on it" from "stuck": before P2 a stalled saga and a healthy
+		// one both read PENDING forever.
+		"attempts":        t.Attempts,
+		"next_attempt_at": t.NextAttemptAt.UTC().Format(time.RFC3339),
+		"last_error":      t.LastError,
+		"created_at":      t.CreatedAt.UTC().Format(time.RFC3339),
+		"updated_at":      t.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -921,8 +1180,11 @@ func statusFor(code string) int {
 	switch code {
 	case "UNKNOWN_ACCOUNT", "UNKNOWN_WALLET", "UNKNOWN_QUOTE", "UNKNOWN_CURRENCY":
 		return fiber.StatusNotFound
+	case "NO_OPEN_DEAD_LETTER":
+		return fiber.StatusNotFound
 	case "INSUFFICIENT_FUNDS", "ACCOUNT_FROZEN", "ACCOUNT_CLOSED", "PERIOD_CLOSED",
-		"ALREADY_REVERSED", "WALLET_NOT_EMPTY", "QUOTE_EXPIRED":
+		"ALREADY_REVERSED", "WALLET_NOT_EMPTY", "QUOTE_EXPIRED",
+		"IDEMPOTENCY_KEY_REUSED", "IDEMPOTENT_REQUEST_IN_PROGRESS":
 		return fiber.StatusConflict
 	default:
 		return fiber.StatusBadRequest

@@ -240,6 +240,38 @@ const (
 	EntityWallet         EntityType = "WALLET"
 )
 
+// ValidateCallerEntity checks a back-reference supplied by a caller rather
+// than chosen by a flow.
+//
+// Transfer stamps no entity at all today, which means an invoice settlement,
+// a treasury rebalance and a payroll run are indistinguishable in the journal
+// — you can see that value moved and never what moved it. Letting callers
+// stamp their own closes that, but only against an allow-list: an arbitrary
+// string would make entity_type unqueryable, and BRIDGE_TRANSFER is reserved
+// because the saga finds its own legs through it and a caller borrowing that
+// namespace would have its transaction reversed by a compensation it has
+// nothing to do with.
+func ValidateCallerEntity(typ EntityType, id string) error {
+	if typ == EntityNone {
+		if id != "" {
+			return postErr("ENTITY_TYPE_REQUIRED", "entity_id was given without an entity_type")
+		}
+		return nil
+	}
+	if id == "" {
+		return postErr("ENTITY_ID_REQUIRED", "entity_type %s was given without an entity_id", typ)
+	}
+	switch typ {
+	case EntityBankPayment, EntityFXConversion, EntityWallet:
+		return nil
+	case EntityBridgeTransfer:
+		return postErr("ENTITY_TYPE_RESERVED",
+			"%s is reserved for the bridge saga's own journal legs", typ)
+	default:
+		return postErr("UNKNOWN_ENTITY_TYPE", "entity_type %q is not one this ledger knows", typ)
+	}
+}
+
 // Transaction is the journal header: one business event, one atomic set of
 // entries. Balances are never edited — a mistake is corrected by posting a
 // Reversal whose entries mirror this one's, which is why there is no UPDATE
@@ -424,16 +456,37 @@ const (
 	StatusCompensated   TransferStatus = "COMPENSATED" // failed mint, re-minted on source
 )
 
+// SagaKind is the shape of the saga, which the old code inferred from whether
+// SourceChain was empty. Making it explicit is what lets a redemption exist at
+// all: a redemption burns on a source chain and mints on none, which the
+// "empty source chain means fresh mint" heuristic had no way to express.
+type SagaKind string
+
+const (
+	SagaMint   SagaKind = "MINT"   // fiat -> USD-X: mint on target, no burn
+	SagaBridge SagaKind = "BRIDGE" // chain -> chain: burn on source, mint on target
+	SagaRedeem SagaKind = "REDEEM" // USD-X -> fiat: burn on source, mint on none
+)
+
+func (k SagaKind) Valid() bool {
+	switch k {
+	case SagaMint, SagaBridge, SagaRedeem:
+		return true
+	}
+	return false
+}
+
 // BridgeTransfer is no longer the record of value — it is saga state. The
 // money movement it describes lives in the journal, reachable through the
 // transactions whose EntityType is BRIDGE_TRANSFER and EntityID is this
 // CorrelationID (one for the burn leg, one for the mint leg).
 type BridgeTransfer struct {
 	CorrelationID string         `gorm:"column:correlation_id;primaryKey"`
+	Kind          SagaKind       `gorm:"column:kind"`
 	UserAddress   string         `gorm:"column:user_address"`
 	Amount        *big.Int       `gorm:"column:amount;serializer:bigint"`
 	SourceChain   string         `gorm:"column:source_chain"` // "" (fresh mint) | "ETHEREUM" | "SOLANA"
-	TargetChain   string         `gorm:"column:target_chain"` // dictated by client's target_chain field
+	TargetChain   string         `gorm:"column:target_chain"` // "" (redemption) | "ETHEREUM" | "SOLANA"
 	Status        TransferStatus `gorm:"column:status"`
 	SourceTxHash  string         `gorm:"column:source_tx_hash"`
 	DestTxHash    string         `gorm:"column:dest_tx_hash"`
@@ -444,9 +497,54 @@ type BridgeTransfer struct {
 	SourceWalletID string `gorm:"column:source_wallet_id"`
 	TargetWalletID string `gorm:"column:target_wallet_id"`
 
+	// LedgerTxID names the exact journal transaction this saga settles.
+	// A redemption can't be found by entity back-reference the way a bridge
+	// can: Redeem stamps EntityType=WALLET, so walking entity_id would match
+	// every redemption that wallet has ever made rather than this one.
+	LedgerTxID string `gorm:"column:ledger_tx_id"`
+
+	// Durability: how many times the worker has picked this up, when it may
+	// next be picked up, and which worker currently holds the lease. A row
+	// whose lease has expired is free for anyone to claim, which is what makes
+	// `kill -9` survivable without a distributed lock service.
+	Attempts       int        `gorm:"column:attempts"`
+	NextAttemptAt  time.Time  `gorm:"column:next_attempt_at"`
+	LeaseOwner     string     `gorm:"column:lease_owner"`
+	LeaseExpiresAt *time.Time `gorm:"column:lease_expires_at"`
+	LastError      string     `gorm:"column:last_error"`
+
 	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime"`
 	UpdatedAt time.Time `gorm:"column:updated_at;autoUpdateTime"`
 }
+
+func (BridgeTransfer) TableName() string { return "bridge_transfers" }
+
+// Terminal reports whether a saga has stopped moving of its own accord.
+func (s TransferStatus) Terminal() bool {
+	switch s {
+	case StatusCompleted, StatusFailed, StatusCompensated:
+		return true
+	}
+	return false
+}
+
+// SagaDeadLetter is a saga that spent its attempt budget. It exists separately
+// from the transfer row because the transfer answers "where is the money" and
+// this answers "what does an operator still have to do", and once someone
+// starts working the queue those two have different lifecycles.
+type SagaDeadLetter struct {
+	CorrelationID string     `gorm:"column:correlation_id;primaryKey"`
+	Kind          SagaKind   `gorm:"column:kind"`
+	Stage         string     `gorm:"column:stage"`
+	Attempts      int        `gorm:"column:attempts"`
+	LastError     string     `gorm:"column:last_error"`
+	FailedAt      time.Time  `gorm:"column:failed_at;autoCreateTime"`
+	ResolvedAt    *time.Time `gorm:"column:resolved_at"`
+	ResolvedBy    string     `gorm:"column:resolved_by"`
+	Resolution    string     `gorm:"column:resolution"`
+}
+
+func (SagaDeadLetter) TableName() string { return "saga_dead_letters" }
 
 // ---------------------------------------------------------------------------
 // Reconciliation snapshots (pre-existing)
