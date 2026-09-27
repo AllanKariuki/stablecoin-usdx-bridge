@@ -188,8 +188,10 @@ func (w *Worker) process(ctx context.Context, t *ledger.BridgeTransfer) {
 		return
 
 	case errors.Is(result.Err, bridge.ErrLockHeld):
-		// Another worker is on it. Not a failed attempt — don't spend budget.
-		if err := w.repo.ReleaseTransfer(ctx, t.CorrelationID, w.cfg.Lease, ""); err != nil {
+		// Another worker is on it. Nothing was tried, so the attempt the claim
+		// counted is given back — otherwise contention alone could exhaust a
+		// budget and dead-letter a saga that never reached a chain.
+		if err := w.repo.ReleaseContended(ctx, t.CorrelationID, w.cfg.Lease); err != nil {
 			log.Error("releasing a contended saga failed", slog.Any("error", err))
 		}
 		return

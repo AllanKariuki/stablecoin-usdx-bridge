@@ -483,13 +483,20 @@ func (k SagaKind) Valid() bool {
 type BridgeTransfer struct {
 	CorrelationID string         `gorm:"column:correlation_id;primaryKey"`
 	Kind          SagaKind       `gorm:"column:kind"`
-	UserAddress   string         `gorm:"column:user_address"`
 	Amount        *big.Int       `gorm:"column:amount;serializer:bigint"`
 	SourceChain   string         `gorm:"column:source_chain"` // "" (fresh mint) | "ETHEREUM" | "SOLANA"
 	TargetChain   string         `gorm:"column:target_chain"` // "" (redemption) | "ETHEREUM" | "SOLANA"
 	Status        TransferStatus `gorm:"column:status"`
 	SourceTxHash  string         `gorm:"column:source_tx_hash"`
 	DestTxHash    string         `gorm:"column:dest_tx_hash"`
+
+	// SourceAddress is burned from, TargetAddress is minted to. They are
+	// separate because on a bridge they are addresses on different chains and
+	// therefore never the same string — which the single user_address column
+	// this replaces could not express, so every cross-chain burn went to an
+	// address derived from the wrong chain's.
+	SourceAddress string `gorm:"column:source_address"`
+	TargetAddress string `gorm:"column:target_address"`
 
 	// UserID and the two wallet ids tie the saga to the journal. SourceWalletID
 	// is empty for a fresh mint (nothing is being debited on a source chain).

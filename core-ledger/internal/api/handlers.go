@@ -456,7 +456,7 @@ func (h *Handlers) issue(c *fiber.Ctx) error {
 	transfer, err := h.repo.UpsertTransfer(c.Context(), &ledger.BridgeTransfer{
 		CorrelationID:  correlationID,
 		Kind:           ledger.SagaMint,
-		UserAddress:    usdxWallet.Address,
+		TargetAddress:  usdxWallet.Address,
 		Amount:         usdxAmount,
 		SourceChain:    "", // fresh mint: nothing is burned
 		TargetChain:    usdxWallet.Chain,
@@ -530,7 +530,7 @@ func (h *Handlers) redeem(c *fiber.Ctx) error {
 	transfer, err := h.repo.UpsertTransfer(c.Context(), &ledger.BridgeTransfer{
 		CorrelationID:  correlationID,
 		Kind:           ledger.SagaRedeem,
-		UserAddress:    usdxWallet.Address,
+		SourceAddress:  usdxWallet.Address,
 		Amount:         amount,
 		SourceChain:    usdxWallet.Chain,
 		TargetChain:    "",
@@ -637,9 +637,13 @@ func (h *Handlers) bridgeTransfer(c *fiber.Ctx) error {
 	}
 
 	transfer, err := h.repo.UpsertTransfer(c.Context(), &ledger.BridgeTransfer{
-		CorrelationID:  deriveCorrelationID(key),
-		Kind:           ledger.SagaBridge,
-		UserAddress:    to.Address,
+		CorrelationID: deriveCorrelationID(key),
+		Kind:          ledger.SagaBridge,
+		// Two addresses, on two chains, never equal. Recording only the
+		// destination is what made every bridge burn from an address derived
+		// from the wrong chain's.
+		SourceAddress:  from.Address,
+		TargetAddress:  to.Address,
 		Amount:         amount,
 		SourceChain:    from.Chain,
 		TargetChain:    to.Chain,
@@ -1156,7 +1160,8 @@ func renderTransfer(t *ledger.BridgeTransfer) fiber.Map {
 		"correlation_id":   t.CorrelationID,
 		"kind":             t.Kind,
 		"user_id":          t.UserID,
-		"user_address":     t.UserAddress,
+		"source_address":   t.SourceAddress,
+		"target_address":   t.TargetAddress,
 		"amount":           ledger.FormatDecimal(t.Amount, ledger.USDXDecimals),
 		"source_chain":     t.SourceChain,
 		"target_chain":     t.TargetChain,

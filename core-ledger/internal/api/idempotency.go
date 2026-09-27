@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 
@@ -50,7 +51,20 @@ func (h *Handlers) idempotent(c *fiber.Ctx) error {
 		})
 	}
 
+	// A panic unwinding through c.Next() would otherwise leave the key
+	// IN_PROGRESS with nothing to clear it, so the client's retry — the whole
+	// point of having sent a key — would be refused until the record went
+	// stale. The context is deliberately not the request's: it may already be
+	// cancelled by the time this runs.
+	settled := false
+	defer func() {
+		if !settled {
+			_ = h.repo.ReleaseIdempotent(context.Background(), key)
+		}
+	}()
+
 	if err := c.Next(); err != nil {
+		settled = true
 		_ = h.repo.ReleaseIdempotent(c.Context(), key)
 		return err
 	}
@@ -59,9 +73,11 @@ func (h *Handlers) idempotent(c *fiber.Ctx) error {
 	if status >= fiber.StatusInternalServerError {
 		// An unknown outcome must not be pinned to the key, or the retry that
 		// would resolve it can never be made.
+		settled = true
 		_ = h.repo.ReleaseIdempotent(c.Context(), key)
 		return nil
 	}
+	settled = true
 
 	// Response().Body() points into a buffer fasthttp reuses between requests.
 	body := append([]byte(nil), c.Response().Body()...)

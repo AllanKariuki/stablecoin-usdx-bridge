@@ -32,6 +32,13 @@ const (
 	IdempotencyCompleted  IdempotencyStatus = "COMPLETED"
 )
 
+// StaleIdempotencyAfter is how long a claim may sit IN_PROGRESS before another
+// request may take it over. Generous on purpose: a money-moving write that
+// waits on chain finality is slow, and taking over from a request that is
+// merely slow costs a duplicated handler run, while refusing to take over from
+// one that is dead costs the client its key forever.
+const StaleIdempotencyAfter = 15 * time.Minute
+
 type IdempotencyRecord struct {
 	Key         string            `gorm:"column:key;primaryKey"`
 	Endpoint    string            `gorm:"column:endpoint"`
@@ -95,6 +102,29 @@ func (r *Repository) BeginIdempotent(ctx context.Context, key, endpoint, request
 			"idempotency key %s was already used for a different request (%s); a new request needs a new key",
 			key, existing.Endpoint)
 	}
+
+	// A record left IN_PROGRESS by a process that died mid-request would
+	// otherwise make its key permanently unusable — and the retry that key
+	// exists to make safe is exactly what the client will try next. So a
+	// stale claim can be taken over.
+	//
+	// The compare-and-swap on created_at is what keeps two requests from both
+	// taking over: the loser sees RowsAffected 0 and is told to wait. Taking
+	// over cannot double-post in any case — transactions.idempotency_key is
+	// unique, so the second run replays the first's journal entry rather than
+	// writing a new one.
+	if existing.Status == IdempotencyInProgress && time.Since(existing.CreatedAt) > StaleIdempotencyAfter {
+		res := r.db.WithContext(ctx).Model(&IdempotencyRecord{}).
+			Where("key = ? AND status = ? AND created_at = ?", key, IdempotencyInProgress, existing.CreatedAt).
+			Update("created_at", time.Now().UTC())
+		if res.Error != nil {
+			return nil, res.Error
+		}
+		if res.RowsAffected == 1 {
+			return nil, nil
+		}
+	}
+
 	return &existing, nil
 }
 

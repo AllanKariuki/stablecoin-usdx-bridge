@@ -169,7 +169,7 @@ func (s *Saga) runIssuanceOrBridge(ctx context.Context, t *ledger.BridgeTransfer
 	// else, so a resumed attempt waits on the existing transaction instead of
 	// submitting a second one.
 	if t.DestTxHash == "" {
-		txHash, err := targetClient.BridgeMint(t.UserAddress, t.Amount, t.CorrelationID)
+		txHash, err := targetClient.BridgeMint(t.TargetAddress, t.Amount, t.CorrelationID)
 		switch {
 		case err == nil:
 			if err := s.repo.RecordChainTx(ctx, t.CorrelationID, "dest_tx_hash", txHash); err != nil {
@@ -251,7 +251,7 @@ func (s *Saga) burnSourceLeg(ctx context.Context, t *ledger.BridgeTransfer, sour
 	}
 
 	if t.SourceTxHash == "" {
-		txHash, err := sourceClient.BridgeBurn(t.UserAddress, t.Amount, t.CorrelationID)
+		txHash, err := sourceClient.BridgeBurn(t.SourceAddress, t.Amount, t.CorrelationID)
 		switch {
 		case err == nil:
 			if err := s.repo.RecordChainTx(ctx, t.CorrelationID, "source_tx_hash", txHash); err != nil {
@@ -308,7 +308,7 @@ func (s *Saga) runRedeem(ctx context.Context, t *ledger.BridgeTransfer) Result {
 
 	if t.Status == ledger.StatusPending {
 		if t.SourceTxHash == "" {
-			txHash, err := sourceClient.BridgeBurn(t.UserAddress, t.Amount, t.CorrelationID)
+			txHash, err := sourceClient.BridgeBurn(t.SourceAddress, t.Amount, t.CorrelationID)
 			switch {
 			case err == nil:
 				if err := s.repo.RecordChainTx(ctx, t.CorrelationID, "source_tx_hash", txHash); err != nil {
@@ -479,8 +479,10 @@ func (s *Saga) compensate(ctx context.Context, t *ledger.BridgeTransfer, cause e
 		return
 	}
 
+	// Back to the source address, not the destination one: the point is to
+	// restore the holder whose tokens were burned.
 	compensationID := t.CorrelationID + "-compensation"
-	txHash, err := sourceClient.BridgeMint(t.UserAddress, t.Amount, compensationID)
+	txHash, err := sourceClient.BridgeMint(t.SourceAddress, t.Amount, compensationID)
 	if err != nil && Classify(err) != ClassAlreadyProcessed {
 		s.logger.Error("compensation mint failed; needs manual intervention",
 			slog.String("correlation_id", t.CorrelationID), slog.Any("error", err))

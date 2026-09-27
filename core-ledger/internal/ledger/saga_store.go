@@ -40,6 +40,15 @@ func (r *Repository) UpsertTransfer(ctx context.Context, t *BridgeTransfer) (*Br
 	if !t.Kind.Valid() {
 		return nil, postErr("INVALID_SAGA_KIND", "unknown saga kind %q", t.Kind)
 	}
+	// Enqueue time is the last moment the wallets are in hand; by the time the
+	// worker claims this, a missing address is an unexplainable failure
+	// against a chain rather than a rejected request.
+	if t.Kind != SagaRedeem && t.TargetAddress == "" {
+		return nil, postErr("MISSING_TARGET_ADDRESS", "a %s saga must name the address it mints to", t.Kind)
+	}
+	if t.Kind != SagaMint && t.SourceAddress == "" {
+		return nil, postErr("MISSING_SOURCE_ADDRESS", "a %s saga must name the address it burns from", t.Kind)
+	}
 	if t.Status == "" {
 		t.Status = StatusPending
 	}
@@ -159,6 +168,23 @@ func (r *Repository) ReleaseTransfer(ctx context.Context, correlationID string, 
 			"lease_expires_at": nil,
 			"next_attempt_at":  time.Now().UTC().Add(in),
 			"last_error":       truncateError(cause),
+		}).Error
+}
+
+// ReleaseContended puts a saga back without spending an attempt.
+//
+// ClaimTransfer increments attempts, because a claim is normally an attempt.
+// Finding a peer already holding the advisory lock is not: nothing was tried.
+// Counting it would let lock contention alone exhaust a budget and dead-letter
+// a saga that never once reached a chain.
+func (r *Repository) ReleaseContended(ctx context.Context, correlationID string, in time.Duration) error {
+	return r.db.WithContext(ctx).Model(&BridgeTransfer{}).
+		Where("correlation_id = ?", correlationID).
+		Updates(map[string]any{
+			"lease_owner":      "",
+			"lease_expires_at": nil,
+			"next_attempt_at":  time.Now().UTC().Add(in),
+			"attempts":         gorm.Expr("GREATEST(attempts - 1, 0)"),
 		}).Error
 }
 

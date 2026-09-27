@@ -37,6 +37,12 @@ type fakeChain struct {
 	burnCalls int
 	waitCalls int
 
+	// The addresses each call was given. A bridge's burn and mint point at
+	// different chains, so recording them is the only way to catch one of them
+	// being handed the other's address.
+	mintedTo   []string
+	burnedFrom []string
+
 	// Set by the test. n is 1-based.
 	mintErr func(n int) error
 	burnErr func(n int) error
@@ -46,6 +52,7 @@ type fakeChain struct {
 func (f *fakeChain) BridgeMint(to string, amount *big.Int, correlationID string) (string, error) {
 	f.mu.Lock()
 	f.mintCalls++
+	f.mintedTo = append(f.mintedTo, to)
 	n := f.mintCalls
 	fn := f.mintErr
 	f.mu.Unlock()
@@ -61,6 +68,7 @@ func (f *fakeChain) BridgeMint(to string, amount *big.Int, correlationID string)
 func (f *fakeChain) BridgeBurn(from string, amount *big.Int, correlationID string) (string, error) {
 	f.mu.Lock()
 	f.burnCalls++
+	f.burnedFrom = append(f.burnedFrom, from)
 	n := f.burnCalls
 	fn := f.burnErr
 	f.mu.Unlock()
@@ -96,6 +104,12 @@ func (f *fakeChain) burns() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.burnCalls
+}
+
+func (f *fakeChain) addresses() (minted, burned []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.mintedTo...), append([]string(nil), f.burnedFrom...)
 }
 
 type fixture struct {
@@ -197,7 +211,7 @@ func (f *fixture) issue(t *testing.T, usd int64) string {
 	if _, err := f.repo.UpsertTransfer(f.ctx, &ledger.BridgeTransfer{
 		CorrelationID:  correlationID,
 		Kind:           ledger.SagaMint,
-		UserAddress:    f.usdxWallet.Address,
+		TargetAddress:  f.usdxWallet.Address,
 		Amount:         usdxAmount,
 		TargetChain:    f.usdxWallet.Chain,
 		Status:         ledger.StatusPending,
@@ -392,7 +406,7 @@ func TestSagaRedeemBurnsAndSettles(t *testing.T) {
 	if _, err := f.repo.UpsertTransfer(f.ctx, &ledger.BridgeTransfer{
 		CorrelationID:  redeemCorrelation,
 		Kind:           ledger.SagaRedeem,
-		UserAddress:    f.usdxWallet.Address,
+		SourceAddress:  f.usdxWallet.Address,
 		Amount:         big.NewInt(100_000000),
 		SourceChain:    f.usdxWallet.Chain,
 		TargetChain:    "",
@@ -447,7 +461,7 @@ func TestSagaRedeemTerminalBurnReturnsTheTokens(t *testing.T) {
 	if _, err := f.repo.UpsertTransfer(f.ctx, &ledger.BridgeTransfer{
 		CorrelationID:  redeemCorrelation,
 		Kind:           ledger.SagaRedeem,
-		UserAddress:    f.usdxWallet.Address,
+		SourceAddress:  f.usdxWallet.Address,
 		Amount:         big.NewInt(50_000000),
 		SourceChain:    f.usdxWallet.Chain,
 		Status:         ledger.StatusPending,
@@ -475,5 +489,108 @@ func TestSagaRedeemTerminalBurnReturnsTheTokens(t *testing.T) {
 	}
 	if got := f.balance(t, f.usdWallet.AccountID); got != "0" {
 		t.Fatalf("USD balance = %s, want 0; no fiat may be released for a burn that never happened", got)
+	}
+}
+
+// TestSagaBridgeUsesEachChainsOwnAddress is a regression test for a bug that
+// made every cross-chain bridge burn against the wrong address.
+//
+// bridge_transfers carried a single user_address, which POST /bridges set to
+// the *destination* wallet's address — and the saga then burned from that same
+// value on the *source* chain. An Ethereum address is 20 bytes of hex and a
+// Solana address is a base58 ed25519 pubkey, so the burn was always submitted
+// against an address derived from the wrong chain's. Nothing caught it because
+// the faked chain client ignored the address argument entirely, and because
+// issuance and redemption — which only ever touch one chain — were unaffected.
+func TestSagaBridgeUsesEachChainsOwnAddress(t *testing.T) {
+	f := newFixture(t)
+
+	// Fund the Ethereum-side USD-X wallet through a completed mint.
+	mintCorrelation := f.issue(t, 300_00)
+	if res := f.saga.Execute(f.ctx, mintCorrelation); res.Failed() {
+		t.Fatalf("seeding mint failed: %+v", res)
+	}
+
+	solana, err := f.repo.EnsureWallet(f.ctx, f.user, "USDX", "SOLANA", "SoLANAaddress1111111111111111111111111111", "USD-X Solana")
+	if err != nil {
+		t.Fatalf("EnsureWallet SOLANA: %v", err)
+	}
+
+	bridgeCorrelation := f.key("bridge-saga")
+	if _, err := f.repo.UpsertTransfer(f.ctx, &ledger.BridgeTransfer{
+		CorrelationID:  bridgeCorrelation,
+		Kind:           ledger.SagaBridge,
+		SourceAddress:  f.usdxWallet.Address,
+		TargetAddress:  solana.Address,
+		Amount:         big.NewInt(100_000000),
+		SourceChain:    f.usdxWallet.Chain,
+		TargetChain:    solana.Chain,
+		Status:         ledger.StatusPending,
+		UserID:         f.user,
+		SourceWalletID: f.usdxWallet.ID,
+		TargetWalletID: solana.ID,
+	}); err != nil {
+		t.Fatalf("UpsertTransfer: %v", err)
+	}
+
+	if res := f.saga.Execute(f.ctx, bridgeCorrelation); res.Failed() {
+		t.Fatalf("bridge saga failed: %+v", res)
+	}
+
+	minted, burned := f.chain.addresses()
+	if len(burned) != 1 {
+		t.Fatalf("%d burns, want 1", len(burned))
+	}
+	if burned[0] != f.usdxWallet.Address {
+		t.Fatalf("burned from %q, want the source wallet's address %q", burned[0], f.usdxWallet.Address)
+	}
+	// minted[0] is the seeding issuance; the bridge's mint is the second.
+	if len(minted) != 2 {
+		t.Fatalf("%d mints, want 2 (the seeding issuance and the bridge)", len(minted))
+	}
+	if minted[1] != solana.Address {
+		t.Fatalf("minted to %q, want the target wallet's address %q", minted[1], solana.Address)
+	}
+	if burned[0] == minted[1] {
+		t.Fatal("the burn and the mint used the same address; a bridge crosses two chains")
+	}
+
+	if got := f.status(t, bridgeCorrelation); got != ledger.StatusCompleted {
+		t.Fatalf("status = %s, want COMPLETED", got)
+	}
+	if got := f.balance(t, f.usdxWallet.AccountID); got != "200000000" {
+		t.Fatalf("Ethereum USD-X balance = %s, want 200000000", got)
+	}
+	if got := f.balance(t, solana.AccountID); got != "100000000" {
+		t.Fatalf("Solana USD-X balance = %s, want 100000000", got)
+	}
+}
+
+// A saga enqueued without the address its shape needs is rejected at the door,
+// where the wallets are still in hand. By the time a worker claims it, a
+// missing address is an unexplainable failure against a chain.
+func TestUpsertTransferRequiresTheAddressesItsKindNeeds(t *testing.T) {
+	f := newFixture(t)
+
+	_, err := f.repo.UpsertTransfer(f.ctx, &ledger.BridgeTransfer{
+		CorrelationID: f.key("no-target"),
+		Kind:          ledger.SagaMint,
+		Amount:        big.NewInt(1),
+		TargetChain:   "ETHEREUM",
+		UserID:        f.user,
+	})
+	if err == nil {
+		t.Fatal("a MINT saga with no target address must be rejected")
+	}
+
+	_, err = f.repo.UpsertTransfer(f.ctx, &ledger.BridgeTransfer{
+		CorrelationID: f.key("no-source"),
+		Kind:          ledger.SagaRedeem,
+		Amount:        big.NewInt(1),
+		SourceChain:   "ETHEREUM",
+		UserID:        f.user,
+	})
+	if err == nil {
+		t.Fatal("a REDEEM saga with no source address must be rejected")
 	}
 }
