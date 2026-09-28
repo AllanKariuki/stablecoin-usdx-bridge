@@ -61,6 +61,113 @@ services:
       # explicit on Linux, where it isn't automatic.
       - "host.docker.internal:host-gateway"
 
+
+  # ---------------------------------------------------------------------
+  # P3 infrastructure
+  # ---------------------------------------------------------------------
+
+  timescaledb:
+    image: timescale/timescaledb:2.17.2-pg16
+    container_name: usdx-timescaledb
+    ports:
+      - "55434:5432"
+    environment:
+      POSTGRES_USER: timescale
+      POSTGRES_PASSWORD: timescale
+      POSTGRES_DB: postgres
+    volumes:
+      - tsdata:/var/lib/postgresql/data
+      # Same caveat as the platform Postgres: only applied on a fresh volume.
+      - ./infra/timescaledb/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timescale"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # NATS lands in P3 rather than P2 because this is the phase where
+  # bridge_minted gains three independent consumers (the saga, compliance,
+  # notifications) at a rate the producer doesn't control. Before that, one
+  # producer and one consumer is not a reason to run a broker — see
+  # docs/building-plan.md's "Outbox from day one, NATS JetStream in P3".
+  nats:
+    image: nats:2.10-alpine
+    container_name: usdx-nats
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "54222:4222"
+      - "58222:8222"
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------------
+  # Observability, behind the "obs" profile so the default `make up` stays
+  # a database and a broker rather than a nine-container stack.
+  #
+  #   docker compose --profile obs up -d
+  # ---------------------------------------------------------------------
+
+  prometheus:
+    profiles: ["obs"]
+    image: prom/prometheus:v3.1.0
+    container_name: usdx-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    ports:
+      - "59090:9090"
+    volumes:
+      - ./infra/observability/prometheus:/etc/prometheus:ro
+      - promdata:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # The Pushgateway is not optional decoration: `reconcile` runs as a
+  # one-shot CronJob whose pod lives for about two seconds, so Prometheus
+  # can never scrape it. Without this, the metric-based paging this whole
+  # phase is built around would silently never fire.
+  pushgateway:
+    profiles: ["obs"]
+    image: prom/pushgateway:v1.10.0
+    container_name: usdx-pushgateway
+    ports:
+      - "59091:9091"
+
+  loki:
+    profiles: ["obs"]
+    image: grafana/loki:3.3.2
+    container_name: usdx-loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "53100:3100"
+
+  grafana:
+    profiles: ["obs"]
+    image: grafana/grafana:11.5.1
+    container_name: usdx-grafana
+    # 53000, not 3000 — 3000 belongs to services/notifications' WebSocket,
+    # which the frontend's runtime-config.js hardcodes.
+    ports:
+      - "53000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - prometheus
+
   # ---------------------------------------------------------------------
   # Application containers, behind the "app" profile so a plain
   # `docker compose up -d` still brings up infrastructure only and leaves
@@ -127,6 +234,59 @@ services:
     # lapse and another worker — or this one, restarted — picks the saga up.
     stop_grace_period: 30s
 
+  indexer:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: services/indexer/Dockerfile
+    image: usdx/indexer:dev
+    container_name: usdx-indexer
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      core-ledger:
+        condition: service_started
+    env_file:
+      - services/indexer/.env
+    environment:
+      DATABASE_URL: postgres://indexer:indexer@timescaledb:5432/indexer?sslmode=disable
+      CORE_LEDGER_URL: http://core-ledger:8081
+      USDX_ABI_PATH: /app/abi/USDX.json
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8083/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # reconcile runs on a schedule, not as a long-lived process — the whole
+  # point of extracting it from cmd/server was that the in-process ticker
+  # ran once per API replica. Compose has no cron, so this is the
+  # `--watch` form; k8s gets the real CronJob
+  # (infra/k8s/reconcile-cronjob.yaml) with concurrencyPolicy: Forbid.
+  reconcile:
+    profiles: ["app"]
+    image: usdx/core-ledger:dev
+    container_name: usdx-reconcile
+    entrypoint: ["/usr/local/bin/core-ledger-reconcile", "--watch", "5m", "--triggered-by", "compose"]
+    depends_on:
+      core-ledger:
+        condition: service_started
+    env_file:
+      - core-ledger/.env
+    environment:
+      DATABASE_URL: postgres://bridge:bridge@postgres:5432/bridge?sslmode=disable
+      SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
+      RECONCILE_PREFER_SNAPSHOTS: "true"
+      PUSHGATEWAY_URL: http://pushgateway:9091
+    volumes:
+      - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro
+
 volumes:
   pgdata:
   kcdata:
+  tsdata:
+  natsdata:
+  promdata:
+  grafanadata:

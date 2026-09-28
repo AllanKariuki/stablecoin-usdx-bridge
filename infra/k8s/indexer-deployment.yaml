@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: indexer
+  labels:
+    app: indexer
+spec:
+  # Two replicas, one writer. The cursor must advance monotonically, so
+  # exactly one process may hold it — the second replica serves the read
+  # surface (/events, /finality, /cursors) and stands by on a Postgres
+  # advisory lock (see services/indexer/internal/leader).
+  #
+  # The plan called for a k8s Lease. The advisory lock is used instead
+  # because it lives in the same database as the cursor it protects: a Lease
+  # is held in the API server, which a partitioned pod can keep renewing
+  # while being unable to reach the database — and two indexers advancing one
+  # cursor is precisely the failure a leader election exists to prevent.
+  replicas: 2
+  strategy:
+    # Recreate, not RollingUpdate: during a rolling update the old leader
+    # still holds the lock while the new pod campaigns for it, which is
+    # correct but means a window where the new pod is counted as available
+    # and is indexing nothing. Recreate makes the handover explicit.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: indexer
+  template:
+    metadata:
+      labels:
+        app: indexer
+    spec:
+      containers:
+        - name: indexer
+          # TODO: point at the real registry once CI publishes an image.
+          image: <Image>
+          ports:
+            - containerPort: 8083
+          envFrom:
+            - secretRef:
+                name: indexer-secrets
+          env:
+            - name: PORT
+              value: "8083"
+            - name: DATABASE_URL
+              value: "postgres://indexer:indexer@timescaledb.default.svc.cluster.local:5432/indexer?sslmode=disable"
+            - name: CORE_LEDGER_URL
+              value: "http://core-ledger.default.svc.cluster.local:8081"
+            - name: USDX_ABI_PATH
+              value: "/app/abi/USDX.json"
+            - name: ETH_CONFIRMATIONS
+              value: "12"
+            - name: SOL_CONFIRMATIONS
+              value: "0"
+            - name: REORG_DEPTH
+              value: "128"
+          resources:
+            requests:
+              memory: "192Mi"
+              cpu: "150m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8083
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8083
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+      # Long enough for the leader to release its advisory lock so the
+      # successor doesn't wait out a poll interval for a lock nobody is
+      # using.
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: indexer
+  labels:
+    app: indexer
+spec:
+  selector:
+    app: indexer
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8083
+      targetPort: 8083
+---
+# The indexer is never published. Its callers are core-ledger's saga worker
+# (GET /finality, replacing an RPC poll) and whatever operator tooling reads
+# /events; nothing outside the cluster has any business asking it anything.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: indexer-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: indexer
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: core-ledger-worker
+        - podSelector:
+            matchLabels:
+              app: bff
+        # Prometheus scrapes /metrics.
+        - namespaceSelector:
+            matchLabels:
+              name: observability
+      ports:
+        - protocol: TCP
+          port: 8083

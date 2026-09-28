@@ -1,5 +1,7 @@
-# core-ledger ships two binaries out of one image: the API and the saga
-# worker. They share a database, a chart of accounts and a fee schedule, and
+# core-ledger ships three binaries out of one image: the API, the saga worker
+# and the reconciler.
+#
+# They share a database, a chart of accounts and a fee schedule, and
 # building them from one source tree is what keeps them from drifting apart —
 # a worker posting against a different ledger version than the API accepted
 # the request on is the kind of bug that only shows up as money in the wrong
@@ -22,6 +24,7 @@ COPY core-ledger/go.mod core-ledger/go.sum ./core-ledger/
 COPY shared/go/platform/go.mod shared/go/platform/go.sum ./shared/go/platform/
 COPY shared/authz/go.mod shared/authz/go.sum ./shared/authz/
 COPY services/auth-proxy/go.mod services/auth-proxy/go.sum ./services/auth-proxy/
+COPY services/indexer/go.mod services/indexer/go.sum ./services/indexer/
 RUN go mod download
 
 COPY go.work go.work.sum ./
@@ -38,7 +41,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
         -o /out/core-ledger ./core-ledger/cmd/server \
  && CGO_ENABLED=0 GOOS=linux go build \
         -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
-        -o /out/core-ledger-worker ./core-ledger/cmd/worker
+        -o /out/core-ledger-worker ./core-ledger/cmd/worker \
+ && CGO_ENABLED=0 GOOS=linux go build \
+        -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+        -o /out/core-ledger-reconcile ./core-ledger/cmd/reconcile
 
 FROM alpine:3.21
 
@@ -48,6 +54,7 @@ RUN apk add --no-cache ca-certificates tzdata \
 
 COPY --from=build /out/core-ledger        /usr/local/bin/core-ledger
 COPY --from=build /out/core-ledger-worker /usr/local/bin/core-ledger-worker
+COPY --from=build /out/core-ledger-reconcile /usr/local/bin/core-ledger-reconcile
 
 USER app
 WORKDIR /app

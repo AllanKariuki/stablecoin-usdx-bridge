@@ -1,0 +1,14 @@
+apiVersion: 1
+
+providers:
+  - name: damp
+    orgId: 1
+    folder: DAMP
+    type: file
+    disableDeletion: false
+    # Provisioned dashboards are read-only in the UI on purpose: a panel
+    # someone edits in Grafana and nobody commits is a panel that disappears
+    # on the next container restart, which is worse than not having it.
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

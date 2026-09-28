@@ -557,10 +557,17 @@ func (SagaDeadLetter) TableName() string { return "saga_dead_letters" }
 // Reconciliation snapshots (pre-existing)
 // ---------------------------------------------------------------------------
 
+// The three snapshot tables below are reconciliation's inputs. Until P3 not
+// one of them had a writer — see reserves.go, which is where they got one.
+
 type EthSupplySnapshot struct {
-	BlockNumber uint64    `gorm:"column:block_number;primaryKey"`
-	TotalSupply *big.Int  `gorm:"column:total_supply;serializer:bigint"`
-	CapturedAt  time.Time `gorm:"column:captured_at;autoCreateTime"`
+	BlockNumber uint64   `gorm:"column:block_number;primaryKey"`
+	TotalSupply *big.Int `gorm:"column:total_supply;serializer:bigint"`
+	// BlockHash is what makes a snapshot survivable across a reorg: the
+	// indexer can tell "block 1234 again" from "a *different* block 1234".
+	BlockHash  string    `gorm:"column:block_hash"`
+	Source     string    `gorm:"column:source"`
+	CapturedAt time.Time `gorm:"column:captured_at;autoCreateTime"`
 }
 
 func (EthSupplySnapshot) TableName() string { return "eth_supply_snapshot" }
@@ -568,16 +575,24 @@ func (EthSupplySnapshot) TableName() string { return "eth_supply_snapshot" }
 type SolSupplySnapshot struct {
 	Slot        uint64    `gorm:"column:slot;primaryKey"`
 	TotalSupply *big.Int  `gorm:"column:total_supply;serializer:bigint"`
+	Source      string    `gorm:"column:source"`
 	CapturedAt  time.Time `gorm:"column:captured_at;autoCreateTime"`
 }
 
 func (SolSupplySnapshot) TableName() string { return "sol_supply_snapshot" }
 
-// TrustBankSnapshot rows are inserted upstream by DAMP's Bank Adapter
-// service (not part of this repo) as it observes the custodian account.
+// TrustBankSnapshot is one custodian's statement balance as of a moment.
+// services/rms writes these through POST /reserves/custodian-snapshots; the
+// "Bank Adapter service (not part of this repo)" this comment used to name
+// never existed, which is exactly why Leg C was skipped on every run the
+// platform has ever performed.
 type TrustBankSnapshot struct {
-	AsOf    time.Time `gorm:"column:as_of;primaryKey"`
-	Balance *big.Int  `gorm:"column:balance;serializer:bigint"`
+	CustodianID  string    `gorm:"column:custodian_id;primaryKey"`
+	Currency     string    `gorm:"column:currency;primaryKey"`
+	AsOf         time.Time `gorm:"column:as_of;primaryKey"`
+	Balance      *big.Int  `gorm:"column:balance;serializer:bigint"`
+	Source       string    `gorm:"column:source"`
+	StatementRef string    `gorm:"column:statement_ref"`
 }
 
 func (TrustBankSnapshot) TableName() string { return "trust_bank_snapshot" }

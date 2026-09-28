@@ -1,0 +1,185 @@
+# The alerts P3 exists to make possible.
+#
+# Before this phase the platform's one financial control — reconciliation —
+# produced a log line on one of N API replicas and nothing else. R7 in the
+# risk register states it plainly: "the one control catching an unbacked mint
+# is decorative". These rules are the non-decorative version.
+#
+# Every rule below has a runbook (docs/runbooks/) and every one says what the
+# money consequence is, because an alert whose text is "LegB drift != 0" wakes
+# someone who then has to work out whether it matters.
+
+groups:
+  - name: reconciliation
+    rules:
+      # ---- the peg ----------------------------------------------------
+      - alert: PegBroken
+        expr: reconciliation_leg_ok{leg="LEG_B"} == 0
+        for: 0m
+        labels:
+          severity: critical
+          runbook: docs/runbooks/peg-broken.md
+        annotations:
+          summary: "USD-X is issued against reserve backing that does not match it"
+          description: >-
+            Leg B compares GL 2200.USD (reserve backing, restated at USD-X
+            scale) against GL 1300 (USD-X in circulation). A drift of
+            {{ $value }} means the 1:1 peg is not currently true in the
+            journal. A negative drift means USD-X exists that nothing backs —
+            stop issuance before investigating.
+
+      # ---- chains vs ledger -------------------------------------------
+      - alert: LedgerChainDrift
+        expr: reconciliation_leg_ok{leg="LEG_A"} == 0
+        # Deliberately not 0m. A mint that has landed on chain but whose
+        # journal credit has not yet posted shows as drift for the width of
+        # one saga step, and paging on that would train the on-call to
+        # ignore this alert.
+        for: 10m
+        labels:
+          severity: high
+          runbook: docs/runbooks/ledger-chain-drift.md
+        annotations:
+          summary: "On-chain USD-X supply disagrees with what the ledger issued"
+          description: >-
+            Positive drift means supply exists that this platform did not
+            create; negative means the ledger believes in tokens no chain
+            has. Check services/indexer for a stalled cursor first — a frozen
+            snapshot produces this symptom without anything being wrong on
+            chain.
+
+      # ---- custodian ---------------------------------------------------
+      - alert: CustodianShortfall
+        expr: reconciliation_leg_ok{leg="LEG_C"} == 0
+        for: 0m
+        labels:
+          severity: high
+          runbook: docs/runbooks/custodian-shortfall.md
+        annotations:
+          summary: "A custodian is holding less fiat than the ledger says is in the bank"
+          description: >-
+            Leg C is an inequality (reserves >= circulation), so this only
+            fires on a genuine shortfall, never on headroom. Confirm the
+            custodian's statement is current — reconciliation_custodian_snapshot_age_seconds
+            — before treating it as a real shortfall.
+
+      # ---- the control itself ------------------------------------------
+      #
+      # The two rules below are the ones that matter most, because they fire
+      # when the platform has stopped *checking*. A reconciliation that is
+      # not running produces no breaks, which looks exactly like a healthy
+      # platform on every other panel.
+      - alert: ReconciliationNotRunning
+        expr: time() - max(reconciliation_last_run_timestamp_seconds) > 3600
+        for: 5m
+        labels:
+          severity: critical
+          runbook: docs/runbooks/reconciliation-stalled.md
+        annotations:
+          summary: "No reconciliation run has completed in over an hour"
+          description: >-
+            The CronJob is not firing, or its pod cannot reach the database
+            or the Pushgateway. Nothing is currently checking that USD-X is
+            backed.
+
+      - alert: ReconciliationErroring
+        expr: increase(reconciliation_runs_total{status="ERROR"}[30m]) > 2
+        for: 0m
+        labels:
+          severity: high
+          runbook: docs/runbooks/reconciliation-stalled.md
+        annotations:
+          summary: "Reconciliation runs are failing to complete"
+          description: >-
+            ERROR means the check could not be performed, which is not the
+            same as passing. Usually an unreachable chain RPC with no usable
+            indexer snapshot to fall back on.
+
+      - alert: CustodianReportStale
+        expr: reconciliation_custodian_snapshot_age_seconds > 86400
+        for: 15m
+        labels:
+          severity: warning
+          runbook: docs/runbooks/custodian-shortfall.md
+        annotations:
+          summary: "Leg C is evaluating against a custodian balance over a day old"
+          description: >-
+            services/rms has stopped reporting, or core-ledger is rejecting
+            its snapshots. Leg C keeps passing against a stale figure, which
+            is worse than failing because it is actively reassuring.
+
+  - name: indexer
+    rules:
+      - alert: IndexerStalled
+        # The cursor is expected to sit exactly `confirmations` behind the
+        # head. Three times that means it has stopped advancing, not that it
+        # is being cautious.
+        expr: indexer_cursor_lag > 100
+        for: 10m
+        labels:
+          severity: high
+          runbook: docs/runbooks/indexer-stalled.md
+        annotations:
+          summary: "The {{ $labels.chain }} indexer has fallen {{ $value }} blocks behind"
+          description: >-
+            Chain supply snapshots stop advancing, so reconciliation's Leg A
+            begins comparing against a frozen number. core-ledger's
+            RECONCILE_SNAPSHOT_MAX_AGE makes it fall back to a live RPC read
+            rather than pass against stale data, so the first symptom is
+            usually reconciliation slowing down rather than breaking.
+
+      - alert: IndexerNoLeader
+        expr: max(indexer_leader) < 1
+        for: 5m
+        labels:
+          severity: high
+          runbook: docs/runbooks/indexer-stalled.md
+        annotations:
+          summary: "No indexer replica holds the cursor lock"
+          description: >-
+            Every replica is standing by. Nothing is advancing the cursor or
+            reporting chain supply.
+
+      - alert: ChainReorgDeep
+        # Anything past the confirmation depth means the platform recorded
+        # something as settled that the chain then took back.
+        expr: indexer_last_reorg_depth > 12
+        for: 0m
+        labels:
+          severity: critical
+          runbook: docs/runbooks/chain-reorg.md
+        annotations:
+          summary: "A {{ $labels.chain }} reorganisation went {{ $value }} blocks deep"
+          description: >-
+            Deeper than the confirmation depth the platform mints against.
+            Check indexer_orphaned_events_total for mints or burns that are
+            no longer on the canonical chain — R9.
+
+      - alert: OrphanedChainEvents
+        expr: increase(indexer_orphaned_events_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: high
+          runbook: docs/runbooks/chain-reorg.md
+        annotations:
+          summary: "{{ $value }} {{ $labels.chain }} events were orphaned by a reorganisation"
+          description: >-
+            An event the platform may have acted on is no longer on the
+            canonical chain. If any of them is a BridgeMinted, the
+            corresponding ledger credit is now backed by a transaction that
+            does not exist.
+
+  - name: outbox
+    rules:
+      - alert: OutboxBacklogGrowing
+        expr: outbox_pending_events > 500
+        for: 15m
+        labels:
+          severity: warning
+          runbook: docs/runbooks/outbox-backlog.md
+        annotations:
+          summary: "The transactional outbox is not draining"
+          description: >-
+            Nothing is lost — that is what the outbox is for — but every
+            consumer downstream (compliance screening, notifications,
+            reconciliation alerts) is working from an increasingly old view.

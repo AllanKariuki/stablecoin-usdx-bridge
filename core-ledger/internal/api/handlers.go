@@ -74,6 +74,9 @@ func (h *Handlers) Register(app *fiber.App) {
 	app.Post("/ledger/fees", h.idempotent, h.chargeFee)
 	app.Post("/ledger/journals", h.idempotent, h.manualJournal)
 
+	// Reserves and reconciliation (P3) — see reserves.go.
+	h.registerReserves(app)
+
 	// Bridge saga state
 	app.Get("/transfers/:correlationId", h.getTransfer)
 	app.Get("/sagas/dead-letters", h.listDeadLetters)

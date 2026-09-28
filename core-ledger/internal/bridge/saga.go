@@ -60,11 +60,38 @@ type Saga struct {
 	// Finality is the vocabulary both chain clients understand: Ethereum
 	// reads "finalized" as the post-merge checkpoint or a confirmation count;
 	// Solana reads it as a commitment level.
+	//
+	// It configures the default FinalityChecker. Once an indexer is deployed,
+	// Checker is swapped for an IndexerFinality and this stops being the
+	// waiting mechanism — see finality.go for why that is more than a latency
+	// improvement.
 	Finality string
+
+	// Checker decides when a chain transaction is settled. Defaults to
+	// polling the chain client, which is exactly what the saga did before P3.
+	Checker FinalityChecker
 }
 
 func NewSaga(repo *ledger.Repository, svc *ledger.Service, router *Router, logger *slog.Logger) *Saga {
-	return &Saga{repo: repo, ledger: svc, router: router, logger: logger, Finality: "finalized"}
+	s := &Saga{repo: repo, ledger: svc, router: router, logger: logger, Finality: "finalized"}
+	s.Checker = NewChainFinality(router, s.Finality)
+	return s
+}
+
+// UseIndexerFinality points the saga at services/indexer, keeping the chain
+// poll as the fallback for anything the indexer cannot answer.
+func (s *Saga) UseIndexerFinality(baseURL string) {
+	s.Checker = NewIndexerFinality(baseURL, NewChainFinality(s.router, s.Finality), s.logger)
+}
+
+// awaitFinality is the one place the saga waits on a chain. Routing all three
+// call sites through it is what made swapping the mechanism a two-line change
+// rather than three subtly different ones.
+func (s *Saga) awaitFinality(ctx context.Context, chain, txHash string) error {
+	if s.Checker == nil {
+		s.Checker = NewChainFinality(s.router, s.Finality)
+	}
+	return s.Checker.WaitForFinality(ctx, chain, txHash)
 }
 
 // Execute runs one attempt at the saga identified by correlationID.
@@ -199,7 +226,7 @@ func (s *Saga) runIssuanceOrBridge(ctx context.Context, t *ledger.BridgeTransfer
 	}
 
 	if t.DestTxHash != "" {
-		if err := targetClient.WaitForFinality(t.DestTxHash, s.Finality); err != nil {
+		if err := s.awaitFinality(ctx, t.TargetChain, t.DestTxHash); err != nil {
 			if Classify(err) == ClassTerminal {
 				s.recoverTerminal(ctx, t, StageMintFinality, err)
 				return settled(StageMintFinality, err)
@@ -275,7 +302,7 @@ func (s *Saga) burnSourceLeg(ctx context.Context, t *ledger.BridgeTransfer, sour
 	}
 
 	if t.SourceTxHash != "" {
-		if err := sourceClient.WaitForFinality(t.SourceTxHash, s.Finality); err != nil {
+		if err := s.awaitFinality(ctx, t.SourceChain, t.SourceTxHash); err != nil {
 			if Classify(err) == ClassTerminal {
 				s.recoverTerminal(ctx, t, StageBurnFinality, err)
 				return settled(StageBurnFinality, err)
@@ -332,7 +359,7 @@ func (s *Saga) runRedeem(ctx context.Context, t *ledger.BridgeTransfer) Result {
 		}
 
 		if t.SourceTxHash != "" {
-			if err := sourceClient.WaitForFinality(t.SourceTxHash, s.Finality); err != nil {
+			if err := s.awaitFinality(ctx, t.SourceChain, t.SourceTxHash); err != nil {
 				if Classify(err) == ClassTerminal {
 					s.recoverTerminal(ctx, t, StageBurnFinality, err)
 					return settled(StageBurnFinality, err)

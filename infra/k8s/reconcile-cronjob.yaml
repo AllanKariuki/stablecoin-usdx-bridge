@@ -1,0 +1,77 @@
+# Reconciliation, as a schedule rather than a goroutine.
+#
+# It used to be `go reconciliation.NewJob(...).RunForever()` inside
+# cmd/server: a ticker with no context, no way to stop, and — the part that
+# actually mattered — one copy per API replica. Three API pods meant three
+# unsynchronised runs over the same journal, and scaling the API up tripled
+# the reconciliation load for no extra assurance.
+#
+# concurrencyPolicy: Forbid is the load-bearing line. Two reconcilers racing
+# would both try to open the same break; the partial unique index on
+# (leg, code) WHERE resolved_at IS NULL means the loser takes the update path
+# rather than creating a duplicate, so it is *safe* — but it is still two
+# processes doing one job's work against a table they both read.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: reconcile
+  labels:
+    app: reconcile
+spec:
+  # Every 5 minutes, matching the interval the in-process ticker used, so
+  # the alert thresholds in infra/observability/prometheus/alerts.yml
+  # (ReconciliationNotRunning fires after an hour) stay calibrated.
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  # Deeper history on failures than successes: the failed runs are the ones
+  # anybody ever reads the logs of.
+  failedJobsHistoryLimit: 10
+  startingDeadlineSeconds: 120
+  jobTemplate:
+    spec:
+      # No retries. A run that could not be performed is recorded as ERROR in
+      # reconciliation_runs and the next scheduled run is four minutes away;
+      # retrying immediately against an RPC endpoint that is down just burns
+      # the same failure three times and muddies the run history.
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: reconcile
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: reconcile
+              # TODO: point at the real registry once CI publishes an image.
+              image: <Image>
+              command: ["/usr/local/bin/core-ledger-reconcile"]
+              args: ["--triggered-by", "cron"]
+              envFrom:
+                - secretRef:
+                    name: core-ledger-secrets
+              env:
+                - name: DATABASE_URL
+                  value: "postgres://bridge:bridge@postgres.default.svc.cluster.local:5432/bridge?sslmode=disable"
+                # Read chain supply from the indexer's snapshots rather than
+                # calling an RPC endpoint from a pod that lives for two
+                # seconds. RECONCILE_SNAPSHOT_MAX_AGE is the guard against
+                # an indexer that has silently stopped: a stale snapshot
+                # falls back to a live read instead of passing forever
+                # against a frozen number.
+                - name: RECONCILE_PREFER_SNAPSHOTS
+                  value: "true"
+                - name: RECONCILE_SNAPSHOT_MAX_AGE
+                  value: "10m"
+                # A pod that exits in two seconds can never be scraped, so
+                # the gauges are pushed. Without this the metric-based
+                # paging this phase is built around never fires.
+                - name: PUSHGATEWAY_URL
+                  value: "http://pushgateway.observability.svc.cluster.local:9091"
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "256Mi"
+                  cpu: "500m"

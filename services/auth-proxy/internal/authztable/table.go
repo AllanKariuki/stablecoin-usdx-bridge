@@ -120,4 +120,29 @@ var Default = Table{
 	compile("GET", "/ledger/integrity", authz.PermissionLedgerRead),
 	compile("POST", "/ledger/closures", authz.PermissionLedgerAdmin),
 	compile("GET", "/transfers/:correlationId", authz.PermissionTransactionsReadOwn, authz.PermissionTransactionsReadAny),
+
+	// Reserves & reconciliation (P3). Read-only through the gateway: the
+	// *writers* (services/indexer's chain supply snapshots, services/rms's
+	// custodian statements) are service-to-service calls inside the cluster
+	// and deliberately have no rule here. A reconciliation input reachable
+	// from the internet is a way to make the peg look healthy while it isn't.
+	compile("GET", "/reserves/status", authz.PermissionReservesRead),
+	compile("GET", "/reserves/reconciliation-runs", authz.PermissionReservesRead),
+	compile("GET", "/reserves/reconciliation-runs/:runId", authz.PermissionReservesRead),
+	compile("GET", "/reserves/reconciliation-breaks", authz.PermissionReservesRead),
+	compile("GET", "/reserves/targets", authz.PermissionReservesRead),
+	compile("GET", "/custodians", authz.PermissionReservesRead),
+	compile("GET", "/custodians/:custodianId/statements", authz.PermissionReservesRead),
+	compile("GET", "/attestations", authz.PermissionReservesRead),
+	compile("GET", "/attestations/:attestationId", authz.PermissionReservesRead),
+
+	// Treasury-only. Arming a custodian drift or editing a reserve target can
+	// make a reconciliation break appear or disappear, which is why
+	// reserves:manage is one of the permissions `admin` deliberately does not
+	// hold — see shared/authz/permissions.yaml's segregation-of-duties note.
+	compile("PUT", "/reserves/targets/:currency", authz.PermissionReservesManage),
+	compile("POST", "/custodians/:custodianId/poll", authz.PermissionReservesManage),
+	compile("POST", "/custodians/:custodianId/drift", authz.PermissionReservesManage),
+	compile("POST", "/attestations", authz.PermissionReservesManage),
+	compile("POST", "/attestations/:attestationId/publish", authz.PermissionReservesManage),
 }

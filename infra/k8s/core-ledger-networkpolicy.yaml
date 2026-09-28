@@ -48,6 +48,24 @@ spec:
         - podSelector:
             matchLabels:
               app: identity
+        # P3's two reserve writers. Both POST to /reserves/* — the writers
+        # eth/sol_supply_snapshot and trust_bank_snapshot have never had, and
+        # the reason reconciliation's Leg C was skipped on every run. They go
+        # through the ledger's API rather than writing its tables because a
+        # second process with INSERT rights on a reconciliation input is a
+        # second place the peg can be lied to from.
+        - podSelector:
+            matchLabels:
+              app: indexer
+        - podSelector:
+            matchLabels:
+              app: rms
+        # cmd/reconcile runs as a CronJob pod (infra/k8s/reconcile-cronjob.yaml)
+        # and talks to Postgres directly rather than through the API, but it
+        # shares the core-ledger image and may be given API reads later.
+        - podSelector:
+            matchLabels:
+              app: reconcile
       ports:
         - protocol: TCP
           port: 8081

@@ -58,6 +58,10 @@ const (
 	PermissionRedemptionCreate Permission = "redemption:create"
 	// Read trial balance packs, reconciliation reports, and dashboards.
 	PermissionReportsRead Permission = "reports:read"
+	// Manage custodians, reserve targets and fee schedules, and prepare attestations.
+	PermissionReservesManage Permission = "reserves:manage"
+	// Read reserve status, custodian statements, reconciliation runs and breaks.
+	PermissionReservesRead Permission = "reserves:read"
 	// Read any transaction history, regardless of owner.
 	PermissionTransactionsReadAny Permission = "transactions:read:any"
 	// Read the caller's own transaction history and statements.
@@ -99,6 +103,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionPaymentsWriteOwn,
 		PermissionPaymentsManageAny,
 		PermissionKycSubmit,
+		PermissionReservesRead,
 		PermissionReportsRead,
 		PermissionAdminUsersManage,
 	},
@@ -106,6 +111,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionWalletsReadAny,
 		PermissionTransactionsReadAny,
 		PermissionLedgerRead,
+		PermissionReservesRead,
 		PermissionReportsRead,
 	},
 	RoleCompany: {
@@ -129,6 +135,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionKycReview,
 		PermissionComplianceCasesManage,
 		PermissionComplianceBlacklistManage,
+		PermissionReservesRead,
 		PermissionReportsRead,
 	},
 	RoleCustomer: {
@@ -150,6 +157,8 @@ var RolePermissions = map[Role][]Permission{
 		PermissionTransactionsReverse,
 		PermissionLedgerRead,
 		PermissionLedgerAdmin,
+		PermissionReservesRead,
+		PermissionReservesManage,
 		PermissionReportsRead,
 	},
 }

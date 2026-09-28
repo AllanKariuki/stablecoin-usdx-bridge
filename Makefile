@@ -1,6 +1,6 @@
-.PHONY: help up down logs up-app kill-worker logs-worker \
+.PHONY: help up down logs up-app kill-worker logs-worker up-obs down-obs \
 	test test-unit test-integration test-eth test-sol test-node \
-	build run run-worker docker-build \
+	build run run-worker run-indexer reconcile docker-build \
 	lint fmt fmt-check \
 	authz-gen keycloak-realm \
 	hooks-install secrets-scan \
@@ -50,6 +50,19 @@ down:
 logs:
 	docker compose logs -f
 
+## Start the observability stack (Prometheus, Pushgateway, Grafana, Loki).
+# Behind its own profile so a plain `make up` stays a database and a broker
+# rather than a nine-container stack. Grafana is on 53000, not 3000 — 3000
+# belongs to services/notifications' WebSocket, which the frontend's
+# runtime-config.js hardcodes.
+up-obs:
+	docker compose --profile obs up -d
+	@echo "grafana on http://localhost:53000 (anonymous viewer), prometheus on :59090"
+
+## Stop the observability stack.
+down-obs:
+	docker compose --profile obs down
+
 # ---------------------------------------------------------------------------
 # Tests — this is the one command CI and a fresh clone should both run.
 # A skipped integration test is treated as a failure: see test-integration.
@@ -60,8 +73,8 @@ test: test-unit test-integration test-eth test-sol test-node
 
 ## Go unit tests only — no Postgres required.
 test-unit:
-	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
-	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... -count=1 -race
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
+	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... -count=1 -race
 
 ## Go integration tests against real Postgres — fails (not skips) if unreachable.
 # Also fails if a test that should run against Postgres got silently
@@ -86,7 +99,7 @@ test-sol:
 	cd chains/solana && anchor build --arch v1 --ignore-keys && cargo test -p usdx_bridge
 
 ## Node workspace tests (shared/node/nest-platform, services/bff,
-## services/identity). identity's suite needs real Postgres (see
+## services/identity, services/rms). identity's suite needs real Postgres (see
 ## services/identity/test/fixtures/bootstrap.ts) — depends on `up` the same
 ## way test-integration does. --if-present skips frontend, which has no
 ## test script yet.
@@ -97,11 +110,13 @@ test-node: up
 # Build / run
 # ---------------------------------------------------------------------------
 
-## Build the core-ledger, saga worker and auth-proxy binaries.
+## Build every Go binary.
 build:
 	go build -o bin/core-ledger ./core-ledger/cmd/server
 	go build -o bin/core-ledger-worker ./core-ledger/cmd/worker
+	go build -o bin/core-ledger-reconcile ./core-ledger/cmd/reconcile
 	go build -o bin/auth-proxy ./services/auth-proxy/cmd/server
+	go build -o bin/indexer ./services/indexer/cmd/server
 
 ## Run core-ledger against local infra (needs core-ledger/.env — see .env.example).
 run: up
@@ -112,9 +127,23 @@ run: up
 run-worker: up
 	cd core-ledger && go run ./cmd/worker
 
-## Build the core-ledger image (API + worker, one image, two entrypoints).
+## Run the chain indexer against local infra (needs services/indexer/.env).
+# Nothing writes eth/sol_supply_snapshot without this, so reconciliation's
+# Leg A falls back to calling the chains directly.
+run-indexer: up
+	cd services/indexer && go run ./cmd/server
+
+## Reconcile once and report. Exit 0 balanced, 2 broken, 1 could-not-check.
+# This is the same binary the k8s CronJob runs; `--watch 5m` is the long-lived
+# form compose uses.
+reconcile:
+	cd core-ledger && go run ./cmd/reconcile --triggered-by operator
+
+## Build the core-ledger image (API + worker + reconciler, one image, three
+## entrypoints) and the indexer image.
 docker-build:
 	docker build -f core-ledger/Dockerfile -t usdx/core-ledger:dev .
+	docker build -f services/indexer/Dockerfile -t usdx/indexer:dev .
 
 ## Bring up infra *and* the containerised API and worker.
 # This is what P2's definition of done needs: a worker you can `docker kill`
@@ -139,7 +168,7 @@ logs-worker:
 
 ## Format everything in place.
 fmt:
-	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
+	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
 	cd chains/ethereum && forge fmt
 	cd chains/solana && cargo fmt -p usdx_bridge
 
@@ -149,7 +178,7 @@ fmt-check:
 	cd chains/solana && cargo fmt -p usdx_bridge -- --check
 
 lint: fmt-check
-	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
 	cd chains/solana && cargo clippy -p usdx_bridge --tests -- -D warnings
 	pnpm -r --if-present run lint
 

@@ -2,18 +2,27 @@ package authz
 
 import "testing"
 
-// TestAdminHoldsExactlyTwentyOfTwentyFour regression-locks the
-// segregation-of-duties design documented in permissions.yaml: admin is a
-// platform/IT role, not a compliance or treasury one, and should never
-// silently gain compliance:cases:manage, compliance:blacklist:manage,
-// kyc:review, or ledger:admin just because someone added a new permission
+// TestAdminIsNotTheDefaultRole regression-locks the segregation-of-duties
+// design documented in permissions.yaml: admin is a platform/IT role, not a
+// compliance or treasury one, and should never silently gain
+// compliance:cases:manage, compliance:blacklist:manage, kyc:review,
+// ledger:admin or reserves:manage just because someone added a new permission
 // and forgot admin was supposed to be the exception, not the default.
-func TestAdminHoldsExactlyTwentyOfTwentyFour(t *testing.T) {
-	if got, want := len(allPermissions()), 24; got != want {
-		t.Fatalf("expected 24 total permissions defined, got %d", got)
+//
+// The counts are asserted as well as the exclusions: an exclusion list alone
+// would still pass if a *sixth* sensitive permission were added and quietly
+// granted to admin.
+func TestAdminIsNotTheDefaultRole(t *testing.T) {
+	const totalPermissions = 26
+	// 26 defined minus the 5 excluded below.
+	const adminPermissions = 21
+
+	if got := len(allPermissions()); got != totalPermissions {
+		t.Fatalf("expected %d total permissions defined, got %d", totalPermissions, got)
 	}
-	if got, want := len(RolePermissions[RoleAdmin]), 20; got != want {
-		t.Fatalf("expected admin to hold exactly 20 of 24 permissions, got %d", got)
+	if got := len(RolePermissions[RoleAdmin]); got != adminPermissions {
+		t.Fatalf("expected admin to hold exactly %d of %d permissions, got %d",
+			adminPermissions, totalPermissions, got)
 	}
 
 	excluded := []Permission{
@@ -21,6 +30,11 @@ func TestAdminHoldsExactlyTwentyOfTwentyFour(t *testing.T) {
 		PermissionComplianceBlacklistManage,
 		PermissionKycReview,
 		PermissionLedgerAdmin,
+		// reserves:manage can arm a custodian drift and edit reserve targets,
+		// which between them can make a reconciliation break appear or
+		// disappear. Whoever runs the platform must not also be able to
+		// change what the control watching it reports.
+		PermissionReservesManage,
 	}
 	for _, perm := range excluded {
 		if HasPermission(RoleAdmin, perm) {
@@ -57,7 +71,7 @@ func TestHasPermissionUnknownRoleIsFalse(t *testing.T) {
 // allPermissions lists every Permission constant directly, rather than
 // deriving it from RolePermissions, so an orphaned permission (defined in
 // permissions.yaml but granted to no role) is still counted — the point of
-// this test is catching a drift between the 24 defined and what roles
+// this test is catching a drift between what is defined and what roles
 // actually hold, not just re-deriving one from the other.
 func allPermissions() map[Permission]bool {
 	return map[Permission]bool{
@@ -71,6 +85,7 @@ func allPermissions() map[Permission]bool {
 		PermissionPaymentsReadOwn: true, PermissionPaymentsWriteOwn: true,
 		PermissionPaymentsManageAny: true, PermissionKycSubmit: true, PermissionKycReview: true,
 		PermissionComplianceCasesManage: true, PermissionComplianceBlacklistManage: true,
+		PermissionReservesRead: true, PermissionReservesManage: true,
 		PermissionReportsRead: true, PermissionAdminUsersManage: true,
 	}
 }

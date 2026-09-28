@@ -3,6 +3,144 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-09-28 — P3: on-chain truth
+
+Branch `feat/p3-onchain-truth`. The phase's goal from `docs/building-plan.md`:
+*a treasury operator sees live on-chain supply, circulation, in-transit,
+reserve backing and custodian balance with all three legs green; force a drift
+and a real alert appears in <60s.*
+
+The theme underneath it is R7 — **the one control catching an unbacked mint
+was decorative.** Reconciliation ran on a 5-minute in-process ticker, once per
+API replica, and its only output was `log.Printf`. Nothing persisted, so "was
+the platform balanced at 03:00 last Tuesday" had no answer; a break that
+healed itself was indistinguishable from one nobody noticed; and Leg C had
+been skipped on **every run this platform has ever performed**, because
+`trust_bank_snapshot`'s only documented writer was a service that does not
+exist.
+
+### Added
+
+- **`services/indexer`** (Go + TimescaleDB) — tails Sepolia and devnet,
+  records blocks and events, and POSTs chain supply to core-ledger.
+  - **Reorg handling as a pure function.** `internal/reorg` is hashes and
+    heights with no database and no RPC client, so a fork can be fabricated in
+    a unit test rather than needing an anvil and an `evm_revert`.
+    `internal/tailer`'s tests index a mint, rewrite the chain underneath it,
+    and assert the mint is un-believed — which is R9's mitigation, tested.
+  - A fork deeper than `REORG_DEPTH` is **refused**, not absorbed: rewriting
+    history the platform has already minted against is an incident, not a
+    correction.
+  - Nothing is ever deleted. An orphaned block or event is marked
+    `canonical = false` and kept — a consumer that acted on it needs to be able
+    to see what it acted on.
+  - **`GET /finality/:chain/:txHash`** answers `UNSEEN` / `CONFIRMING` /
+    `FINAL` / `ORPHANED`. The third value is the point: a boolean would
+    collapse "orphaned" into "not seen yet", and a reorged mint would look
+    identical to a slow one, which is what the saga used to wait forever on.
+  - Leader election via a **Postgres advisory lock**, not the k8s Lease the
+    plan called for. The lock lives in the same database as the cursor it
+    protects, so it cannot be held by a process that has lost its connection to
+    that state; a Lease is held in the API server, which a partitioned pod can
+    keep renewing while unable to reach Postgres. It also means the indexer
+    runs correctly under docker-compose, where there is no API server at all.
+- **`services/rms`** (NestJS) — custodians, statements, reserve targets, fee
+  schedules, attestations, and the `CustodianProvider` seam.
+  `StubCustodianProvider` reports core-ledger's own cash position **plus a
+  configurable drift**, so `POST /custodians/primary/drift {"drift":"-1000.00"}`
+  is the DoD's shortfall and `"0"` heals it. A leg nobody has seen break is a
+  leg nobody knows works.
+  - `POST /attestations` refuses while a break is open unless the caller passes
+    `acknowledgeBreaks: true`. Publishing "our reserves are fine" while a
+    control says otherwise is the one thing an attestation must not do by
+    accident.
+- **`core-ledger/cmd/reconcile`** — reconciliation extracted from
+  `cmd/server`'s `go ...RunForever()` into its own binary, run as a k8s
+  CronJob with `concurrencyPolicy: Forbid`. Exit codes are the contract:
+  `0` balanced, `2` broken, `1` could-not-check. A CronJob whose pod always
+  exits 0 tells an operator nothing.
+- **Reconciliation is now a record, not a log line.** Migration `00006` adds
+  `reconciliation_runs` (an observation: every leg, every input, one
+  timestamp) and `reconciliation_breaks` (a condition with a *lifetime* —
+  the same shortfall on twelve runs is one row with twelve observations, which
+  is what makes "how long were we out of balance" answerable and the open list
+  a queue somebody can finish).
+  - Per-leg verdicts are **three-valued**. `NULL` means the leg was not
+    evaluated, which is not the same as passing, and must never render green.
+  - Breaks **auto-resolve** when a run no longer observes them, recording the
+    run that closed them.
+- **The writers the three snapshot tables never had.**
+  `POST /reserves/chain-supply-snapshots` (indexer) and
+  `POST /reserves/custodian-snapshots` (rms), plus a `GET /reserves/status`
+  read surface and the run/break history. They go through the ledger's API
+  rather than writing its tables because a second process with INSERT rights on
+  a reconciliation input is a second place the peg can be lied to from.
+- **`alert()` emits a metric and an event, not a webhook call.** Paging happens
+  from the metric (`infra/observability/prometheus/alerts.yml`) because
+  Prometheus already owns deduplication, grouping and silencing — and because
+  a control that catches an unbacked mint must not depend on Slack being up.
+  The event goes through the transactional outbox, so delivery is durable
+  rather than a best-effort HTTP call from a pod that is about to exit.
+- **NATS JetStream**, turning P2's `Publisher` seam from an HTTP POST into a
+  JetStream publish with no domain code changed. The event type was already the
+  subject: `damp.<domain>.<event>.v1` was chosen in P2 for this moment.
+  `outbox.Choose` picks exactly one destination at boot — a relay publishing to
+  both would deliver twice to anything bridging between them.
+- **Observability stack** behind a compose `obs` profile: Prometheus,
+  Pushgateway, Grafana (provisioned with a Reserves & Reconciliation
+  dashboard), Loki. The Pushgateway is not decoration — a CronJob pod lives for
+  two seconds and can never be scraped, so without it the metric-based paging
+  this phase is built around would silently never fire.
+- **Seven runbooks** (`docs/runbooks/`), one per alert, each with a
+  *what not to do* section. Most of the expensive mistakes available during a
+  reserve incident are things a reasonable person would try first: posting a
+  manual journal to make GL 1100 match the bank, minting replacement tokens
+  after a reorg, resetting a stalled indexer's cursor to the head.
+- `reserves:read` / `reserves:manage` permissions (26 total now).
+  `reserves:manage` is deliberately **excluded from `admin`**, joining
+  `ledger:admin` and the compliance pair: it can arm a custodian drift and edit
+  reserve targets, which between them can make a break appear or disappear, and
+  whoever runs the platform must not also be able to change what the control
+  watching it reports.
+- `platform.Metrics.Register` — the registry was private by design, which was
+  right and also meant a service with domain metrics had no way to publish them
+  without reaching for the global registerer.
+
+### Changed
+
+- **The saga no longer polls a chain for finality** when `INDEXER_URL` is set.
+  All three call sites route through one `awaitFinality`, which is what made
+  swapping the mechanism a two-line change rather than three subtly different
+  ones. The chain poll stays as the fallback for anything the indexer cannot
+  answer — an indexer outage must cost latency, not minting.
+- **`cmd/server` no longer runs reconciliation.** The ticker had no context,
+  no way to stop, and ran once per replica; scaling the API up tripled the
+  reconciliation load for no extra assurance.
+- `trust_bank_snapshot` is keyed on `(custodian_id, currency, as_of)` rather
+  than `as_of` alone. The old key silently assumed one custodian holding one
+  currency forever — a second would have overwritten the first at the same
+  timestamp and Leg C would have compared against whichever landed last.
+  `CustodianBalance` sums **each custodian's latest**, so a custodian that
+  reports hourly cannot mask one that has gone silent, and the returned
+  `as_of` is the *oldest* contributor: a total is only as fresh as its stalest
+  part.
+- `RECONCILE_SNAPSHOT_MAX_AGE` guards against an indexer that has silently
+  stopped. A frozen snapshot is perfectly well-formed and increasingly wrong,
+  and a reconciliation that keeps passing against it is worse than one that
+  fails — it is actively reassuring.
+
+### Notes
+
+- **Not verified live.** Everything here is verified against real Postgres, in
+  unit tests, and by `docker compose config` — nothing in this session touched
+  Sepolia, devnet, or a real custodian. The phase's DoD (force a drift, see the
+  alert in Slack in <60s; `evm_revert` an anvil chain and watch the indexer
+  orphan the block) needs credentials and gas.
+- The `reserve_targets` / `fee_schedules` tables are written and read but
+  nothing consumes fee schedules yet — core-ledger still takes `FEE_*_BPS` from
+  config. The table is the versioned audit record the plan listed below the
+  risk register's line; wiring it as the *source* is P4 work.
+
 ## 2026-09-25
 
 ### Added

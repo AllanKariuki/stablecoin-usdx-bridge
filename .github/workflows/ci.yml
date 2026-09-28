@@ -12,7 +12,8 @@ concurrency:
 jobs:
   # ---------------------------------------------------------------------
   # Go workspace (core-ledger, shared/go/platform, shared/authz,
-  # services/auth-proxy) — one job, since go.work makes them one build.
+  # services/auth-proxy, services/indexer) — one job, since go.work makes
+  # them one build.
   # core-ledger's integration tests run against a real Postgres service
   # container; a skipped one fails the job (see the final step) rather
   # than passing silently — this mirrors `make test-integration` locally.
@@ -42,14 +43,14 @@ jobs:
           go-version-file: go.work
 
       - name: go vet
-        run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/...
+        run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
 
       - name: go test (unit + integration)
         env:
           LEDGER_TEST_DATABASE_URL: postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
         run: |
           set -euo pipefail
-          go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
+          go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
           # Any skip, not just TestIntegration*: P2 added database-backed
           # suites under other names (TestConcurrentClaim,
           # TestSagaResumesAfterCrash, TestIdempotent*), and every t.Skip in
@@ -75,12 +76,13 @@ jobs:
 
   # ---------------------------------------------------------------------
   # Node workspace (shared/node/nest-platform, services/bff,
-  # services/identity) — one pnpm workspace, one job. identity's e2e specs
-  # need a real Postgres (see services/identity/test/fixtures/bootstrap.ts,
-  # mirroring the Go job's own LEDGER_TEST_DATABASE_URL reasoning); bff and
-  # nest-platform's specs are self-contained (fakes / in-process fixtures)
-  # but running everything through one `pnpm -r` catches a workspace-wide
-  # break in any of the three, not just identity's.
+  # services/identity, services/rms) — one pnpm workspace, one job.
+  # identity's e2e specs need a real Postgres (see
+  # services/identity/test/fixtures/bootstrap.ts, mirroring the Go job's own
+  # LEDGER_TEST_DATABASE_URL reasoning); bff, nest-platform and rms's specs
+  # are self-contained (fakes / in-process fixtures) but running everything
+  # through one `pnpm -r` catches a workspace-wide break in any of them, not
+  # just identity's.
   # ---------------------------------------------------------------------
   node:
     name: Node workspace (pnpm)
@@ -114,16 +116,19 @@ jobs:
       - name: pnpm install
         run: pnpm install --frozen-lockfile
 
-      - name: Create identity's databases
+      - name: Create the per-service databases
         # GitHub Actions service containers don't support mounting
         # docker-entrypoint-initdb.d/ the way docker-compose.yaml does (see
-        # infra/postgres/init/01-identity-db.sql) — this is that same SQL,
-        # run by hand against the already-running service container.
+        # infra/postgres/init/) — this is that same SQL, run by hand against
+        # the already-running service container.
         run: |
           PGPASSWORD=bridge psql -h localhost -p 55433 -U bridge -d bridge \
             -c "CREATE ROLE identity WITH LOGIN PASSWORD 'identity';" \
             -c "CREATE DATABASE identity OWNER identity;" \
-            -c "CREATE DATABASE identity_test OWNER identity;"
+            -c "CREATE DATABASE identity_test OWNER identity;" \
+            -c "CREATE ROLE rms WITH LOGIN PASSWORD 'rms';" \
+            -c "CREATE DATABASE rms OWNER rms;" \
+            -c "CREATE DATABASE rms_test OWNER rms;"
 
       - name: pnpm -r test
         run: pnpm -r --if-present run test

@@ -87,6 +87,16 @@ func main() {
 	ledgerSvc := ledger.NewService(repo, cfg.Fees())
 	saga := bridge.NewSaga(repo, ledgerSvc, clients.Router, logger)
 	saga.Finality = cfg.ChainFinality
+	if cfg.IndexerURL != "" {
+		// The indexer is already watching both chains, so the saga asks it
+		// rather than parking a goroutine on an RPC poll — and gets an answer
+		// that distinguishes "not seen yet" from "seen and then orphaned",
+		// which a receipt poll cannot. The chain poll stays as the fallback
+		// for anything the indexer can't answer.
+		saga.UseIndexerFinality(cfg.IndexerURL)
+		logger.Info("saga finality resolved through services/indexer",
+			slog.String("indexer_url", cfg.IndexerURL))
+	}
 
 	workerCfg := worker.DefaultConfig()
 	workerCfg.Concurrency = cfg.WorkerConcurrency
@@ -99,14 +109,16 @@ func main() {
 		w.Run(ctx)
 	}()
 
-	// The relay is optional and its absence is not a degraded state: until
-	// the indexer lands in P3 there is nothing to publish to, and the outbox
-	// keeping every event durably is exactly what it is for.
-	if cfg.OutboxRelayURL != "" {
-		relay := outbox.NewRelay(repo.OutboxStore(), outbox.NewHTTPPublisher(cfg.OutboxRelayURL), logger)
+	// The relay is optional and its absence is not a degraded state: the
+	// outbox keeping every event durably is exactly what it is for. P3 turns
+	// the Publisher seam built in P2 from an HTTP POST into a JetStream
+	// publish without touching a line of domain code — see outbox.Choose.
+	outboxMetrics := outbox.NewMetrics()
+	publisher, closePublisher := outbox.Choose(ctx, logger, cfg.NATSURL, cfg.NATSStream, cfg.OutboxRelayURL)
+	defer closePublisher()
+	if publisher != nil {
+		relay := outbox.NewRelay(repo.OutboxStore(), publisher, logger).WithMetrics(outboxMetrics)
 		go relay.Run(ctx)
-	} else {
-		logger.Info("outbox relay disabled (OUTBOX_RELAY_URL is unset); events accumulate durably")
 	}
 
 	// The worker serves no business traffic, but it still needs probes: a
@@ -116,6 +128,10 @@ func main() {
 	health.AddCheck("database", repo.Ping)
 
 	metrics := platform.NewMetrics(serviceName)
+	if err := metrics.Register(outboxMetrics.Collectors()...); err != nil {
+		logger.Error("registering outbox metrics", slog.Any("error", err))
+		os.Exit(1)
+	}
 	app := fiber.New(fiber.Config{DisableStartupMessage: true, ErrorHandler: platform.ErrorHandler})
 	platform.Chain(app, platform.ChainConfig{Service: serviceName, Logger: logger, Metrics: metrics})
 	health.Register(app)
