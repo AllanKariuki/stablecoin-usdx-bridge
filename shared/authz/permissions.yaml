@@ -1,4 +1,4 @@
-# Single source of truth for DAMP's RBAC model: 6 roles, 24 permissions.
+# Single source of truth for DAMP's RBAC model: 6 roles, 26 permissions.
 #
 # Generates (see shared/authz/gen, `make authz-gen`):
 #   - shared/authz/generated/permissions.go   — services/auth-proxy's role→permission
@@ -14,13 +14,20 @@
 # takes effect immediately instead of waiting for every already-issued token
 # to expire.
 #
-# Design note on why `admin` doesn't hold all 24: four permissions are
+# Design note on why `admin` doesn't hold all of them: five permissions are
 # deliberately excluded from `admin` as a segregation-of-duties control
 # common to regulated fintech — a platform/IT administrator should not be
 # able to unilaterally approve KYC, manage a compliance case, blacklist an
-# address, or perform ledger-level financial administration (period
-# closures, manual journals, fee schedule changes). Those stay exclusive to
-# `compliance` and `treasury` respectively, even for `admin`.
+# address, perform ledger-level financial administration (period closures,
+# manual journals, fee schedule changes), or change what the platform says
+# its reserves are. Those stay exclusive to `compliance` and `treasury`,
+# even for `admin`.
+#
+# reserves:manage is the newest member of that list and belongs there for a
+# specific reason: it can arm a custodian drift and edit reserve targets,
+# which between them can make a reconciliation break appear or disappear.
+# Whoever runs the platform must not also be able to change what the control
+# that watches it reports.
 
 permissions:
   # --- Wallets (core-ledger) ---
@@ -80,6 +87,12 @@ permissions:
     description: Investigate and resolve compliance alerts and cases, including SAR filing.
   compliance:blacklist:manage:
     description: Blacklist/pause an address or contract on-chain via the signer service.
+
+  # --- Reserves / treasury (services/rms, P3) ---
+  reserves:read:
+    description: Read reserve status, custodian statements, reconciliation runs and breaks.
+  reserves:manage:
+    description: Manage custodians, reserve targets and fee schedules, and prepare attestations.
 
   # --- Reporting (services/reporting, P7) ---
   reports:read:
@@ -144,6 +157,7 @@ roles:
       - payments:write:own
       - payments:manage:any
       - kyc:submit
+      - reserves:read
       - reports:read
       - admin:users:manage
 
@@ -156,6 +170,7 @@ roles:
       - kyc:review
       - compliance:cases:manage
       - compliance:blacklist:manage
+      - reserves:read
       - reports:read
 
   auditor:
@@ -164,6 +179,7 @@ roles:
       - wallets:read:any
       - transactions:read:any
       - ledger:read
+      - reserves:read
       - reports:read
 
   treasury:
@@ -174,4 +190,6 @@ roles:
       - transactions:reverse
       - ledger:read
       - ledger:admin
+      - reserves:read
+      - reserves:manage
       - reports:read

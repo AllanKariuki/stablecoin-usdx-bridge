@@ -9,6 +9,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
@@ -48,12 +49,55 @@ type Config struct {
 	// is worth overriding in a demo.
 	ChainFinality string `env:"CHAIN_FINALITY" default:"finalized"`
 
-	// OutboxRelayURL is where the relay POSTs ledger events. Empty disables
-	// the relay entirely and events accumulate in the outbox — which is the
-	// correct behaviour, not a degraded one: there is no consumer until the
-	// indexer lands in P3, and the whole point of the table is that nothing is
-	// lost while there isn't one.
+	// OutboxRelayURL is where the relay POSTs ledger events when there is no
+	// bus. Empty *and* NATSURL empty disables the relay entirely and events
+	// accumulate in the outbox — which is the correct behaviour, not a
+	// degraded one: the whole point of the table is that nothing is lost while
+	// there is no consumer.
 	OutboxRelayURL string `env:"OUTBOX_RELAY_URL" default:""`
+
+	// NATSURL turns the relay's Publisher seam from HTTP into JetStream. P3
+	// is where a bus starts paying for itself: bridge_minted now has three
+	// independent consumers (saga, compliance, notifications) at a rate the
+	// producer doesn't control, which is exactly the situation one HTTP POST
+	// to one endpoint cannot serve. When both this and OutboxRelayURL are set,
+	// NATS wins and the HTTP URL is ignored — one relay, one destination.
+	NATSURL string `env:"NATS_URL" default:""`
+
+	// NATSStream is the JetStream stream that captures damp.> . Created if
+	// absent, which keeps a fresh environment to one `docker compose up`.
+	NATSStream string `env:"NATS_STREAM" default:"DAMP"`
+
+	// ReconcilePreferSnapshots makes the reconciliation job read chain supply
+	// from the indexer's snapshots rather than calling the chains itself.
+	// Default off: a deployment with no indexer must not silently reconcile
+	// against a table nobody writes.
+	ReconcilePreferSnapshots bool `env:"RECONCILE_PREFER_SNAPSHOTS" default:"false"`
+
+	// ReconcileSnapshotMaxAge is how stale an indexer snapshot may be before
+	// the job stops trusting it. An indexer that has stopped advancing leaves
+	// a perfectly well-formed and increasingly wrong number, and a
+	// reconciliation that keeps passing against it is worse than one that
+	// fails — it is actively reassuring.
+	ReconcileSnapshotMaxAge time.Duration `env:"RECONCILE_SNAPSHOT_MAX_AGE" default:"10m"`
+
+	// IndexerURL points the saga's finality check at services/indexer instead
+	// of at an RPC poll. Empty keeps the pre-P3 behaviour exactly, so a
+	// deployment with no indexer is unaffected.
+	//
+	// It is more than a latency improvement (though it is that too: Sepolia's
+	// `finalized` checkpoint is ~15 minutes behind, and the indexer answers
+	// against a confirmation depth this platform chose). The indexer can tell
+	// "not seen yet" from "seen and then orphaned"; an RPC receipt poll
+	// cannot, so a reorged mint looked identical to a slow one and the saga
+	// would wait for it forever.
+	IndexerURL string `env:"INDEXER_URL" default:""`
+
+	// PushgatewayURL is where `reconcile` pushes its gauges. A CronJob pod
+	// lives for seconds and can never be scraped, so without this the
+	// metric-based paging this phase is built around would silently never
+	// fire. Empty is fine for `--watch` and for local runs.
+	PushgatewayURL string `env:"PUSHGATEWAY_URL" default:""`
 }
 
 func Load() (Config, error) {

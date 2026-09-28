@@ -48,6 +48,27 @@ func NewMetrics(service string) *Metrics {
 	return m
 }
 
+// Register adds a service's own collectors to this instance's private
+// registry, so they are exposed by the same /metrics endpoint as the HTTP
+// ones.
+//
+// It exists because the registry is deliberately private (see the type's
+// comment) — which is the right default and also means a service with domain
+// metrics of its own had no way to publish them without reaching for
+// prometheus.DefaultRegisterer and reintroducing exactly the global-state
+// collision this type avoids.
+func (m *Metrics) Register(collectors ...prometheus.Collector) error {
+	for _, c := range collectors {
+		if err := m.registry.Register(c); err != nil {
+			// An AlreadyRegisteredError means the caller registered the same
+			// collector twice, which is a programming error worth reporting
+			// rather than a duplicate series worth tolerating.
+			return err
+		}
+	}
+	return nil
+}
+
 // Middleware records one observation per request, keyed by the matched
 // route pattern (not the raw path) so /wallets/:id doesn't explode the
 // cardinality of every wallet id ever requested.

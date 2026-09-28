@@ -66,6 +66,7 @@ type Relay struct {
 	publisher Publisher
 	logger    *slog.Logger
 	policy    retry.Policy
+	metrics   *Metrics
 
 	Interval   time.Duration
 	BatchSize  int
@@ -85,6 +86,13 @@ func NewRelay(store *Store, publisher Publisher, logger *slog.Logger) *Relay {
 		// publish the same event while the first is still waiting on it.
 		Visibility: 60 * time.Second,
 	}
+}
+
+// WithMetrics is optional: a relay with no metrics still drains correctly,
+// it just has no way to tell anyone it has stopped.
+func (r *Relay) WithMetrics(m *Metrics) *Relay {
+	r.metrics = m
+	return r
 }
 
 func (r *Relay) Run(ctx context.Context) {
@@ -110,6 +118,15 @@ func (r *Relay) Run(ctx context.Context) {
 
 // RunOnce claims and publishes one batch, returning how many were delivered.
 func (r *Relay) RunOnce(ctx context.Context) (int, error) {
+	// The backlog gauge is read even on an empty pass. A relay that reports
+	// only when it has work would go silent exactly when the queue drains —
+	// and silence is indistinguishable from the process having died.
+	if r.metrics != nil {
+		if n, cerr := r.store.PendingCount(ctx); cerr == nil {
+			r.metrics.pending.Set(float64(n))
+		}
+	}
+
 	events, err := r.store.Claim(ctx, r.BatchSize, r.Visibility)
 	if err != nil {
 		return 0, fmt.Errorf("claiming outbox events: %w", err)
@@ -123,6 +140,9 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 		err := r.publisher.Publish(ctx, e)
 		if err == nil {
 			delivered = append(delivered, e.ID)
+			if r.metrics != nil {
+				r.metrics.published.WithLabelValues(e.EventType).Inc()
+			}
 			continue
 		}
 
@@ -134,6 +154,9 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 				slog.String("aggregate_id", e.AggregateID),
 				slog.Int("attempts", e.Attempts),
 				slog.Any("error", err))
+			if r.metrics != nil {
+				r.metrics.deadLetter.Inc()
+			}
 			if derr := r.store.MarkDead(ctx, e.ID, err.Error()); derr != nil {
 				return len(delivered), derr
 			}

@@ -1,0 +1,70 @@
+# Prometheus scrapes every DAMP service's /metrics and, crucially, the
+# Pushgateway — because reconciliation runs as a one-shot CronJob whose pod
+# lives for two seconds and can never be scraped directly.
+#
+# The alerting model this file serves is the P3 decision that matters:
+# reconciliation's alert() no longer calls a webhook. It emits a metric and an
+# outbox event, and paging happens *from the metric*, because Prometheus
+# already owns deduplication, grouping and silencing, and because a control
+# that catches an unbacked mint must not depend on Slack being up.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    platform: damp
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # honor_labels is required: the Pushgateway republishes the `job` and
+  # `instance` labels the pusher set, and without it Prometheus would
+  # overwrite them with "pushgateway" — making every reconciliation run look
+  # like it came from the gateway rather than from the job that performed it.
+  - job_name: pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]
+
+  # host.docker.internal is the bridge back to services still running on the
+  # host in local dev (`make run`, `make run-worker`, `pnpm start`). In k8s
+  # these become ordinary pod targets via annotations.
+  - job_name: core-ledger
+    static_configs:
+      - targets: ["host.docker.internal:8081"]
+        labels: { service: core-ledger }
+
+  - job_name: core-ledger-worker
+    static_configs:
+      - targets: ["host.docker.internal:8181"]
+        labels: { service: core-ledger-worker }
+
+  - job_name: indexer
+    static_configs:
+      - targets: ["host.docker.internal:8083"]
+        labels: { service: indexer }
+
+  - job_name: auth-proxy
+    static_configs:
+      - targets: ["host.docker.internal:8090"]
+        labels: { service: auth-proxy }
+
+  - job_name: bff
+    static_configs:
+      - targets: ["host.docker.internal:3002"]
+        labels: { service: bff }
+
+  - job_name: identity
+    static_configs:
+      - targets: ["host.docker.internal:3001"]
+        labels: { service: identity }
+
+  - job_name: rms
+    static_configs:
+      - targets: ["host.docker.internal:3005"]
+        labels: { service: rms }

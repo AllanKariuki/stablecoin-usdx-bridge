@@ -25,6 +25,8 @@ export type Permission =
   "payments:write:own" |
   "redemption:create" |
   "reports:read" |
+  "reserves:manage" |
+  "reserves:read" |
   "transactions:read:any" |
   "transactions:read:own" |
   "transactions:reverse" |
@@ -54,6 +56,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "payments:write:own",
     "payments:manage:any",
     "kyc:submit",
+    "reserves:read",
     "reports:read",
     "admin:users:manage",
   ],
@@ -61,6 +64,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "wallets:read:any",
     "transactions:read:any",
     "ledger:read",
+    "reserves:read",
     "reports:read",
   ],
   "company": [
@@ -84,6 +88,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "kyc:review",
     "compliance:cases:manage",
     "compliance:blacklist:manage",
+    "reserves:read",
     "reports:read",
   ],
   "customer": [
@@ -105,6 +110,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "transactions:reverse",
     "ledger:read",
     "ledger:admin",
+    "reserves:read",
+    "reserves:manage",
     "reports:read",
   ],
 };
