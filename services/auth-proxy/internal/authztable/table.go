@@ -145,4 +145,52 @@ var Default = Table{
 	compile("POST", "/custodians/:custodianId/drift", authz.PermissionReservesManage),
 	compile("POST", "/attestations", authz.PermissionReservesManage),
 	compile("POST", "/attestations/:attestationId/publish", authz.PermissionReservesManage),
+
+	// Payments (P4). services/payments, reached through bff's upstream proxy.
+	//
+	// Bank accounts read and write under the same wallets:write permissions a
+	// deposit does, deliberately: registering an account you can withdraw to is
+	// as consequential as moving money, and giving it a separate permission
+	// would let a role hold one without the other.
+	compile("GET", "/banks/available", authz.PermissionPaymentsReadOwn),
+	compile("GET", "/banks/user-accounts", authz.PermissionPaymentsReadOwn),
+	compile("GET", "/banks/linked-accounts", authz.PermissionPaymentsReadOwn),
+	compile("GET", "/banks/beneficiaries", authz.PermissionPaymentsReadOwn),
+	compile("POST", "/banks/register", authz.PermissionPaymentsWriteOwn),
+	compile("POST", "/banks/link", authz.PermissionPaymentsWriteOwn),
+	compile("POST", "/banks/beneficiaries", authz.PermissionPaymentsWriteOwn),
+	compile("DELETE", "/banks/user-accounts/:accountId", authz.PermissionPaymentsWriteOwn),
+
+	compile("GET", "/payment-intents", authz.PermissionPaymentsReadOwn, authz.PermissionPaymentsManageAny),
+	compile("GET", "/payment-intents/:intentId", authz.PermissionPaymentsReadOwn, authz.PermissionPaymentsManageAny),
+	compile("POST", "/payment-intents", authz.PermissionPaymentsWriteOwn),
+	compile("POST", "/payment-intents/:intentId/cancel", authz.PermissionPaymentsWriteOwn),
+
+	compile("GET", "/invoices", authz.PermissionPaymentsReadOwn, authz.PermissionPaymentsManageAny),
+	compile("GET", "/invoices/:invoiceId", authz.PermissionPaymentsReadOwn, authz.PermissionPaymentsManageAny),
+	compile("POST", "/invoices", authz.PermissionPaymentsWriteOwn),
+	compile("POST", "/invoices/:invoiceId/void", authz.PermissionPaymentsWriteOwn),
+	compile("POST", "/invoices/:invoiceId/pay", authz.PermissionPaymentsWriteOwn),
+
+	// Notifications (P4).
+	//
+	// Two routes are deliberately absent and must stay absent:
+	//
+	//   - GET /invoices/pay/:token — a payment link is opened by somebody who
+	//     is not logged in, and the token is the credential. It resolves at
+	//     services/payments directly, not through the authenticated gateway.
+	//   - POST /rails/:rail/callback — Safaricom does not hold a DAMP token.
+	//     It reaches services/payments over its own ingress, never this one.
+	//
+	// A rule here for either would be a rule that could never be satisfied,
+	// and adding one "for completeness" would break both flows.
+	compile("GET", "/notifications", authz.PermissionNotificationsReadOwn),
+	compile("POST", "/notifications/read-all", authz.PermissionNotificationsReadOwn),
+	compile("POST", "/notifications/:notificationId/read", authz.PermissionNotificationsReadOwn),
+	compile("GET", "/notification-preferences", authz.PermissionNotificationsReadOwn),
+	compile("PUT", "/notification-preferences", authz.PermissionNotificationsReadOwn),
+
+	compile("GET", "/webhooks", authz.PermissionNotificationsWebhooksManage),
+	compile("POST", "/webhooks", authz.PermissionNotificationsWebhooksManage),
+	compile("DELETE", "/webhooks/:webhookId", authz.PermissionNotificationsWebhooksManage),
 }

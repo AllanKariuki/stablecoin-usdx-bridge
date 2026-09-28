@@ -1,4 +1,6 @@
 import { configureStore } from '@reduxjs/toolkit';
+import { getConfig } from '../../Config';
+import { getToken } from '../../utils/authUtils';
 import { enableMapSet } from 'immer';
 import websocketReducer from '../slices/oauth-web-sockets/websocketSlice';
 import { createWebSocketMiddleWare } from '../../services/websocketMiddleware';
@@ -22,12 +24,27 @@ import bankAccountsReducer from '../slices/bankAccountsSlice';
 // Enable Map and Set support in Immer for Redux state
 enableMapSet();
 
-// Websocket configuration
+// Websocket configuration.
+//
+// The URL comes from runtime-config.js (ws://localhost:3000/ws), which is what
+// services/notifications was built to answer on — the old fallback pointed at
+// :5000, a port nothing in this platform has ever used.
+//
+// The token travels as a query parameter rather than a header because a
+// browser cannot set headers on `new WebSocket()`. That is also why the
+// upgrade is verified by the notifications service itself rather than by
+// Traefik's ForwardAuth (see services/notifications/src/ws/ws.auth.ts).
 const websocketConfig = {
-    url: import.meta.env.VITE_APP_WEBSOCKET_URL || 'ws://127.0.0.1:5000/ws',
+    url: buildWebSocketUrl(),
     reconnectInterval: 5000,
     maxReconnectAttempts: 5
 };
+
+function buildWebSocketUrl(): string {
+    const base = getConfig().VITE_APP_WEBSOCKET_URL || 'ws://localhost:3000/ws';
+    const token = getToken();
+    return token ? `${base}?token=${encodeURIComponent(token)}` : base;
+}
 
 export const store = configureStore({
     reducer: {

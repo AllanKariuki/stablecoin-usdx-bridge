@@ -65,7 +65,7 @@ const NotificationBell: React.FC<NotificationBellProps> = ({
         )}
 
         {/* Critical notification pulse indicator */}
-        {stats.byPriority.critical > 0 && (
+        {stats.bySeverity.critical > 0 && (
           <div className="absolute -top-1 -right-1 w-4 h-4">
             <div className="animate-ping absolute w-full h-full bg-red-400 rounded-full opacity-75"></div>
             <div className="relative w-full h-full bg-red-500 rounded-full"></div>

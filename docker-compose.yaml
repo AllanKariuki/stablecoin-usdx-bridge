@@ -147,6 +147,21 @@ services:
     ports:
       - "53100:3100"
 
+  # Mailpit catches every email services/notifications sends and shows it in a
+  # web UI. It is in the obs profile rather than the default one for the same
+  # reason Grafana is — but it matters more than it looks: without somewhere
+  # for email to go, the EMAIL half of every notification template is a code
+  # path nobody ever runs until a real SMTP provider is configured.
+  mailpit:
+    profiles: ["obs"]
+    image: axllent/mailpit:v1.21
+    container_name: usdx-mailpit
+    ports:
+      - "58025:8025"   # web UI — per the plan's port map
+      - "1025:1025"    # SMTP
+    environment:
+      MP_MAX_MESSAGES: 5000
+
   grafana:
     profiles: ["obs"]
     image: grafana/grafana:11.5.1
@@ -259,6 +274,52 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+
+  payments:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: services/payments/Dockerfile
+    image: usdx/payments:dev
+    container_name: usdx-payments
+    depends_on:
+      postgres:
+        condition: service_healthy
+      core-ledger:
+        condition: service_started
+    env_file:
+      - services/payments/.env
+    environment:
+      DATABASE_URL: postgres://payments:payments@postgres:5432/payments?sslmode=disable
+      CORE_LEDGER_URL: http://core-ledger:8081
+      NOTIFICATIONS_URL: http://notifications:3000
+    ports:
+      - "3003:3003"
+
+  notifications:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: services/notifications/Dockerfile
+    image: usdx/notifications:dev
+    container_name: usdx-notifications
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - services/notifications/.env
+    environment:
+      DATABASE_URL: postgres://notifications:notifications@postgres:5432/notifications?sslmode=disable
+      # Mailpit lives in the obs profile, so this resolves only when both are
+      # up. An unreachable SMTP host logs the email rather than failing the
+      # notification — see EmailTransport.
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+    # 3000 is fixed by frontend/public/runtime-config.js, which declares
+    # VITE_APP_WEBSOCKET_URL = ws://localhost:3000/ws. That is also why
+    # Grafana is on 53000.
+    ports:
+      - "3000:3000"
 
   # reconcile runs on a schedule, not as a long-lived process — the whole
   # point of extracting it from cmd/server was that the in-process ticker

@@ -2,95 +2,75 @@ import { useEffect } from 'react';
 import { useDispatch } from 'react-redux';
 import type { AppDispatch } from '../redux/store';
 import { useWebSocket } from './useWebSocket';
-import { 
+import {
   fetchNotifications,
-  addNotamNotification,
-  addSystemNotification,
-  addGeneralNotification
+  notificationReceived,
 } from '../redux/slices/navigation/unifiedNotificationsSlice';
+import type { NotificationSeverity } from '../types/navigation/unifiedNotifications';
 
 /**
- * Hook to initialize and manage notification system using existing websocket infrastructure
+ * Live notifications from services/notifications.
+ *
+ * This hook used to switch on `notam`, `notam_notification` and `notam_alert`
+ * message types — aviation "Notice to Air Missions" events, left over from the
+ * app this frontend was forked from. Nothing has ever sent one.
+ *
+ * services/notifications sends exactly one message type, `notification`, in
+ * the envelope `frontend/src/types/auth-and-websocket/websocket.ts` already
+ * declares. The server-side shape is in
+ * services/notifications/src/delivery/delivery.service.ts's `dispatch`.
  */
+
+interface IncomingNotification {
+  event: string;
+  subject: string;
+  body: string;
+  severity: NotificationSeverity;
+  payload: Record<string, unknown>;
+}
+
 export const useWebsocketNotifications = () => {
   const dispatch = useDispatch<AppDispatch>();
   const { messages, isConnected } = useWebSocket();
 
-  // Fetch initial notifications on mount
+  // The socket only carries what happens *while* it is open, so the list is
+  // fetched once on mount and again on every reconnect — otherwise anything
+  // that arrived during a dropped connection is invisible until a reload.
   useEffect(() => {
-    dispatch(fetchNotifications());
-  }, [dispatch]);
+    if (isConnected) void dispatch(fetchNotifications());
+  }, [dispatch, isConnected]);
 
-  // Process incoming websocket messages for notifications
   useEffect(() => {
-    if (!isConnected || messages.length === 0) return;
+    if (messages.length === 0) return;
 
-    // Process the latest messages
-    messages.forEach(message => {
-      switch (message.type) {
-        case 'notam':
-        case 'notam_notification':
-        case 'notam_alert': {
-          const payload = message.payload as any;
-          dispatch(addNotamNotification({
-            notam_id: payload.notam_id,
-            location: payload.location,
-            start_time: payload.start_time,
-            end_time: payload.end_time,
-            schedule: payload.schedule,
-            description: payload.description,
-            lower_limit: payload.lower_limit,
-            upper_limit: payload.upper_limit,
-            type: payload.type,
-            status: payload.status,
-            created_at: payload.created_at,
-            source: payload.source,
-            priority: payload.priority || 'medium',
-            title: `NOTAM ${payload.notam_id}`,
-            message: payload.description
-          }));
-          break;
-        }
-        
-        case 'system':
-        case 'system_notification':
-        case 'system_alert': {
-          const payload = message.payload as any;
-          dispatch(addSystemNotification({
-            title: payload.title || 'System Notification',
-            message: payload.message || payload.description,
-            priority: payload.priority || 'medium',
-            systemType: payload.systemType || 'alert',
-            level: payload.level || 'info',
-            actionRequired: payload.actionRequired,
-            actionUrl: payload.actionUrl
-          }));
-          break;
-        }
-        
-        case 'general':
-        case 'general_notification':
-        case 'announcement': {
-          const payload = message.payload as any;
-          dispatch(addGeneralNotification({
-            title: payload.title || 'General Notification',
-            message: payload.message || payload.description,
-            priority: payload.priority || 'medium',
-            type: payload.type || 'info',
-            source: payload.source,
-            expiresAt: payload.expiresAt,
-            actionRequired: payload.actionRequired,
-            actionUrl: payload.actionUrl
-          }));
-          break;
-        }
-      }
-    });
-  }, [messages, isConnected, dispatch]);
+    const latest = messages[messages.length - 1];
+    if (latest.type !== 'notification') return;
 
-  return {
-    isConnected
-  };
+    const incoming = latest.payload as IncomingNotification;
+    dispatch(
+      notificationReceived({
+        // The socket message's own id. The slice dedupes on it, because the
+        // same notification arrives twice by design — once live here, once in
+        // the next fetch.
+        id: latest.id,
+        event: incoming.event,
+        title: incoming.subject,
+        message: incoming.body,
+        severity: incoming.severity,
+        category: categoryOf(incoming.event),
+        data: incoming.payload ?? {},
+        isRead: false,
+        timestamp: new Date(latest.timestamp).toISOString(),
+      }),
+    );
+  }, [dispatch, messages]);
 };
+
+function categoryOf(event: string) {
+  if (event.startsWith('payment.') || event.startsWith('invoice.')) return 'payment' as const;
+  if (event.includes('.ledger.')) return 'ledger' as const;
+  if (event.includes('.reserves.')) return 'reserves' as const;
+  return 'system' as const;
+}
 
 export default useWebsocketNotifications;

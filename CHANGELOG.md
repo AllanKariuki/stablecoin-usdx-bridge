@@ -3,6 +3,135 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-09-28 — P4: money in and out
+
+Branch `feat/p4-payments-notifications`. The phase's goal from
+`docs/building-plan.md`: *a customer links a bank account, deposits fiat,
+converts KES→USD, issues USD-X, and gets an email and an in-app notification
+at each step; a company issues an invoice and the customer pays it.*
+
+### Added
+
+- **`services/payments`** (NestJS) — payment intents, invoices, payment links,
+  beneficiaries, bank accounts and rails. It owns **no balance**: every intent
+  that settles posts one journal transaction through core-ledger, and the
+  entity back-reference comes free because `Deposit`/`Withdraw` already stamp
+  `entity_type = BANK_PAYMENT` with the caller's reference.
+  - **Settlement order is load-bearing:** the rail confirms, *then* the ledger
+    posts, *then* the intent is marked. Marking first would let a crash leave a
+    payment saying SETTLED with no journal entry behind it — a balance that
+    exists in a dashboard and nowhere else.
+  - **4xx and 5xx are not the same answer.** A 4xx is the ledger saying this
+    movement is not allowed and never will be, so the intent fails. A 5xx or a
+    network error is *"we don't know"*, and the intent is deliberately **not**
+    failed — the rail has already moved the money, and marking FAILED on a
+    don't-know is a lie about somebody's bank account. It re-throws instead, so
+    the rail retries, and `payments:<intent id>` makes the retry safe.
+  - **`StubRail` settles through its own callback, not inline.** A stub
+    returning `{status: 'SETTLED'}` from `collect()` would leave the settlement
+    path — the code that decides money moved — untested until the day a real
+    rail was plugged in. It also fails on demand (an amount ending in `.13`),
+    because a payments service whose demo data always succeeds has a failure
+    path nobody has ever run.
+  - **M-Pesa via Daraja sandbox** (STK Push to collect, B2C to disburse), for
+    the plan's stated reason: free and self-service. Unconfigured is a normal
+    state — `RailRegistry` falls back to the stub and logs it, rather than
+    500-ing routes the frontend already calls. Daraja's two incompatible
+    callback shapes are parsed behind one method so none of that mess reaches
+    settlement. An amount with cents is **refused** rather than sent: Daraja
+    truncates silently, which would settle a different amount than the intent
+    records.
+  - **Only the last four digits of an account number are stored.** Once the
+    rail has its opaque handle, the number is a credential for a customer's
+    bank relationship and nothing more.
+  - Invoices carry an unguessable `pay_token`; voiding clears it, which makes
+    voiding a revocation rather than a label.
+- **`services/notifications`** (NestJS) on **:3000 with `/ws`** — the port and
+  path `frontend/public/runtime-config.js` has declared since before this
+  service existed. Templates, preferences, a delivery log, and HMAC-signed
+  outbound webhooks.
+  - **The delivery row is written before anything is sent.** A notification
+    sent but not recorded is one nobody can prove happened. In a dispute,
+    *"did they know"* is a different question from *"did it happen"*, and this
+    table is the only answer to the first.
+  - **Consumes core-ledger's transactional outbox** at `/internal/outbox`,
+    which is where reconciliation's break alerts land. P3 gave `alert()` a
+    metric and an event instead of a `log.Printf`; this is the thing on the
+    other end, and the last link in making R7 untrue.
+  - **The socket is a fan-out, not an API** — the only inbound message
+    accepted is a ping. A client that could *act* over the WebSocket would be
+    acting over a channel that bypasses the gateway's route table, where every
+    permission check this platform has lives.
+  - WebSocket auth happens in this service rather than at Traefik because a
+    browser cannot set headers on `new WebSocket()`. It is the one place
+    outside auth-proxy that verifies a JWT, and it establishes *who* is
+    connecting and nothing else.
+  - Webhook signatures sign the timestamp **with** the body, so a captured
+    request cannot be replayed. The secret is returned once: one that can be
+    re-read from an API proves nothing.
+- **bff upstream proxy** — route shapes listed explicitly rather than a
+  wildcard, so the set of publicly reachable paths is readable in one file and
+  matches auth-proxy's rules one for one. A blanket `@All('*')` would make a
+  new upstream endpoint publicly reachable the moment it was written.
+- `notifications:read:own` / `notifications:webhooks:manage` (28 permissions),
+  Mailpit in the `obs` profile, and both services in compose, k8s and
+  Prometheus.
+
+### Changed — the frontend stops inventing data
+
+Three slices were structured so that **a failed request wrote mock data into
+state as though it had come from the server**. The screens looked fully
+working and were not wired to anything.
+
+- **`bankAccountsSlice`** — every one of its seven thunks caught its own error
+  and `rejectWithValue`'d a `MOCK_*` blob. Rewritten against the real
+  `/banks/*` routes with no fallback. The two-section "my accounts" / "linked
+  accounts" UI became one list, because registered and verified are *statuses
+  of one account*, not two kinds of object — showing both made an account
+  appear twice the moment it was verified.
+- **`conversionClient`** — `const USE_MOCK = 'true'`, a non-empty string and so
+  unconditionally truthy, with the env-driven line commented out directly
+  above it. Every FX quote and conversion was invented. It now reads
+  `VITE_USE_MOCK_API`, posts to `/fx/quotes` and `/fx/conversions` (the routes
+  core-ledger has always served; the bare `/quotes` it used to post to has
+  never existed), and uses the app's shared axios instance — the old one built
+  its own client against a default that now points at the notifications
+  WebSocket, carrying a bearer token from a `localStorage` key nothing has
+  ever written.
+- **`unifiedNotificationsSlice`** — `GET /notifications/unified` (never
+  served), catching the 404 and returning three hardcoded notices. Now reads
+  services/notifications, and receives live pushes over the WebSocket.
+- **The aviation lineage finally leaves.** The notification system was built
+  around NOTAMs — *Notice to Air Missions*, with altitude bands, a
+  start/end schedule and a `/dispatch/notam-alerts/:id` route — from the app
+  this frontend was forked from, the same lineage P0 purged Cesium, three.js
+  and the flight/crew chart components from. Replaced with the four event
+  families this platform actually emits: payment, ledger, reserves, system.
+- **Removed `@types/axios`** — a 2016 DefinitelyTyped stub for axios 0.9 that
+  declares a global `Axios` namespace and shadowed the types axios has shipped
+  in-package since 0.14. Every `AxiosInstance` in the app was resolving to it.
+
+### Notes
+
+- **Not verified live.** 69 Node tests pass (11 of them on the settlement path
+  specifically), the frontend builds and its 13 tests pass, `docker compose
+  config` validates. Nothing here has talked to Daraja, a real bank, or an SMTP
+  server that isn't Mailpit.
+- The frontend's pre-existing `tsc` debt is unchanged at ~145 errors, none of
+  them in a file this phase touched (see the P1 note: the portal was forked
+  from an unrelated multi-asset template and carries trading/investments/
+  insurance/loans pages that aren't planned services at all). `vite build`
+  succeeds, as it did before.
+- `conversionClient`'s mock methods still don't type-check. They are the
+  documented `VITE_USE_MOCK_API` escape hatch and were already broken; deleting
+  ~300 lines of them was more scope than rewiring the client warranted.
+- WebSocket fan-out is per-process, so with more than one notifications replica
+  a customer connected to A misses a push produced on B. Tolerable rather than
+  ignored: the socket is not the durable path — every notification is written
+  to `deliveries` first and re-fetched on reconnect — so it costs latency, not
+  information. The exact fix is a shared pub/sub, and NATS has been in the
+  cluster since P3.
+
 ## 2026-09-28 — P3: on-chain truth
 
 Branch `feat/p3-onchain-truth`. The phase's goal from `docs/building-plan.md`:

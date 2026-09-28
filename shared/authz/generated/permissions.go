@@ -48,6 +48,10 @@ const (
 	PermissionLedgerAdmin Permission = "ledger:admin"
 	// Read trial balance, integrity checks, and account balances.
 	PermissionLedgerRead Permission = "ledger:read"
+	// Read the caller's own notifications and notification preferences.
+	PermissionNotificationsReadOwn Permission = "notifications:read:own"
+	// Register and remove outbound webhook endpoints.
+	PermissionNotificationsWebhooksManage Permission = "notifications:webhooks:manage"
 	// Manage payments across an organization's sub-accounts.
 	PermissionPaymentsManageAny Permission = "payments:manage:any"
 	// Read the caller's own payment intents, invoices, and payouts.
@@ -103,6 +107,8 @@ var RolePermissions = map[Role][]Permission{
 		PermissionPaymentsWriteOwn,
 		PermissionPaymentsManageAny,
 		PermissionKycSubmit,
+		PermissionNotificationsReadOwn,
+		PermissionNotificationsWebhooksManage,
 		PermissionReservesRead,
 		PermissionReportsRead,
 		PermissionAdminUsersManage,
@@ -127,6 +133,8 @@ var RolePermissions = map[Role][]Permission{
 		PermissionPaymentsWriteOwn,
 		PermissionPaymentsManageAny,
 		PermissionKycSubmit,
+		PermissionNotificationsReadOwn,
+		PermissionNotificationsWebhooksManage,
 	},
 	RoleCompliance: {
 		PermissionWalletsReadAny,
@@ -135,6 +143,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionKycReview,
 		PermissionComplianceCasesManage,
 		PermissionComplianceBlacklistManage,
+		PermissionNotificationsReadOwn,
 		PermissionReservesRead,
 		PermissionReportsRead,
 	},
@@ -150,6 +159,8 @@ var RolePermissions = map[Role][]Permission{
 		PermissionPaymentsReadOwn,
 		PermissionPaymentsWriteOwn,
 		PermissionKycSubmit,
+		PermissionNotificationsReadOwn,
+		PermissionNotificationsWebhooksManage,
 	},
 	RoleTreasury: {
 		PermissionWalletsReadAny,
@@ -157,6 +168,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionTransactionsReverse,
 		PermissionLedgerRead,
 		PermissionLedgerAdmin,
+		PermissionNotificationsReadOwn,
 		PermissionReservesRead,
 		PermissionReservesManage,
 		PermissionReportsRead,

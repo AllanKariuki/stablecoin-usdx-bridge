@@ -58,6 +58,7 @@ logs:
 up-obs:
 	docker compose --profile obs up -d
 	@echo "grafana on http://localhost:53000 (anonymous viewer), prometheus on :59090"
+	@echo "mailpit on http://localhost:58025 — every email notifications sends lands here"
 
 ## Stop the observability stack.
 down-obs:
@@ -98,8 +99,8 @@ test-eth:
 test-sol:
 	cd chains/solana && anchor build --arch v1 --ignore-keys && cargo test -p usdx_bridge
 
-## Node workspace tests (shared/node/nest-platform, services/bff,
-## services/identity, services/rms). identity's suite needs real Postgres (see
+## Node workspace tests (nest-platform, bff, identity, rms, payments,
+## notifications). identity's suite needs real Postgres (see
 ## services/identity/test/fixtures/bootstrap.ts) — depends on `up` the same
 ## way test-integration does. --if-present skips frontend, which has no
 ## test script yet.
@@ -139,11 +140,12 @@ run-indexer: up
 reconcile:
 	cd core-ledger && go run ./cmd/reconcile --triggered-by operator
 
-## Build the core-ledger image (API + worker + reconciler, one image, three
-## entrypoints) and the indexer image.
+## Build every service image.
 docker-build:
 	docker build -f core-ledger/Dockerfile -t usdx/core-ledger:dev .
 	docker build -f services/indexer/Dockerfile -t usdx/indexer:dev .
+	docker build -f services/payments/Dockerfile -t usdx/payments:dev .
+	docker build -f services/notifications/Dockerfile -t usdx/notifications:dev .
 
 ## Bring up infra *and* the containerised API and worker.
 # This is what P2's definition of done needs: a worker you can `docker kill`

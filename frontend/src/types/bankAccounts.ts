@@ -1,36 +1,66 @@
+/**
+ * The shapes services/payments actually returns.
+ *
+ * What this file used to hold was a guess — `UserBankAccount` with a full
+ * `accountNumber` and a `balance?: number`, plus ~110 lines of `MOCK_*`
+ * fixtures that the Redux slice wrote into state whenever a request failed.
+ * Two of those fields could never be served by a real backend:
+ *
+ *  - **The account number.** services/payments stores only the last four
+ *    digits (see `bank_accounts.account_last4`): once the rail has its own
+ *    opaque handle, the number is a credential for the customer's bank
+ *    relationship and nothing more. There is no endpoint that can reveal it,
+ *    which is why the UI's old "reveal account number" eye toggle went with
+ *    it — it was revealing mock data.
+ *  - **The balance.** A bank account's balance is the bank's to know. What
+ *    this platform knows is a *wallet* balance, which lives in core-ledger and
+ *    is rendered as a `Money` object, never a float.
+ */
+
 export interface Bank {
   id: string;
   name: string;
-  type: string;
-  icon?: string;
-  description?: string;
-  isSupported: boolean;
-  supportedActions?: string[];
+  country: string;
+  currency: string;
+  swiftCode: string;
+  /** Which RailProvider moves money to and from this institution. */
+  rail: string;
+  logoUrl: string;
 }
 
-export interface UserBankAccount {
+export type BankAccountStatus = 'PENDING' | 'VERIFIED' | 'REJECTED' | 'REMOVED';
+
+export interface BankAccount {
   id: string;
   bankId: string;
   bankName: string;
-  accountNumber: string;
-  accountHolder: string;
-  balance?: number;
-  type: string;
-  isActive: boolean;
-  isVerified?: boolean;
-  linkedDate?: string;
-  lastVerified?: string;
-  connectionType?: 'manual' | 'linked';
+  accountName: string;
+  /**
+   * `••••1234`. Everything the platform holds, not a redaction of something it
+   * could show if asked.
+   */
+  accountNumberMasked: string;
+  currency: string;
+  /**
+   * PENDING until a rail confirms the customer controls the account.
+   * A withdrawal may only target a VERIFIED account — paying out to one
+   * nobody has proved they control is the mistake this distinction exists to
+   * prevent.
+   */
+  status: BankAccountStatus;
+  isDefault: boolean;
+  verifiedAt: string | null;
 }
 
-export interface LinkedAccount {
+export interface Beneficiary {
   id: string;
-  bankName: string;
-  accountNumber: string;
-  accountType: string;
-  linkedDate: string;
-  lastVerified: string;
-  isVerified: boolean;
+  name: string;
+  /** WALLET pays another DAMP party; BANK and MOBILE leave the platform. */
+  kind: 'BANK' | 'WALLET' | 'MOBILE';
+  bankId: string | null;
+  accountRef: string;
+  currency: string;
+  targetPartyId: string;
 }
 
 export interface SavedBank {
@@ -45,116 +75,3 @@ export interface SavedBank {
   };
   isDefault?: boolean;
 }
-
-// Mock Data
-export const MOCK_BANKS: Bank[] = [
-  {
-    id: 'b1',
-    name: 'Kenya Commercial Bank',
-    type: 'Tier 1 Bank',
-    icon: '🏦',
-    description: 'Major commercial bank with nationwide presence',
-    isSupported: true,
-    supportedActions: ['transfer', 'payment', 'withdrawal', 'deposit'],
-  },
-  {
-    id: 'b2',
-    name: 'Equity Bank',
-    type: 'Tier 1 Bank',
-    icon: '🏦',
-    description: 'Digital banking services and solutions',
-    isSupported: true,
-    supportedActions: ['transfer', 'payment', 'withdrawal'],
-  },
-  {
-    id: 'b3',
-    name: 'Standard Chartered Bank',
-    type: 'International Bank',
-    icon: '🌍',
-    description: 'Global banking and financial services',
-    isSupported: true,
-    supportedActions: ['transfer', 'payment'],
-  },
-  {
-    id: 'b4',
-    name: 'NCBA Bank',
-    type: 'Tier 1 Bank',
-    icon: '🏦',
-    description: 'National bank with digital capabilities',
-    isSupported: true,
-    supportedActions: ['transfer', 'withdrawal', 'deposit'],
-  },
-  {
-    id: 'b5',
-    name: 'Absa Bank',
-    type: 'Tier 1 Bank',
-    icon: '🏦',
-    description: 'African banking services',
-    isSupported: false,
-    supportedActions: [],
-  },
-  {
-    id: 'b6',
-    name: 'Barclays Bank Kenya',
-    type: 'International Bank',
-    icon: '🌍',
-    description: 'International banking and investment services',
-    isSupported: false,
-    supportedActions: [],
-  },
-];
-
-export const MOCK_USER_BANK_ACCOUNTS: UserBankAccount[] = [
-  {
-    id: 'uba1',
-    bankId: 'b1',
-    bankName: 'Kenya Commercial Bank',
-    accountNumber: '0123456789',
-    accountHolder: 'John Doe',
-    balance: 125000,
-    type: 'Savings Account',
-    isActive: true,
-    isVerified: true,
-    linkedDate: '2024-11-15T10:00:00Z',
-    lastVerified: '2025-01-20T09:30:00Z',
-    connectionType: 'manual',
-  },
-  {
-    id: 'uba2',
-    bankId: 'b2',
-    bankName: 'Equity Bank',
-    accountNumber: '9876543210',
-    accountHolder: 'John Doe',
-    balance: 85000,
-    type: 'Current Account',
-    isActive: true,
-    isVerified: true,
-    linkedDate: '2024-12-01T10:00:00Z',
-    lastVerified: '2025-01-20T09:30:00Z',
-    connectionType: 'linked',
-  },
-];
-
-export const MOCK_LINKED_ACCOUNTS: LinkedAccount[] = [
-  {
-    id: 'l1',
-    bankName: 'Equity Bank',
-    accountNumber: '9876543210',
-    accountType: 'Savings Account',
-    linkedDate: '2024-12-01T10:00:00Z',
-    lastVerified: '2025-01-20T09:30:00Z',
-    isVerified: true,
-  },
-];
-
-export const MOCK_SAVED_BANKS: SavedBank[] = [
-  {
-    id: 'b1',
-    name: 'Kenya Commercial Bank',
-    type: 'Tier 1 Bank',
-    accountNumber: '0123456789',
-    accountHolder: 'John Doe',
-    lastTransfer: { amount: 50000, date: '2025-01-15T14:30:00Z' },
-    isDefault: true,
-  },
-];

@@ -1,239 +1,157 @@
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
-import type { Bank, UserBankAccount } from '../../types/bankAccounts';
+import type { Bank } from '../../types/bankAccounts';
+
+export interface RegisterAccountInput {
+  bankId: string;
+  accountName: string;
+  accountNumber: string;
+  currency: string;
+}
 
 interface BankAccountFormProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (account: Omit<UserBankAccount, 'id'>) => void;
+  onSubmit: (account: RegisterAccountInput) => void;
+  banks: Bank[];
   selectedBank?: Bank;
-  editAccount?: UserBankAccount;
+  submitting?: boolean;
 }
 
+/**
+ * Registering a bank account.
+ *
+ * Four fields, down from six. The two that went:
+ *
+ *  - **Account type** ("Savings", "Current"…) was a free-text label nothing
+ *    downstream read. services/payments routes by the *bank's* rail, not by
+ *    what the customer calls their account.
+ *  - **Balance** was a number the customer typed in about their own bank
+ *    account, which this platform then displayed as fact. A balance the
+ *    platform cannot verify is worse than no balance.
+ *
+ * The account number is sent once and never stored: services/payments keeps
+ * the last four digits and the rail's opaque handle. That is worth telling the
+ * customer, so the form says so.
+ */
 const BankAccountForm: React.FC<BankAccountFormProps> = ({
   isOpen,
   onClose,
   onSubmit,
+  banks,
   selectedBank,
-  editAccount,
+  submitting = false,
 }) => {
-  const [formData, setFormData] = useState({
-    bankName: editAccount?.bankName || selectedBank?.name || '',
-    bankId: editAccount?.bankId || selectedBank?.id || '',
-    accountNumber: editAccount?.accountNumber || '',
-    accountHolder: editAccount?.accountHolder || '',
-    type: editAccount?.type || 'Savings Account',
-    balance: editAccount?.balance?.toString() || '',
-  });
-
+  const [bankId, setBankId] = useState(selectedBank?.id ?? '');
+  const [accountName, setAccountName] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const accountTypes = [
-    'Savings Account',
-    'Current Account',
-    'Checking Account',
-    'Business Account',
-    'Fixed Deposit Account',
-  ];
+  if (!isOpen) return null;
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
-    // Clear error when user starts typing
-    if (errors[name]) {
-      setErrors((prev) => ({ ...prev, [name]: '' }));
+  const bank = banks.find((b) => b.id === (selectedBank?.id ?? bankId));
+
+  const validate = (): boolean => {
+    const next: Record<string, string> = {};
+    if (!bank) next.bankId = 'Choose a bank';
+    if (!accountName.trim()) next.accountName = 'Enter the name on the account';
+    // Digits only, and long enough to have a meaningful last four. Deliberately
+    // not a per-bank format check: getting that wrong rejects valid accounts,
+    // and the rail verifies the account properly anyway.
+    if (!/^\d{6,}$/.test(accountNumber.replace(/\s/g, ''))) {
+      next.accountNumber = 'Enter the full account number (digits only)';
     }
-  };
-
-  const validate = () => {
-    const newErrors: Record<string, string> = {};
-
-    if (!formData.accountNumber.trim()) {
-      newErrors.accountNumber = 'Account number is required';
-    } else if (!/^\d{10,20}$/.test(formData.accountNumber)) {
-      newErrors.accountNumber = 'Account number must be 10-20 digits';
-    }
-
-    if (!formData.accountHolder.trim()) {
-      newErrors.accountHolder = 'Account holder name is required';
-    }
-
-    if (formData.balance && isNaN(Number(formData.balance))) {
-      newErrors.balance = 'Balance must be a valid number';
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    setErrors(next);
+    return Object.keys(next).length === 0;
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!validate()) return;
-
-    const newAccount: Omit<UserBankAccount, 'id'> = {
-      bankId: formData.bankId,
-      bankName: formData.bankName,
-      accountNumber: formData.accountNumber,
-      accountHolder: formData.accountHolder,
-      type: formData.type,
-      balance: formData.balance ? Number(formData.balance) : undefined,
-      isActive: true,
-      isVerified: false,
-      linkedDate: new Date().toISOString(),
-      connectionType: 'manual',
-    };
-
-    onSubmit(newAccount);
-    handleClose();
-  };
-
-  const handleClose = () => {
-    setFormData({
-      bankName: '',
-      bankId: '',
-      accountNumber: '',
-      accountHolder: '',
-      type: 'Savings Account',
-      balance: '',
+    if (!validate() || !bank) return;
+    onSubmit({
+      bankId: bank.id,
+      accountName: accountName.trim(),
+      accountNumber: accountNumber.replace(/\s/g, ''),
+      currency: bank.currency,
     });
-    setErrors({});
-    onClose();
   };
-
-  if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <h2 className="text-xl font-bold text-gray-800">
-            {editAccount ? 'Edit Bank Account' : 'Register Bank Account'}
-          </h2>
-          <button
-            onClick={handleClose}
-            className="p-1 hover:bg-gray-100 rounded-full transition-colors"
-          >
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg w-full max-w-md">
+        <div className="flex items-center justify-between p-5 border-b border-gray-200">
+          <h2 className="text-lg font-semibold text-gray-900">Add a bank account</h2>
+          <button onClick={onClose} className="p-1 hover:bg-gray-100 rounded transition-colors">
             <X className="w-5 h-5 text-gray-500" />
           </button>
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          {/* Bank Name (read-only if selectedBank) */}
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
           <div>
-            <label htmlFor="bankName" className="block text-sm font-medium text-gray-700 mb-1">
-              Bank Name
-            </label>
-            <input
-              id="bankName"
-              name="bankName"
-              type="text"
-              value={formData.bankName}
-              onChange={handleChange}
-              readOnly={!!selectedBank}
-              className={`w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                selectedBank ? 'bg-gray-50 cursor-not-allowed' : ''
-              }`}
-              required
-            />
-          </div>
-
-          {/* Account Holder */}
-          <div>
-            <label htmlFor="accountHolder" className="block text-sm font-medium text-gray-700 mb-1">
-              Account Holder Name *
-            </label>
-            <input
-              id="accountHolder"
-              name="accountHolder"
-              type="text"
-              value={formData.accountHolder}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Enter account holder name"
-              required
-            />
-            {errors.accountHolder && (
-              <p className="text-red-600 text-xs mt-1">{errors.accountHolder}</p>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Bank</label>
+            {selectedBank ? (
+              <p className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-gray-900">
+                {selectedBank.name}
+              </p>
+            ) : (
+              <select
+                value={bankId}
+                onChange={(e) => setBankId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">Choose a bank…</option>
+                {banks.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name} ({b.currency})
+                  </option>
+                ))}
+              </select>
             )}
+            {errors.bankId && <p className="text-red-600 text-xs mt-1">{errors.bankId}</p>}
           </div>
 
-          {/* Account Number */}
           <div>
-            <label htmlFor="accountNumber" className="block text-sm font-medium text-gray-700 mb-1">
-              Account Number *
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Name on the account</label>
             <input
-              id="accountNumber"
-              name="accountNumber"
-              type="text"
-              value={formData.accountNumber}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Enter account number"
-              required
+              value={accountName}
+              onChange={(e) => setAccountName(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              placeholder="As it appears on your statement"
             />
-            {errors.accountNumber && (
-              <p className="text-red-600 text-xs mt-1">{errors.accountNumber}</p>
-            )}
+            {errors.accountName && <p className="text-red-600 text-xs mt-1">{errors.accountName}</p>}
           </div>
 
-          {/* Account Type */}
           <div>
-            <label htmlFor="type" className="block text-sm font-medium text-gray-700 mb-1">
-              Account Type *
-            </label>
-            <select
-              id="type"
-              name="type"
-              value={formData.type}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              required
-            >
-              {accountTypes.map((type) => (
-                <option key={type} value={type}>
-                  {type}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Balance (optional) */}
-          <div>
-            <label htmlFor="balance" className="block text-sm font-medium text-gray-700 mb-1">
-              Initial Balance (Optional)
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Account number</label>
             <input
-              id="balance"
-              name="balance"
-              type="text"
-              value={formData.balance}
-              onChange={handleChange}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Enter balance amount"
+              value={accountNumber}
+              onChange={(e) => setAccountNumber(e.target.value)}
+              inputMode="numeric"
+              autoComplete="off"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg font-mono focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              placeholder="0000000000"
             />
-            {errors.balance && (
-              <p className="text-red-600 text-xs mt-1">{errors.balance}</p>
-            )}
+            {errors.accountNumber && <p className="text-red-600 text-xs mt-1">{errors.accountNumber}</p>}
+            <p className="text-xs text-gray-500 mt-1.5">
+              We keep only the last four digits. The full number is used once to set up the account with
+              your bank and is never stored.
+            </p>
           </div>
 
-          {/* Form Actions */}
-          <div className="flex gap-3 pt-4">
+          <div className="flex gap-3 pt-2">
             <button
               type="button"
-              onClick={handleClose}
-              className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 font-medium rounded-lg hover:bg-gray-50 transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+              disabled={submitting}
+              className="flex-1 px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
             >
-              {editAccount ? 'Update Account' : 'Register Account'}
+              {submitting ? 'Adding…' : 'Add account'}
             </button>
           </div>
         </form>
