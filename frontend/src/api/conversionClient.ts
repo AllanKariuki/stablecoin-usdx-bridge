@@ -3,7 +3,8 @@
  * Typed API functions with mock implementations that can be swapped via environment variables
  */
 
-import axios, { type AxiosInstance } from 'axios';
+import type { AxiosInstance } from 'axios';
+import { axiosInstance } from './index';
 import type {
   ConversionQuote,
   QuoteRequest,
@@ -17,9 +18,20 @@ import type {
   TransactionHistory,
 } from '../types/conversion';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api';
-// const USE_MOCK = import.meta.env.VITE_USE_MOCK_API === 'true';
-const USE_MOCK = 'true';
+/**
+ * Mocking is off by default, and is now a real flag rather than a constant.
+ *
+ * `const USE_MOCK = 'true'` — a non-empty string, so unconditionally truthy —
+ * made every method in this file return invented rates and fake conversions,
+ * with the env-driven line directly above it commented out. The FX screens
+ * looked fully working and moved no money.
+ *
+ * core-ledger has served `/fx/quotes` and `/fx/conversions` since before this
+ * file was written; the BFF forwards them. Setting VITE_USE_MOCK_API=true is
+ * still possible for a UI-only demo, but it is now something somebody has to
+ * choose.
+ */
+const USE_MOCK = import.meta.env.VITE_USE_MOCK_API === 'true';
 
 
 /**
@@ -30,20 +42,21 @@ export class ConversionClient {
   private quoteCache: Map<string, ConversionQuote & { cachedAt: number }> = new Map();
   private readonly QUOTE_TTL = 5 * 60 * 1000; // 5 minutes
 
-  constructor(baseURL = API_BASE_URL) {
-    this.api = axios.create({
-      baseURL,
-      timeout: 10000,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
-
-    // Add auth token if available
-    const token = localStorage.getItem('authToken');
-    if (token) {
-      this.api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-    }
+  /**
+   * Uses the app's shared axios instance rather than creating a second one.
+   *
+   * The old constructor built its own client against
+   * `VITE_API_BASE_URL || 'http://localhost:3000/api'` — a default that now
+   * points at the notifications WebSocket — and attached a bearer token it
+   * read from `localStorage.authToken`, a key nothing in this app has ever
+   * written (the token lives in sessionStorage, via authUtils). So every
+   * non-mocked call it made was unauthenticated, to the wrong port.
+   *
+   * The shared instance carries the gateway base URL from runtime-config.js
+   * and attaches the real token in its request interceptor.
+   */
+  constructor() {
+    this.api = axiosInstance;
   }
 
   /**
@@ -54,8 +67,8 @@ export class ConversionClient {
     if (USE_MOCK) {
       return this.mockGetCurrencies();
     }
-    const response = await this.api.get<{ data: Currency[] }>('/currencies');
-    return response.data.data;
+    const response = await this.api.get<{ currencies: Currency[] }>('/currencies');
+    return response.data.currencies;
   }
 
   /**
@@ -78,7 +91,9 @@ export class ConversionClient {
     }
 
     try {
-      const response = await this.api.post<ConversionQuote>('/quotes', request);
+      // core-ledger's own route shape (see its handlers.go), forwarded by the
+      // BFF. The bare '/quotes' this used to post to has never existed.
+      const response = await this.api.post<ConversionQuote>('/fx/quotes', request);
       const quote = response.data;
 
       // Cache the quote
@@ -109,7 +124,7 @@ export class ConversionClient {
     }
 
     try {
-      const response = await this.api.post<ConversionResponse>('/conversions', request, {
+      const response = await this.api.post<ConversionResponse>('/fx/conversions', request, {
         headers: {
           'Idempotency-Key': request.idempotencyKey,
         },

@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications
+  labels:
+    app: notifications
+spec:
+  # Two replicas, with one caveat worth knowing: WebSocket fan-out is
+  # per-process. A notification is delivered to the sockets *this* replica
+  # holds, so with two replicas a customer connected to replica A misses a
+  # push produced on replica B.
+  #
+  # It is tolerable rather than ignored, because the socket is not the durable
+  # path: every notification is written to `deliveries` first and the client
+  # re-fetches the list on every (re)connect, so a missed push costs latency,
+  # not information. Making it exact means a shared pub/sub — NATS is already
+  # in the cluster as of P3 — and is the right fix when a customer's socket
+  # count justifies it.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: notifications
+  template:
+    metadata:
+      labels:
+        app: notifications
+    spec:
+      containers:
+        - name: notifications
+          # TODO: point at the real registry once CI publishes an image.
+          image: <Image>
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - secretRef:
+                name: notifications-secrets   # SMTP credentials
+          env:
+            - name: PORT
+              value: "3000"
+            - name: DATABASE_URL
+              value: "postgres://notifications:notifications@postgres.default.svc.cluster.local:5432/notifications?sslmode=disable"
+            - name: KEYCLOAK_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: IDENTITY_SERVICE_URL
+              value: "http://identity.default.svc.cluster.local:3001"
+          resources:
+            requests:
+              memory: "192Mi"
+              cpu: "100m"
+            limits:
+              memory: "384Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              # Longer than the others: open WebSockets get a 1001 "going
+              # away" on shutdown and their clients reconnect, and five
+              # seconds is enough for that to land before the process goes.
+              exec:
+                command: ["sleep", "8"]
+      terminationGracePeriodSeconds: 45
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications
+  labels:
+    app: notifications
+spec:
+  selector:
+    app: notifications
+  ports:
+    - name: http
+      protocol: TCP
+      port: 3000
+      targetPort: 3000
+---
+# Three legitimate callers, and the first is the interesting one:
+# core-ledger's outbox relay POSTs /internal/outbox, which is how a
+# reconciliation break reaches a human. That is the last link in making R7's
+# "the one control catching an unbacked mint is decorative" untrue.
+#
+# The ingress controller is allowed because the browser connects its
+# WebSocket directly to /ws — a long-lived socket proxied through the BFF
+# would put a second process in the path of every message for no gain.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: notifications-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: notifications
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: core-ledger-worker
+        - podSelector:
+            matchLabels:
+              app: payments
+        - podSelector:
+            matchLabels:
+              app: bff
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              name: observability
+      ports:
+        - protocol: TCP
+          port: 3000
