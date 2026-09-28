@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: core-ledger-worker
+  labels:
+    app: core-ledger-worker
+spec:
+  # Safe above 1, which is the whole point of P2. Sagas are claimed with
+  # SELECT ... FOR UPDATE SKIP LOCKED under a lease, and Execute additionally
+  # takes pg_try_advisory_lock on the correlation id — so two replicas step
+  # over each other rather than racing the same mint. No leader election, no
+  # Redis, no etcd: the lock lives in the same database as the money, so it
+  # cannot be held by a process that has lost its connection to it.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: core-ledger-worker
+  template:
+    metadata:
+      labels:
+        app: core-ledger-worker
+    spec:
+      containers:
+        - name: core-ledger-worker
+          # TODO(P0): point at the real registry once CI publishes an image,
+          # e.g. ghcr.io/allankariuki/stablecoin-usdx-bridge/core-ledger:<tag>
+          image: <Image>
+          # Same image as core-ledger, second entrypoint. One source tree for
+          # both binaries is what keeps the worker from posting against a
+          # different ledger version than the API accepted the request on.
+          command: ["/usr/local/bin/core-ledger-worker"]
+          ports:
+            - containerPort: 8181
+              name: probes
+          envFrom:
+            - secretRef:
+                name: core-ledger-secrets
+          env:
+            - name: WORKER_PORT
+              value: "8181"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: core-ledger-secrets
+                  key: database_uri
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+          # The worker serves no business traffic, but readiness still matters:
+          # a replica whose database connection has gone should stop being
+          # counted as a live consumer of the queue. Liveness stays dependency-
+          # free so a slow Postgres doesn't trigger a kubelet restart loop.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8181
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8181
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      # Long enough for an in-flight attempt to finish rather than be killed
+      # mid-chain-call. Anything that doesn't finish keeps its lease until it
+      # lapses and another replica claims it — the same path a crash takes,
+      # which means every ordinary deploy exercises crash recovery.
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: core-ledger-worker
+  labels:
+    app: core-ledger-worker
+spec:
+  # Headless: nothing routes traffic to the worker, but Prometheus still needs
+  # to discover every replica's /metrics rather than load-balance across them.
+  clusterIP: None
+  selector:
+    app: core-ledger-worker
+  ports:
+    - name: probes
+      port: 8181
+      targetPort: 8181

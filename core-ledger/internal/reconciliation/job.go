@@ -74,11 +74,10 @@ func (j *Job) CheckOnce(ctx context.Context) error {
 	}
 
 	// ---- Leg A: ledger vs chains -----------------------------------------
-	expectedOnChain := new(big.Int).Sub(issued, inTransit)
-	if onChain.Cmp(expectedOnChain) != 0 {
-		drift := new(big.Int).Sub(onChain, expectedOnChain)
+	legA := CheckLegA(issued, inTransit, ethSupply, solSupply)
+	if !legA.OK() {
 		alert("LEG_A ledger/chain mismatch: on_chain=%s expected=%s drift=%s (issued=%s in_transit=%s eth=%s sol=%s)",
-			onChain, expectedOnChain, drift, issued, inTransit, ethSupply, solSupply)
+			legA.OnChain, legA.Expected, legA.Drift, issued, inTransit, ethSupply, solSupply)
 	}
 
 	// ---- Leg B: backing vs issuance --------------------------------------

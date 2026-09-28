@@ -61,6 +61,72 @@ services:
       # explicit on Linux, where it isn't automatic.
       - "host.docker.internal:host-gateway"
 
+  # ---------------------------------------------------------------------
+  # Application containers, behind the "app" profile so a plain
+  # `docker compose up -d` still brings up infrastructure only and leaves
+  # core-ledger to `make run` on the host, which is the faster inner loop.
+  #
+  #   docker compose --profile app up -d --build
+  #
+  # The worker is a container rather than a goroutine specifically so P2's
+  # definition of done can be performed: start an issuance, `docker kill
+  # usdx-worker` while it is in flight, restart it, and watch the transfer
+  # reach COMPLETED without minting twice.
+  # ---------------------------------------------------------------------
+
+  core-ledger:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: core-ledger/Dockerfile
+    image: usdx/core-ledger:dev
+    container_name: usdx-core-ledger
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - core-ledger/.env
+    environment:
+      # Overrides .env's host-side DSN: inside the compose network Postgres
+      # answers on its service name and its own port, not the published one.
+      DATABASE_URL: postgres://bridge:bridge@postgres:5432/bridge?sslmode=disable
+      SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
+    volumes:
+      - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    profiles: ["app"]
+    image: usdx/core-ledger:dev
+    container_name: usdx-worker
+    entrypoint: ["/usr/local/bin/core-ledger-worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      core-ledger:
+        # The API runs the migrations and seeds the chart of accounts; the
+        # worker only posts against it.
+        condition: service_started
+    env_file:
+      - core-ledger/.env
+    environment:
+      DATABASE_URL: postgres://bridge:bridge@postgres:5432/bridge?sslmode=disable
+      SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
+      WORKER_PORT: "8181"
+    volumes:
+      - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro
+    ports:
+      - "8181:8181"
+    # No graceful stop on `docker kill` is the point of the exercise: leases
+    # lapse and another worker — or this one, restarted — picks the saga up.
+    stop_grace_period: 30s
+
 volumes:
   pgdata:
   kcdata:

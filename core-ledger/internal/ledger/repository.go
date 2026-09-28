@@ -313,10 +313,9 @@ func (r *Repository) Closures(ctx context.Context) ([]LedgerClosure, error) {
 // Bridge saga state (pre-existing)
 // ---------------------------------------------------------------------------
 
-func (r *Repository) Insert(t *BridgeTransfer) error {
-	return r.db.Create(t).Error
-}
-
+// UpdateStatus advances a saga through its intermediate states. It leaves the
+// lease alone on purpose — the worker holding this saga is still holding it —
+// so terminal outcomes go through SettleTransfer instead.
 func (r *Repository) UpdateStatus(correlationID string, status TransferStatus) error {
 	return r.db.Model(&BridgeTransfer{}).
 		Where("correlation_id = ?", correlationID).

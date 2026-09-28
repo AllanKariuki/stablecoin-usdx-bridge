@@ -50,8 +50,14 @@ jobs:
         run: |
           set -euo pipefail
           go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
-          if grep -q '^--- SKIP: TestIntegration' /tmp/go-test.log; then
-            echo "::error::an integration test was skipped — LEDGER_TEST_DATABASE_URL must be reachable in CI"
+          # Any skip, not just TestIntegration*: P2 added database-backed
+          # suites under other names (TestConcurrentClaim,
+          # TestSagaResumesAfterCrash, TestIdempotent*), and every t.Skip in
+          # the Go tree is the same "LEDGER_TEST_DATABASE_URL is unset" guard.
+          # Matching the prefix would have let all of them pass silently.
+          if grep -q '^--- SKIP:' /tmp/go-test.log; then
+            echo "::error::a test was skipped — LEDGER_TEST_DATABASE_URL must be reachable in CI"
+            grep '^--- SKIP:' /tmp/go-test.log
             exit 1
           fi
 

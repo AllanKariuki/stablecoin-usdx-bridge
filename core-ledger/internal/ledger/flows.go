@@ -127,6 +127,12 @@ type WithdrawRequest struct {
 	BankRef        string
 	ValueDate      time.Time
 	InitiatedBy    string
+
+	// EntityType/EntityID let the caller say what this withdrawal settles,
+	// overriding the BANK_PAYMENT/BankRef default. Validated against the
+	// allow-list in ValidateCallerEntity.
+	EntityType EntityType
+	EntityID   string
 }
 
 // Withdraw sends fiat back out to the user's bank.
@@ -154,6 +160,11 @@ func (s *Service) Withdraw(ctx context.Context, req WithdrawRequest) (*Transacti
 		return nil, err
 	}
 
+	entityType, entityID, err := callerEntityOr(req.EntityType, req.EntityID, EntityBankPayment, req.BankRef)
+	if err != nil {
+		return nil, err
+	}
+
 	fee := ApplyBps(req.Amount, s.fees.WithdrawalBps)
 	net := new(big.Int).Sub(req.Amount, fee)
 
@@ -170,8 +181,8 @@ func (s *Service) Withdraw(ctx context.Context, req WithdrawRequest) (*Transacti
 		IdempotencyKey:      req.IdempotencyKey,
 		ValueDate:           req.ValueDate,
 		Description:         "Fiat withdrawal",
-		EntityType:          EntityBankPayment,
-		EntityID:            req.BankRef,
+		EntityType:          entityType,
+		EntityID:            entityID,
 		ExternalRef:         req.BankRef,
 		InitiatedBy:         req.InitiatedBy,
 		NonNegativeAccounts: []string{r.account.ID},
@@ -296,9 +307,14 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (*Transaction, er
 }
 
 type RedeemRequest struct {
-	USDXWalletID   string
-	FiatWalletID   string
-	Amount         *big.Int // USD-X smallest units
+	USDXWalletID string
+	FiatWalletID string
+	Amount       *big.Int // USD-X smallest units
+	// CorrelationID links this redemption to the burn saga that destroys the
+	// tokens on chain. It is recorded in metadata rather than in
+	// EntityType/EntityID because the entity pair already carries the wallet,
+	// and the saga finds this transaction by id anyway.
+	CorrelationID  string
 	IdempotencyKey string
 	ValueDate      time.Time
 	InitiatedBy    string
@@ -348,7 +364,11 @@ func (s *Service) Redeem(ctx context.Context, req RedeemRequest) (*Transaction, 
 		EntityID:            usdx.wallet.ID,
 		InitiatedBy:         req.InitiatedBy,
 		NonNegativeAccounts: []string{usdx.account.ID},
-		Metadata:            map[string]any{"fiat_wallet_id": fiat.wallet.ID},
+		Metadata: map[string]any{
+			"fiat_wallet_id": fiat.wallet.ID,
+			"correlation_id": req.CorrelationID,
+			"source_chain":   usdx.wallet.Chain,
+		},
 		Postings: []Posting{
 			debit(usdx.account.ID, USDXCode, req.Amount, "Redemption requested"),
 			credit(suspense.ID, USDXCode, req.Amount, "Awaiting on-chain burn"),
@@ -458,6 +478,10 @@ type ConvertRequest struct {
 	IdempotencyKey string
 	ValueDate      time.Time
 	InitiatedBy    string
+
+	// Overrides the FX_CONVERSION/quote-id default; see ValidateCallerEntity.
+	EntityType EntityType
+	EntityID   string
 }
 
 // Convert exchanges one currency for another between two of a user's own
@@ -517,6 +541,11 @@ func (s *Service) Convert(ctx context.Context, req ConvertRequest) (*Transaction
 		return nil, err
 	}
 
+	entityType, entityID, err := callerEntityOr(req.EntityType, req.EntityID, EntityFXConversion, quote.ID)
+	if err != nil {
+		return nil, err
+	}
+
 	conv := Convert(quote, req.Amount, *from.currency, *to.currency)
 	if conv.Net.Sign() <= 0 {
 		return nil, postErr("AMOUNT_TOO_SMALL", "%s converts to less than one minor unit of %s after spread",
@@ -538,8 +567,8 @@ func (s *Service) Convert(ctx context.Context, req ConvertRequest) (*Transaction
 		IdempotencyKey:      req.IdempotencyKey,
 		ValueDate:           req.ValueDate,
 		Description:         from.currency.Code + " to " + to.currency.Code + " conversion",
-		EntityType:          EntityFXConversion,
-		EntityID:            quote.ID,
+		EntityType:          entityType,
+		EntityID:            entityID,
 		FxQuoteID:           &quote.ID,
 		InitiatedBy:         req.InitiatedBy,
 		NonNegativeAccounts: []string{from.account.ID},
@@ -565,6 +594,12 @@ type TransferRequest struct {
 	Reference      string
 	ValueDate      time.Time
 	InitiatedBy    string
+
+	// Transfer stamped no entity at all before, which made an invoice
+	// settlement, a rebalance and a payroll run indistinguishable in the
+	// journal. See ValidateCallerEntity.
+	EntityType EntityType
+	EntityID   string
 }
 
 // Transfer moves value between two wallets in the same currency. Nothing
@@ -593,6 +628,10 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) (*Transacti
 		return nil, postErr("CROSS_CHAIN_TRANSFER", "those USD-X wallets are on different chains; bridge instead of transferring")
 	}
 
+	if err := ValidateCallerEntity(req.EntityType, req.EntityID); err != nil {
+		return nil, err
+	}
+
 	feeAcct, err := s.systemAccount(ctx, GLTransferFee(from.currency.Code))
 	if err != nil {
 		return nil, err
@@ -616,6 +655,8 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) (*Transacti
 		IdempotencyKey:      req.IdempotencyKey,
 		ValueDate:           req.ValueDate,
 		Description:         "Internal transfer",
+		EntityType:          req.EntityType,
+		EntityID:            req.EntityID,
 		ExternalRef:         req.Reference,
 		InitiatedBy:         req.InitiatedBy,
 		NonNegativeAccounts: []string{from.account.ID},
@@ -756,6 +797,18 @@ func (s *Service) bridgeLeg(ctx context.Context, leg bridgeLeg) (*Transaction, e
 	req.Postings = postings
 
 	return s.repo.Post(ctx, req)
+}
+
+// callerEntityOr validates a caller-supplied back-reference and falls back to
+// the flow's own default when none was given.
+func callerEntityOr(typ EntityType, id string, defaultType EntityType, defaultID string) (EntityType, string, error) {
+	if err := ValidateCallerEntity(typ, id); err != nil {
+		return "", "", err
+	}
+	if typ == EntityNone {
+		return defaultType, defaultID, nil
+	}
+	return typ, id, nil
 }
 
 func requirePositive(amount *big.Int) error {
