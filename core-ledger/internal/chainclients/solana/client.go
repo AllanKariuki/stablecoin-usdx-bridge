@@ -105,7 +105,18 @@ func encodeBridgeArgs(discriminator []byte, amount *big.Int, correlationID strin
 	return data
 }
 
-func (c *Client) sendInstructions(ctx context.Context, instructions ...solanago.Instruction) (string, error) {
+// signingContext is what a remote signer needs to apply policy: which
+// instruction this is, for which saga, moving how much, to whom. A local
+// signer ignores it, which is why sendInstructions takes it unconditionally
+// rather than there being two send paths.
+type signingContext struct {
+	method        string
+	correlationID string
+	amount        *big.Int
+	to            string
+}
+
+func (c *Client) sendInstructions(ctx context.Context, sctx signingContext, instructions ...solanago.Instruction) (string, error) {
 	latest, err := c.rpc.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil {
 		return "", fmt.Errorf("fetching latest blockhash: %w", err)
@@ -118,7 +129,7 @@ func (c *Client) sendInstructions(ctx context.Context, instructions ...solanago.
 
 	// Not tx.Sign: its callback must hand back the private key by value,
 	// which a signer that does not hold one cannot do. See signer.go.
-	if err := signTransaction(tx, c.signer); err != nil {
+	if err := signTransaction(tx, bindContext(c.signer, sctx.method, sctx.correlationID, sctx.amount, sctx.to)); err != nil {
 		return "", err
 	}
 
@@ -173,7 +184,9 @@ func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (s
 		encodeBridgeArgs(anchorDiscriminator("bridge_mint"), amount, correlationID),
 	)
 
-	return c.sendInstructions(ctx, createATA.Build(), bridgeMint)
+	return c.sendInstructions(ctx,
+		signingContext{method: "bridgeMint", correlationID: correlationID, amount: amount, to: to},
+		createATA.Build(), bridgeMint)
 }
 
 // BridgeBurn burns from `from`'s associated token account, using the
@@ -223,7 +236,9 @@ func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) 
 		encodeBridgeArgs(anchorDiscriminator("bridge_burn"), amount, correlationID),
 	)
 
-	return c.sendInstructions(ctx, bridgeBurn)
+	return c.sendInstructions(ctx,
+		signingContext{method: "bridgeBurn", correlationID: correlationID, amount: amount, to: from},
+		bridgeBurn)
 }
 
 // WaitForFinality matches bridge.ChainClient's signature (the same string

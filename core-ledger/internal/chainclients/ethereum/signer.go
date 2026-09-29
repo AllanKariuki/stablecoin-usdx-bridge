@@ -32,6 +32,33 @@ type Signer interface {
 	SignTx(tx *types.Transaction, chainID *big.Int) (*types.Transaction, error)
 }
 
+// ContextualSigner is optionally implemented by a signer that can make use of
+// what is being signed.
+//
+// It exists because a remote signer enforces policy — amount ceilings,
+// destination allowlists — and a digest carries none of that. Rather than
+// widening Signer (which would force localSigner to carry fields it has no
+// use for), a signer that wants the context advertises it, and the client
+// hands over a *copy* bound to this call's values.
+//
+// A copy, not a field set on the shared signer: the worker runs several sagas
+// concurrently against one client, and a mutable field would race — with the
+// failure mode being a signature authorised against another transfer's
+// amount.
+type ContextualSigner interface {
+	Signer
+	WithSigningContext(method, correlationID string, amount *big.Int, to string) Signer
+}
+
+// bindContext returns a signer bound to this call's decoded transaction, or
+// the signer unchanged if it does not care.
+func bindContext(s Signer, method, correlationID string, amount *big.Int, to string) Signer {
+	if cs, ok := s.(ContextualSigner); ok {
+		return cs.WithSigningContext(method, correlationID, amount, to)
+	}
+	return s
+}
+
 // localSigner holds the key in this process. It is the right implementation
 // for local development and the wrong one for anything holding real mint
 // authority, which is what P6 is for.

@@ -81,7 +81,10 @@ func (c *Client) EnsureCustody(ctx context.Context) (string, error) {
 	createATA := ata.NewCreateIdempotentInstruction(owner, owner, c.mint).Build()
 	approve := approveBridgeDelegateInstruction(c.programID, owner, custody, mintAuthority, unlimitedDelegation)
 
-	return c.sendInstructions(ctx, createATA, approve)
+	// No amount and no correlation id: EnsureCustody grants the delegation
+	// the bridge later burns through, it moves nothing itself. A policy rule
+	// for it is about *who* may call it, not how much.
+	return c.sendInstructions(ctx, signingContext{method: "approveBridgeDelegate"}, createATA, approve)
 }
 
 // approveBridgeDelegateInstruction builds the program's

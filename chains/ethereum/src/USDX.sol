@@ -56,7 +56,11 @@ contract USDX is
     }
 
     // Called by the Core Ledger when a Solana -> Ethereum transfer settles
-    function bridgeMint(address to, uint256 amount, bytes32 correlationId) external onlyRole(BRIDGE_ROLE) {
+    function bridgeMint(address to, uint256 amount, bytes32 correlationId)
+        external
+        virtual
+        onlyRole(BRIDGE_ROLE)
+    {
         require(!processedMints[correlationId], "USDX: correlation already minted");
         processedMints[correlationId] = true;
         _mint(to, amount);
@@ -65,7 +69,14 @@ contract USDX is
 
     // Called by the Core Ledger (or directly by the user, then reported) when
     // an Ethereum -> Solana transfer is initiated
-    function bridgeBurn(address from, uint256 amount, bytes32 correlationId) external onlyRole(BRIDGE_ROLE) {
+    // `virtual` so USDXV2 can bound this to a holder's allowance without
+    // changing its signature — see chains/ethereum/src/USDXV2.sol for why the
+    // unconditional form is the asymmetry P6 closes.
+    function bridgeBurn(address from, uint256 amount, bytes32 correlationId)
+        external
+        virtual
+        onlyRole(BRIDGE_ROLE)
+    {
         require(!processedBurns[correlationId], "USDX: correlation already burned");
         processedBurns[correlationId] = true;
         _burn(from, amount);

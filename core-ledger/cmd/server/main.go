@@ -70,6 +70,12 @@ func main() {
 		USDXProgramID:            cfg.USDXProgramID,
 		USDXMintAddress:          cfg.USDXMintAddress,
 		SolanaRelayerKeypairPath: cfg.SolanaRelayerKeypairPath,
+		SignerURL:                cfg.SignerURL,
+		SignerCertPath:           cfg.SignerCertPath,
+		SignerKeyPath:            cfg.SignerKeyPath,
+		SignerCAPath:             cfg.SignerCAPath,
+		SignerEthKeyID:           cfg.SignerEthKeyID,
+		SignerSolKeyID:           cfg.SignerSolKeyID,
 	})
 	if err != nil {
 		logger.Error("connecting to chains", slog.Any("error", err))

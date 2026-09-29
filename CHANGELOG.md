@@ -3,6 +3,119 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-09-29 — P6: key custody & contracts v2
+
+Branch `feat/p6-signer-custody`. The phase's goal: *no private key material in
+any process env or on any disk; a compliance officer clicks Pause and Sepolia
+transfers halt within a block; rotate a relayer key with no service restart.*
+
+### Added
+
+- **`services/signer`** — the only process that can authorise a chain
+  transaction. core-ledger stops holding `ETH_RELAYER_PRIVATE_KEY` and asks a
+  service that holds it in Vault, over mutually-authenticated TLS.
+  - **The value is in what it refuses.** A key in Vault that signs whatever it
+    is handed has moved the risk, not removed it. The policy engine is pure
+    functions over a decoded request — no database, no clock, no network —
+    because a policy engine testable only by standing up a service is one
+    whose edge cases are untested, and its edge cases are the point. 17 tests
+    at those edges: default-deny for an unruled method, `>=` at the ceiling
+    boundary, case-insensitive address allowlists, first-match-wins ordering,
+    and a daily limit that catches what a per-signature ceiling cannot.
+  - **Policy is a mounted file, not an API.** An endpoint that could edit it
+    would give anyone who compromised the service a way to raise its own
+    ceilings before using them.
+  - **Idempotent on `(chain, method, correlation_id)`.** Without it a saga
+    retry after a timeout produces a *second valid signature for the same
+    movement* — the chain's replay guard stops the second transaction landing,
+    but the platform has authorised the same money twice and which signature
+    is real is unanswerable. A denial does not consume the slot; the same
+    correlation with a different digest is refused outright.
+  - **The audit log is append-only and hash-chained**, enforced by a database
+    trigger rather than by code being careful, and **verified at boot** — a
+    break discovered later cannot be dated, because every row after it is
+    equally suspect. Denials are recorded as carefully as approvals: a burst
+    of refusals is the first sign of a compromised caller probing, and a log
+    of successes only would show that as silence.
+  - Three backends. `local` **refuses to start unless `ENV=local`**. `vault`
+    signs ed25519 in Transit (the Solana key never leaves) and reads the
+    secp256k1 key from KV — a real weakness, stated as one, and the reason it
+    is labelled staging. `fireblocks` returns a *distinct* error rather than a
+    plausible one, because it signs asynchronously and pretending that fits a
+    synchronous method would hide the mismatch until somebody used it.
+  - There is no `Export` on `Backend`. Not an omission: a backend that can
+    export is a backend whose keys can leave.
+  - Its own namespace, with **egress** restricted as well as ingress — a
+    signer that could reach the internet is a signer that could exfiltrate
+    what it holds. Prometheus is deliberately *not* allowed in: a certificate
+    issued for scraping is a certificate that can also `POST /sign`.
+- **Solana `BridgeConfig` PDA** — `initialize_config`, `set_relayer`,
+  `set_admin`, `set_paused`. This is R6's fix: the relayer was a compile-time
+  constant, so rotating a suspected key meant rebuilding and redeploying the
+  program, with a governance window during which the compromised key still
+  worked. It is now one transaction. 9 new litesvm tests (19 total), including
+  the half that matters after a leak — the rotated-*out* relayer must stop
+  working, not just the rotated-in one start.
+  - `paused` closes a gap Ethereum never had: Solana's only answer to a
+    compromise was revoking the mint authority, which is irreversible and
+    takes the honest users with it.
+- **`USDXV2`** — resolves the `bridgeBurn` asymmetry. V1 burns any holder
+  unconditionally under `BRIDGE_ROLE`; Solana's has always been bounded by a
+  delegation the owner granted. The difference matters most in the case nobody
+  plans for: a leaked relayer key on Ethereum can burn *every* holder's
+  balance, including self-custodied holders who never touched the bridge.
+  V2 bounds it to an ERC-20 allowance.
+  - **The flag defaults OFF on upgrade.** Turning it on atomically would
+    strand every in-flight bridge: a burn whose journal leg was posted under
+    V1's rules would revert for want of an allowance nobody was asked for.
+  - Custody addresses are exemptible, because requiring the platform's own
+    pooled account to keep an allowance topped up adds a failure mode —
+    allowance exhausted mid-redemption — to the path that must not have one.
+  - 14 new Foundry tests (35 total), including the two that matter about the
+    override: the replay guard is re-implemented rather than inherited, and a
+    *refused* burn must leave the correlation id usable or a saga would be
+    permanently stuck on an id the contract considers spent.
+- `platform.RunWith` — `Run` with a caller-supplied listen call, so the signer
+  can serve mutual TLS without putting a security-critical TLS branch inside a
+  helper every service imports.
+
+### Changed
+
+- **The P2 `Signer` seam is finally used, and cost nothing** — exactly as
+  predicted. `bridge.ChainClient` does not change, the saga does not change,
+  and `bind.TransactOpts.Signer` was already the right hook. Solana was the
+  fiddlier swap and the reason the seam was opened two phases early:
+  `tx.Sign`'s callback must return the private key *by value*, which a remote
+  signer cannot satisfy at all.
+- Signers can now carry what they are authorising, via an optional
+  `ContextualSigner`. The client hands over a **copy** bound to one call's
+  values rather than setting a field — the worker runs several sagas
+  concurrently against one client, and a shared mutable field would race, with
+  the failure mode being a signature authorised against another transfer's
+  amount.
+- `ETH_RELAYER_PRIVATE_KEY` and `SOLANA_RELAYER_KEYPAIR_PATH` are no longer
+  `required`, with validation that exactly one of key-or-signer is configured
+  — so a deployment with neither fails at boot with a readable message rather
+  than at the first mint, hours later, inside the saga.
+
+### Notes
+
+- **Not verified live.** 25 signer tests (8 against real Postgres), 19 Anchor
+  tests, 35 Foundry tests, and the full Go suite under `-race`. Nothing has
+  talked to a real Vault, a real Fireblocks, or Sepolia. The `USDXV2` upgrade
+  has not been performed on the live proxy, and the Solana program has not
+  been redeployed — `initialize_config` must be called once after a deploy,
+  before any mint, or every `bridge_mint` fails on a missing config account.
+- **Transport deviates from the plan**, deliberately: HTTP/2 + mTLS rather
+  than gRPC + mTLS, for one Go-to-Go caller over four methods. Same security
+  properties, no protoc toolchain. See `services/signer/README.md`.
+- Vault's secp256k1 path reads the key into the signer's memory, because
+  Transit cannot produce the recoverable `[R‖S‖V]` form Ethereum needs. It is
+  a genuine weakness of the staging backend and the reason Fireblocks is the
+  production answer.
+- The plan's *"move `DEFAULT_ADMIN_ROLE` to a Gnosis Safe"* is an operational
+  step on a live contract, not a code change, and has not been performed.
+
 ## 2026-09-29 — P5: onboarding, KYC & compliance
 
 Branch `feat/p5-kyc-compliance`. The phase's goal from `docs/building-plan.md`:

@@ -1,0 +1,204 @@
+# services/signer — its own namespace, with a NetworkPolicy allowing only
+# core-ledger.
+#
+# The plan asks for exactly that, and the namespace is not cosmetic: it is
+# what lets the policy below be a *default-deny* boundary rather than one
+# selector among many in a shared namespace, and what keeps a
+# misconfiguration elsewhere from accidentally selecting these pods.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: signer
+  labels:
+    name: signer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signer
+  namespace: signer
+  labels:
+    app: signer
+spec:
+  # Two replicas. Safe because the hash chain's read-then-insert runs in a
+  # SERIALIZABLE transaction — two concurrent appends cannot both claim the
+  # same predecessor — and idempotency is a partial unique index rather than
+  # a check in application code.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: signer
+  template:
+    metadata:
+      labels:
+        app: signer
+    spec:
+      # No service account token. This pod calls no Kubernetes API, and a
+      # mounted token is a credential an attacker who reached the process
+      # could use to look around.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: signer
+          # TODO: point at the real registry once CI publishes an image.
+          image: <Image>
+          ports:
+            - containerPort: 8084
+          env:
+            - name: PORT
+              value: "8084"
+            # NOT "local". This is the guard that stops the in-memory key
+            # backend starting: keystore.Resolve refuses it unless ENV is
+            # exactly "local".
+            - name: ENV
+              value: "production"
+            - name: KEY_BACKEND
+              value: "vault"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: signer-secrets
+                  key: database-url
+            - name: VAULT_ADDR
+              value: "http://vault.vault.svc.cluster.local:8200"
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: signer-secrets
+                  key: vault-token
+            - name: TLS_CERT_PATH
+              value: /tls/tls.crt
+            - name: TLS_KEY_PATH
+              value: /tls/tls.key
+            - name: TLS_CLIENT_CA_PATH
+              value: /tls/ca.crt
+            - name: POLICY_PATH
+              value: /policy/policy.yaml
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: policy
+              mountPath: /policy
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { memory: "128Mi", cpu: "100m" }
+            limits: { memory: "256Mi", cpu: "500m" }
+          # Probes over HTTPS. The signer serves only TLS outside local
+          # development, and `scheme: HTTPS` with no client certificate is
+          # fine here: /healthz and /readyz are the two routes that do not
+          # require one, because a kubelet cannot present one.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8084
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8084
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: tls
+          secret:
+            secretName: signer-tls
+        - name: policy
+          configMap:
+            name: signer-policy
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: signer
+  namespace: signer
+  labels:
+    app: signer
+spec:
+  selector:
+    app: signer
+  ports:
+    - name: https
+      protocol: TCP
+      port: 8084
+      targetPort: 8084
+---
+# The narrowest policy on the platform.
+#
+# Two callers, both in the default namespace: core-ledger's saga worker (which
+# signs mints and burns) and compliance (which signs blacklist and pause).
+# Nothing else — not bff, not the indexer, not the ingress controller.
+#
+# Note that Prometheus is NOT allowed in. Scraping the signer would mean
+# giving the monitoring namespace a client certificate, and a certificate
+# issued for scraping is a certificate that can also POST /sign. The metrics
+# that matter about this service — how many signatures, how many denials —
+# are in its audit log and in core-ledger's own saga metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: signer-ingress
+  namespace: signer
+spec:
+  podSelector:
+    matchLabels:
+      app: signer
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: default
+          podSelector:
+            matchLabels:
+              app: core-ledger-worker
+        - namespaceSelector:
+            matchLabels:
+              name: default
+          podSelector:
+            matchLabels:
+              app: compliance
+      ports:
+        - protocol: TCP
+          port: 8084
+  # Egress is restricted too, which is unusual and deliberate: this pod's only
+  # legitimate outbound destinations are its database and Vault. A signer that
+  # could reach the internet is a signer that could exfiltrate what it holds.
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: default
+          podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: vault
+      ports:
+        - protocol: TCP
+          port: 8200
+    # DNS, or nothing above resolves.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53

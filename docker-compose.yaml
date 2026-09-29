@@ -406,6 +406,39 @@ services:
       timeout: 3s
       retries: 10
 
+  # The only process on this platform that can authorise a chain transaction.
+  #
+  # ENV=local here, which is the one setting under which the `local` key
+  # backend will start at all — and it warns loudly that it is doing so. A
+  # staging or production deployment sets KEY_BACKEND=vault and the mTLS
+  # triple; without them the service refuses to start rather than listening
+  # for unauthenticated callers.
+  signer:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: services/signer/Dockerfile
+    image: usdx/signer:dev
+    container_name: usdx-signer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - services/signer/.env
+    environment:
+      DATABASE_URL: postgres://signer:signer@postgres:5432/signer?sslmode=disable
+      SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
+      POLICY_PATH: /app/policy.yaml
+    volumes:
+      - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro
+      # Read-only, and mounted rather than baked: a policy is a document
+      # somebody reviews, and baking it would mean raising a ceiling requires
+      # a rebuild — which is the pressure under which somebody instead
+      # disables the check.
+      - ./services/signer/policy.example.yaml:/app/policy.yaml:ro
+    ports:
+      - "8084:8084"
+
   # reconcile runs on a schedule, not as a long-lived process — the whole
   # point of extracting it from cmd/server was that the in-process ticker
   # ran once per API replica. Compose has no cron, so this is the

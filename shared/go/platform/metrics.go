@@ -15,10 +15,10 @@ import (
 // end up in the same process (e.g. a table-driven test that boots more than
 // one Chain). Each service still exposes a normal /metrics endpoint.
 type Metrics struct {
-	registry   *prometheus.Registry
-	requests   *prometheus.CounterVec
-	duration   *prometheus.HistogramVec
-	inFlight   prometheus.Gauge
+	registry *prometheus.Registry
+	requests *prometheus.CounterVec
+	duration *prometheus.HistogramVec
+	inFlight prometheus.Gauge
 }
 
 func NewMetrics(service string) *Metrics {
