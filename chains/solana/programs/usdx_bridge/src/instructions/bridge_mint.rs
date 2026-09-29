@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount};
 
-use crate::{constants::*, error::ErrorCode, state::ProcessedMarker, BridgeMinted};
+use crate::{constants::*, error::ErrorCode, state::{BridgeConfig, ProcessedMarker}, BridgeMinted};
 
 #[derive(Accounts)]
 #[instruction(amount: u64, correlation_id: [u8; 32])]
@@ -27,7 +27,21 @@ pub struct BridgeMint<'info> {
     )]
     pub processed_marker: Account<'info, ProcessedMarker>,
 
-    #[account(mut, constraint = relayer.key() == relayer_pubkey() @ ErrorCode::InvalidRelayer)]
+    // The relayer is read from BridgeConfig, not from a compile-time
+    // constant. That is the whole of R6's fix: rotating a suspected key is a
+    // transaction (set_relayer) rather than a program redeploy with a
+    // governance window during which the compromised key still works.
+    //
+    // The pause check lives here too, so a paused bridge rejects at
+    // constraint evaluation — before any token CPI is attempted.
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+        constraint = !config.paused @ ErrorCode::BridgePaused,
+    )]
+    pub config: Account<'info, BridgeConfig>,
+
+    #[account(mut, constraint = relayer.key() == config.relayer @ ErrorCode::InvalidRelayer)]
     pub relayer: Signer<'info>,
 
     pub token_program: Program<'info, Token>,

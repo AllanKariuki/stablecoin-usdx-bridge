@@ -54,6 +54,10 @@ fn processed_marker_pda(correlation_id: &[u8; 32]) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[PROCESSED_SEED, correlation_id], &usdx_bridge::ID)
 }
 
+fn config_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[CONFIG_SEED], &usdx_bridge::ID)
+}
+
 /// A fresh, funded VM with the program loaded and sigverify off — see
 /// relayer_pubkey() above for why sigverify has to be off: nothing in this
 /// test suite can produce a cryptographically valid signature for the
@@ -69,6 +73,56 @@ fn new_svm() -> LiteSVM {
     // though it isn't cryptographically signing (sigverify is off above).
     fund(&mut svm, &relayer_pubkey());
     svm
+}
+
+/// A VM with BridgeConfig already initialised, which every mint and burn now
+/// requires: the relayer is read from that account rather than from a
+/// compile-time constant (P6/R6). Returns the admin keypair, because most
+/// config tests need to act as it.
+fn new_svm_with_config() -> (LiteSVM, Keypair) {
+    let mut svm = new_svm();
+    let admin = Keypair::new();
+    fund(&mut svm, &admin.pubkey());
+
+    let payer = Keypair::new();
+    fund(&mut svm, &payer.pubkey());
+    init_config(&mut svm, &payer, &admin.pubkey());
+
+    (svm, admin)
+}
+
+fn init_config(svm: &mut LiteSVM, payer: &Keypair, admin: &Pubkey) {
+    let (config, _) = config_pda();
+    let accounts = usdx_accounts::InitializeConfig {
+        payer: payer.pubkey(),
+        config,
+        system_program: anchor_lang::system_program::ID,
+    };
+    let ix = Instruction {
+        program_id: usdx_bridge::ID,
+        accounts: accounts.to_account_metas(None),
+        data: usdx_instruction::InitializeConfig { admin: *admin }.data(),
+    };
+    send(svm, &[ix], &payer.pubkey(), &[payer])
+        .unwrap_or_else(|e| panic!("initialize_config failed: {e:?}"));
+}
+
+fn admin_only_ix(admin: Pubkey, data: Vec<u8>) -> Instruction {
+    let (config, _) = config_pda();
+    let accounts = usdx_accounts::AdminOnly { config, admin };
+    Instruction {
+        program_id: usdx_bridge::ID,
+        accounts: accounts.to_account_metas(None),
+        data,
+    }
+}
+
+fn read_config(svm: &LiteSVM) -> usdx_bridge::state::BridgeConfig {
+    use anchor_lang::AccountDeserialize;
+    let (config, _) = config_pda();
+    let account = svm.get_account(&config).expect("config should exist");
+    usdx_bridge::state::BridgeConfig::try_deserialize(&mut account.data.as_slice())
+        .expect("config should deserialise")
 }
 
 fn fund(svm: &mut LiteSVM, who: &Pubkey) {
@@ -152,11 +206,13 @@ fn bridge_mint_ix(
 ) -> Instruction {
     let (mint_authority, _) = mint_authority_pda();
     let (processed_marker, _) = processed_marker_pda(&correlation_id);
+    let (config, _) = config_pda();
     let accounts = usdx_accounts::BridgeMint {
         mint,
         mint_authority,
         destination,
         processed_marker,
+        config,
         relayer,
         token_program: token::ID,
         system_program: anchor_lang::system_program::ID,
@@ -181,11 +237,13 @@ fn bridge_burn_ix(
 ) -> Instruction {
     let (mint_authority, _) = mint_authority_pda();
     let (processed_marker, _) = processed_marker_pda(&correlation_id);
+    let (config, _) = config_pda();
     let accounts = usdx_accounts::BridgeBurn {
         mint,
         mint_authority,
         source,
         processed_marker,
+        config,
         relayer,
         token_program: token::ID,
         system_program: anchor_lang::system_program::ID,
@@ -236,7 +294,7 @@ fn correlation_id(seed: &str) -> [u8; 32] {
 
 #[test]
 fn init_authority_creates_a_mint_owned_by_the_pda() {
-    let mut svm = new_svm();
+    let (mut svm, _admin) = new_svm_with_config();
     let payer = Keypair::new();
     fund(&mut svm, &payer.pubkey());
 
@@ -258,7 +316,7 @@ fn init_authority_creates_a_mint_owned_by_the_pda() {
 
 #[test]
 fn bridge_mint_by_the_relayer_credits_the_destination() {
-    let mut svm = new_svm();
+    let (mut svm, _admin) = new_svm_with_config();
     let payer = Keypair::new();
     fund(&mut svm, &payer.pubkey());
 
@@ -282,7 +340,7 @@ fn bridge_mint_by_the_relayer_credits_the_destination() {
 
 #[test]
 fn bridge_mint_rejects_a_non_relayer_signer() {
-    let mut svm = new_svm();
+    let (mut svm, _admin) = new_svm_with_config();
     let payer = Keypair::new();
     fund(&mut svm, &payer.pubkey());
 
@@ -309,7 +367,7 @@ fn bridge_mint_rejects_a_non_relayer_signer() {
 
 #[test]
 fn bridge_mint_rejects_a_replayed_correlation_id() {
-    let mut svm = new_svm();
+    let (mut svm, _admin) = new_svm_with_config();
     let payer = Keypair::new();
     fund(&mut svm, &payer.pubkey());
 
@@ -342,7 +400,7 @@ fn bridge_mint_rejects_a_replayed_correlation_id() {
 
 #[test]
 fn bridge_burn_rejects_a_source_with_no_delegate_approval() {
-    let mut svm = new_svm();
+    let (mut svm, _admin) = new_svm_with_config();
     let payer = Keypair::new();
     fund(&mut svm, &payer.pubkey());
 
@@ -383,7 +441,7 @@ fn bridge_burn_rejects_a_source_with_no_delegate_approval() {
 
 #[test]
 fn bridge_burn_rejects_delegated_amount_below_the_burn_amount() {
-    let mut svm = new_svm();
+    let (mut svm, _admin) = new_svm_with_config();
     let payer = Keypair::new();
     fund(&mut svm, &payer.pubkey());
 
@@ -428,7 +486,7 @@ fn bridge_burn_rejects_delegated_amount_below_the_burn_amount() {
 
 #[test]
 fn bridge_burn_with_delegate_approval_debits_the_source() {
-    let mut svm = new_svm();
+    let (mut svm, _admin) = new_svm_with_config();
     let payer = Keypair::new();
     fund(&mut svm, &payer.pubkey());
 
@@ -471,7 +529,7 @@ fn bridge_burn_with_delegate_approval_debits_the_source() {
 
 #[test]
 fn bridge_burn_rejects_a_non_relayer_signer() {
-    let mut svm = new_svm();
+    let (mut svm, _admin) = new_svm_with_config();
     let payer = Keypair::new();
     fund(&mut svm, &payer.pubkey());
 
@@ -515,7 +573,7 @@ fn bridge_burn_rejects_a_non_relayer_signer() {
 
 #[test]
 fn bridge_burn_rejects_a_replayed_correlation_id() {
-    let mut svm = new_svm();
+    let (mut svm, _admin) = new_svm_with_config();
     let payer = Keypair::new();
     fund(&mut svm, &payer.pubkey());
 
@@ -566,7 +624,7 @@ fn bridge_burn_rejects_a_replayed_correlation_id() {
 
 #[test]
 fn processed_marker_is_shared_between_mint_and_burn_for_the_same_correlation_id() {
-    let mut svm = new_svm();
+    let (mut svm, _admin) = new_svm_with_config();
     let payer = Keypair::new();
     fund(&mut svm, &payer.pubkey());
 
@@ -599,4 +657,283 @@ fn processed_marker_is_shared_between_mint_and_burn_for_the_same_correlation_id(
         1_000,
         "the colliding burn must not have applied"
     );
+}
+
+// ---------------------------------------------------------------------
+// BridgeConfig — relayer rotation, admin handover, pause (P6 / R6)
+//
+// Before these instructions existed, the relayer was a compile-time
+// constant: rotating a key meant rebuilding and redeploying the program,
+// with a governance window in between during which the compromised key
+// still worked. The risk register calls that R6 and gates rotation on
+// exactly this account existing.
+// ---------------------------------------------------------------------
+
+#[test]
+fn initialize_config_seeds_the_shipped_relayer_and_the_given_admin() {
+    let (svm, admin) = new_svm_with_config();
+
+    let config = read_config(&svm);
+    assert_eq!(config.admin, admin.pubkey());
+    // Seeded from the constant the program shipped with, so an existing
+    // deployment can initialise without knowing a pubkey out of band.
+    assert_eq!(config.relayer, relayer_pubkey());
+    assert!(!config.paused, "a freshly initialised bridge must not be paused");
+}
+
+#[test]
+fn initialize_config_cannot_run_twice() {
+    // `init` fails if the account exists. Re-running must be an error rather
+    // than a reset: an account whose whole job is to say who may change
+    // things must not be resettable by anyone who can pay rent.
+    let (mut svm, _admin) = new_svm_with_config();
+    let payer = Keypair::new();
+    fund(&mut svm, &payer.pubkey());
+
+    let (config, _) = config_pda();
+    let accounts = usdx_accounts::InitializeConfig {
+        payer: payer.pubkey(),
+        config,
+        system_program: anchor_lang::system_program::ID,
+    };
+    let ix = Instruction {
+        program_id: usdx_bridge::ID,
+        accounts: accounts.to_account_metas(None),
+        data: usdx_instruction::InitializeConfig {
+            admin: payer.pubkey(),
+        }
+        .data(),
+    };
+
+    send(&mut svm, &[ix], &payer.pubkey(), &[&payer])
+        .expect_err("initialize_config must not be re-runnable");
+}
+
+#[test]
+fn initialize_config_rejects_a_zero_admin() {
+    // A zero admin locks the config forever: nothing could satisfy the admin
+    // constraint, so the relayer could never be rotated and the bridge could
+    // never be paused. Recovering from that is a redeploy.
+    let mut svm = new_svm();
+    let payer = Keypair::new();
+    fund(&mut svm, &payer.pubkey());
+
+    let (config, _) = config_pda();
+    let accounts = usdx_accounts::InitializeConfig {
+        payer: payer.pubkey(),
+        config,
+        system_program: anchor_lang::system_program::ID,
+    };
+    let ix = Instruction {
+        program_id: usdx_bridge::ID,
+        accounts: accounts.to_account_metas(None),
+        data: usdx_instruction::InitializeConfig {
+            admin: Pubkey::default(),
+        }
+        .data(),
+    };
+
+    send(&mut svm, &[ix], &payer.pubkey(), &[&payer])
+        .expect_err("a zero admin must be rejected");
+}
+
+#[test]
+fn set_relayer_rotates_who_may_mint() {
+    // The whole point of R6, end to end: the old relayer stops working and a
+    // new one starts, in one transaction.
+    let (mut svm, admin) = new_svm_with_config();
+    let payer = Keypair::new();
+    fund(&mut svm, &payer.pubkey());
+
+    let mint = init_mint(&mut svm, &payer);
+    let user = Keypair::new();
+    fund(&mut svm, &user.pubkey());
+    let dest = ensure_ata(&mut svm, &payer, &user.pubkey(), &mint);
+
+    let new_relayer = Keypair::new();
+    fund(&mut svm, &new_relayer.pubkey());
+
+    // Before rotation the new relayer is nobody.
+    let before = bridge_mint_ix(mint, dest, 10, correlation_id("rot-before"), new_relayer.pubkey());
+    send(&mut svm, &[before], &payer.pubkey(), &[&payer])
+        .expect_err("an un-rotated relayer must not be able to mint");
+
+    let rotate = admin_only_ix(
+        admin.pubkey(),
+        usdx_instruction::SetRelayer {
+            new_relayer: new_relayer.pubkey(),
+        }
+        .data(),
+    );
+    send(&mut svm, &[rotate], &payer.pubkey(), &[&payer, &admin])
+        .unwrap_or_else(|e| panic!("set_relayer failed: {e:?}"));
+
+    assert_eq!(read_config(&svm).relayer, new_relayer.pubkey());
+
+    // After rotation the new relayer works...
+    let after = bridge_mint_ix(mint, dest, 10, correlation_id("rot-after"), new_relayer.pubkey());
+    send(&mut svm, &[after], &payer.pubkey(), &[&payer])
+        .unwrap_or_else(|e| panic!("the rotated-in relayer should be able to mint: {e:?}"));
+    assert_eq!(token_balance(&svm, &dest), 10);
+
+    // ...and the old one does not. This is the half that matters after a
+    // suspected leak: rotation is worthless if the compromised key still
+    // works.
+    let old = bridge_mint_ix(mint, dest, 10, correlation_id("rot-old"), relayer_pubkey());
+    send(&mut svm, &[old], &payer.pubkey(), &[&payer])
+        .expect_err("the rotated-out relayer must no longer be able to mint");
+}
+
+#[test]
+fn set_relayer_rejects_a_non_admin() {
+    let (mut svm, _admin) = new_svm_with_config();
+    let payer = Keypair::new();
+    fund(&mut svm, &payer.pubkey());
+
+    let impostor = Keypair::new();
+    fund(&mut svm, &impostor.pubkey());
+
+    let ix = admin_only_ix(
+        impostor.pubkey(),
+        usdx_instruction::SetRelayer {
+            new_relayer: impostor.pubkey(),
+        }
+        .data(),
+    );
+    send(&mut svm, &[ix], &payer.pubkey(), &[&payer, &impostor])
+        .expect_err("only the admin may rotate the relayer");
+
+    assert_eq!(
+        read_config(&svm).relayer,
+        relayer_pubkey(),
+        "a rejected rotation must leave the relayer unchanged"
+    );
+}
+
+#[test]
+fn set_relayer_rejects_the_zero_pubkey() {
+    // Setting it would not disable the relayer, it would leave an account
+    // nothing can satisfy. `set_paused` is the reversible way to stop the
+    // bridge.
+    let (mut svm, admin) = new_svm_with_config();
+    let payer = Keypair::new();
+    fund(&mut svm, &payer.pubkey());
+
+    let ix = admin_only_ix(
+        admin.pubkey(),
+        usdx_instruction::SetRelayer {
+            new_relayer: Pubkey::default(),
+        }
+        .data(),
+    );
+    send(&mut svm, &[ix], &payer.pubkey(), &[&payer, &admin])
+        .expect_err("the zero pubkey must be rejected");
+}
+
+#[test]
+fn set_paused_halts_minting_and_burning_and_is_reversible() {
+    // Ethereum's USDX has had a pause since it was written. Solana had none,
+    // so the only answer to a compromise was revoking the mint authority —
+    // irreversible, and it takes the honest users with it.
+    let (mut svm, admin) = new_svm_with_config();
+    let payer = Keypair::new();
+    fund(&mut svm, &payer.pubkey());
+
+    let mint = init_mint(&mut svm, &payer);
+    let user = Keypair::new();
+    fund(&mut svm, &user.pubkey());
+    let ata = ensure_ata(&mut svm, &payer, &user.pubkey(), &mint);
+
+    // Fund the account before pausing, so the burn path has something to
+    // refuse to burn.
+    let seed = bridge_mint_ix(mint, ata, 1_000, correlation_id("pause-seed"), relayer_pubkey());
+    send(&mut svm, &[seed], &payer.pubkey(), &[&payer]).unwrap();
+
+    let pause = admin_only_ix(
+        admin.pubkey(),
+        usdx_instruction::SetPaused { paused: true }.data(),
+    );
+    send(&mut svm, &[pause], &payer.pubkey(), &[&payer, &admin])
+        .unwrap_or_else(|e| panic!("set_paused failed: {e:?}"));
+    assert!(read_config(&svm).paused);
+
+    let minting = bridge_mint_ix(mint, ata, 1, correlation_id("pause-mint"), relayer_pubkey());
+    send(&mut svm, &[minting], &payer.pubkey(), &[&payer])
+        .expect_err("a paused bridge must not mint");
+
+    let approve = approve_delegate_ix(ata, user.pubkey(), 1_000);
+    send(&mut svm, &[approve], &payer.pubkey(), &[&payer, &user]).unwrap();
+    let burning = bridge_burn_ix(mint, ata, 1, correlation_id("pause-burn"), relayer_pubkey());
+    send(&mut svm, &[burning], &payer.pubkey(), &[&payer])
+        .expect_err("a paused bridge must not burn");
+
+    // Reversible, which is the entire advantage over revoking mint authority.
+    let unpause = admin_only_ix(
+        admin.pubkey(),
+        usdx_instruction::SetPaused { paused: false }.data(),
+    );
+    send(&mut svm, &[unpause], &payer.pubkey(), &[&payer, &admin]).unwrap();
+
+    let resumed = bridge_mint_ix(mint, ata, 5, correlation_id("pause-resume"), relayer_pubkey());
+    send(&mut svm, &[resumed], &payer.pubkey(), &[&payer])
+        .unwrap_or_else(|e| panic!("an unpaused bridge should mint again: {e:?}"));
+    assert_eq!(token_balance(&svm, &ata), 1_005);
+}
+
+#[test]
+fn set_paused_rejects_a_non_admin() {
+    let (mut svm, _admin) = new_svm_with_config();
+    let payer = Keypair::new();
+    fund(&mut svm, &payer.pubkey());
+
+    let impostor = Keypair::new();
+    fund(&mut svm, &impostor.pubkey());
+
+    let ix = admin_only_ix(
+        impostor.pubkey(),
+        usdx_instruction::SetPaused { paused: true }.data(),
+    );
+    send(&mut svm, &[ix], &payer.pubkey(), &[&payer, &impostor])
+        .expect_err("only the admin may pause the bridge");
+
+    assert!(!read_config(&svm).paused);
+}
+
+#[test]
+fn set_admin_hands_over_control_completely() {
+    let (mut svm, admin) = new_svm_with_config();
+    let payer = Keypair::new();
+    fund(&mut svm, &payer.pubkey());
+
+    let successor = Keypair::new();
+    fund(&mut svm, &successor.pubkey());
+
+    let handover = admin_only_ix(
+        admin.pubkey(),
+        usdx_instruction::SetAdmin {
+            new_admin: successor.pubkey(),
+        }
+        .data(),
+    );
+    send(&mut svm, &[handover], &payer.pubkey(), &[&payer, &admin])
+        .unwrap_or_else(|e| panic!("set_admin failed: {e:?}"));
+
+    assert_eq!(read_config(&svm).admin, successor.pubkey());
+
+    // The successor can act...
+    let by_successor = admin_only_ix(
+        successor.pubkey(),
+        usdx_instruction::SetPaused { paused: true }.data(),
+    );
+    send(&mut svm, &[by_successor], &payer.pubkey(), &[&payer, &successor])
+        .unwrap_or_else(|e| panic!("the new admin should be able to act: {e:?}"));
+
+    // ...and the predecessor cannot. A handover that leaves the old admin
+    // able to act is not a handover.
+    let by_predecessor = admin_only_ix(
+        admin.pubkey(),
+        usdx_instruction::SetPaused { paused: false }.data(),
+    );
+    send(&mut svm, &[by_predecessor], &payer.pubkey(), &[&payer, &admin])
+        .expect_err("the previous admin must lose control");
 }

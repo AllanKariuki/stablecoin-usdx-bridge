@@ -21,14 +21,35 @@ type Config struct {
 
 	DatabaseURL string `env:"DATABASE_URL" required:"true"`
 
-	EthRPCURL         string `env:"ETH_RPC_URL" required:"true"`
-	USDXProxyAddress  string `env:"USDX_PROXY_ADDRESS" required:"true"`
-	EthRelayerPrivKey string `env:"ETH_RELAYER_PRIVATE_KEY" required:"true"`
+	EthRPCURL        string `env:"ETH_RPC_URL" required:"true"`
+	USDXProxyAddress string `env:"USDX_PROXY_ADDRESS" required:"true"`
+
+	// EthRelayerPrivKey is no longer required: with SIGNER_URL set, this
+	// process holds no key material at all, which is P6's entire goal.
+	// Validation that exactly one of the two is configured happens in
+	// validateSigning below, so a deployment cannot silently end up with
+	// neither.
+	EthRelayerPrivKey string `env:"ETH_RELAYER_PRIVATE_KEY" default:""`
 
 	SolanaRPCURL             string `env:"SOLANA_RPC_URL" default:"http://localhost:8899"`
 	USDXProgramID            string `env:"USDX_PROGRAM_ID" required:"true"`
 	USDXMintAddress          string `env:"USDX_MINT_ADDRESS" required:"true"`
-	SolanaRelayerKeypairPath string `env:"SOLANA_RELAYER_KEYPAIR_PATH" required:"true"`
+	SolanaRelayerKeypairPath string `env:"SOLANA_RELAYER_KEYPAIR_PATH" default:""`
+
+	// SignerURL delegates all chain signing to services/signer. When set,
+	// ETH_RELAYER_PRIVATE_KEY and SOLANA_RELAYER_KEYPAIR_PATH are ignored —
+	// this process never sees a key.
+	//
+	// The client certificate is what the signer authenticates by; there is no
+	// token fallback, deliberately, because a bearer token can be replayed by
+	// anyone who observes one and the thing being authorised is mint
+	// authority.
+	SignerURL      string `env:"SIGNER_URL" default:""`
+	SignerCertPath string `env:"SIGNER_CLIENT_CERT_PATH" default:""`
+	SignerKeyPath  string `env:"SIGNER_CLIENT_KEY_PATH" default:""`
+	SignerCAPath   string `env:"SIGNER_CA_PATH" default:""`
+	SignerEthKeyID string `env:"SIGNER_ETH_KEY_ID" default:"eth-relayer"`
+	SignerSolKeyID string `env:"SIGNER_SOL_KEY_ID" default:"sol-relayer"`
 
 	FeeIssuanceBps   int32 `env:"FEE_ISSUANCE_BPS" default:"0"`
 	FeeRedemptionBps int32 `env:"FEE_REDEMPTION_BPS" default:"0"`
@@ -108,7 +129,36 @@ func Load() (Config, error) {
 	if err := cfg.validateFees(); err != nil {
 		return cfg, err
 	}
+	if err := cfg.validateSigning(); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
+}
+
+// validateSigning makes the either/or explicit.
+//
+// Before P6 both key variables were `required`, so a missing one failed at
+// boot. Making them optional to allow SIGNER_URL would otherwise mean a
+// deployment with neither starts happily and fails at the first mint, hours
+// later, in the saga — which is exactly the kind of misconfiguration this
+// platform's config loader exists to catch at boot with a readable message.
+func (c Config) validateSigning() error {
+	if c.SignerURL != "" {
+		return nil
+	}
+	var problems []string
+	if c.EthRelayerPrivKey == "" {
+		problems = append(problems, "ETH_RELAYER_PRIVATE_KEY: required unless SIGNER_URL is set")
+	}
+	if c.SolanaRelayerKeypairPath == "" {
+		problems = append(problems, "SOLANA_RELAYER_KEYPAIR_PATH: required unless SIGNER_URL is set")
+	}
+	if len(problems) > 0 {
+		problems = append(problems,
+			"set SIGNER_URL to delegate signing to services/signer, which is what P6 exists for")
+		return &platform.ConfigError{Problems: problems}
+	}
+	return nil
 }
 
 func (c Config) Fees() ledger.FeeSchedule {

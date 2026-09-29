@@ -1,0 +1,67 @@
+# services/signer's policy.
+#
+# Mounted read-only. It is a document somebody reviews — version controlled,
+# with a diff and an approver — rather than configuration an API can edit.
+# An endpoint that could change this would give anyone who compromised the
+# service a way to raise its own ceilings before using them.
+#
+# Amounts are in the asset's SMALLEST UNITS, never decimals: USD-X has 6
+# decimal places, so 100_000_000 is 100 USD-X. Writing "100" here would be a
+# ceiling of one ten-thousandth of a cent, and the symptom would be every
+# mint failing.
+#
+# First match wins, so a narrower rule must precede a broader one. A method
+# with no rule is REFUSED — forgetting to write one is not the same as
+# deciding a method is unrestricted.
+
+rules:
+  # ---- Ethereum ---------------------------------------------------------
+  - chain: ETHEREUM
+    method: bridgeMint
+    max_amount: "500000000"        # 500 USD-X per signature
+    allowed_callers: [core-ledger-worker]
+    # No destination allowlist: mints go to customer wallets, which are
+    # created continuously. The ceiling and the daily limit are what bound
+    # this one. A deployment that mints only to a known treasury address
+    # should add `allowed_destinations` — it is the strongest control here.
+
+  - chain: ETHEREUM
+    method: bridgeBurn
+    max_amount: "500000000"
+    allowed_callers: [core-ledger-worker]
+
+  # Pausing halts every transfer on the chain. The worker that mints must not
+  # be able to — that separation is the point of listing callers at all.
+  - chain: ETHEREUM
+    method: pause
+    allowed_callers: [compliance]
+
+  - chain: ETHEREUM
+    method: blacklist
+    allowed_callers: [compliance]
+
+  # ---- Solana -----------------------------------------------------------
+  - chain: SOLANA
+    method: bridgeMint
+    max_amount: "500000000"
+    allowed_callers: [core-ledger-worker]
+
+  - chain: SOLANA
+    method: bridgeBurn
+    max_amount: "500000000"
+    allowed_callers: [core-ledger-worker]
+
+  # Rotating the Solana relayer (the BridgeConfig PDA this phase added).
+  - chain: SOLANA
+    method: setRelayer
+    allowed_callers: [treasury-ops]
+
+# The backstop the per-signature ceiling cannot provide: a thousand signatures
+# each individually under the limit. Reset at midnight UTC rather than on a
+# rolling window, because "how much is left today" needs an answer a human can
+# hold in their head during an incident.
+daily_limits:
+  "ETHEREUM:bridgeMint": "10000000000"   # 10,000 USD-X
+  "ETHEREUM:bridgeBurn": "10000000000"
+  "SOLANA:bridgeMint": "10000000000"
+  "SOLANA:bridgeBurn": "10000000000"

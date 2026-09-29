@@ -78,8 +78,8 @@ test: test-unit test-integration test-eth test-sol test-node
 
 ## Go unit tests only — no Postgres required.
 test-unit:
-	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
-	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... -count=1 -race
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/...
+	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... -count=1 -race
 
 ## Go integration tests against real Postgres — fails (not skips) if unreachable.
 # Also fails if a test that should run against Postgres got silently
@@ -87,13 +87,19 @@ test-unit:
 # -p 1 because every package shares one database and several assert on how
 # far a shared GL account (2300.BRIDGE) moved; run in parallel, one package's
 # postings land inside another's before/after window.
+#
+# services/signer's audit tests need their own database (the append-only
+# trigger and the hash chain are database properties, so a fake would confirm
+# the Go code and none of them). Pointed at the same test database rather than
+# signer's own, because the suite only creates its own tables.
 test-integration: up
 	@docker exec usdx-postgres psql -U bridge -d postgres -tAc \
 		"SELECT 1 FROM pg_database WHERE datname = 'bridge_test'" | grep -q 1 \
 		|| docker exec usdx-postgres createdb -U bridge -O bridge bridge_test
 	@set -euo pipefail; \
 	LEDGER_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" \
-		go test -p 1 ./core-ledger/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
+	SIGNER_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" \
+		go test -p 1 ./core-ledger/... ./services/signer/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
 	if grep -q '^--- SKIP:' /tmp/usdx-go-test.log; then \
 		echo "a test was skipped — LEDGER_TEST_DATABASE_URL must be set and reachable"; \
 		grep '^--- SKIP:' /tmp/usdx-go-test.log; \
@@ -154,6 +160,7 @@ build:
 	go build -o bin/core-ledger-reconcile ./core-ledger/cmd/reconcile
 	go build -o bin/auth-proxy ./services/auth-proxy/cmd/server
 	go build -o bin/indexer ./services/indexer/cmd/server
+	go build -o bin/signer ./services/signer/cmd/server
 
 ## Run core-ledger against local infra (needs core-ledger/.env — see .env.example).
 run: up
@@ -185,6 +192,7 @@ docker-build:
 	docker build -f services/workflow/Dockerfile -t usdx/workflow:dev .
 	docker build -f services/kyc/Dockerfile -t usdx/kyc:dev .
 	docker build -f services/compliance/Dockerfile -t usdx/compliance:dev .
+	docker build -f services/signer/Dockerfile -t usdx/signer:dev .
 
 ## Bring up infra *and* the containerised API and worker.
 # This is what P2's definition of done needs: a worker you can `docker kill`
@@ -209,7 +217,7 @@ logs-worker:
 
 ## Format everything in place.
 fmt:
-	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
+	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/...
 	cd chains/ethereum && forge fmt
 	cd chains/solana && cargo fmt -p usdx_bridge
 
@@ -219,7 +227,7 @@ fmt-check:
 	cd chains/solana && cargo fmt -p usdx_bridge -- --check
 
 lint: fmt-check
-	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/...
 	cd chains/solana && cargo clippy -p usdx_bridge --tests -- -D warnings
 	pnpm -r --if-present run lint
 

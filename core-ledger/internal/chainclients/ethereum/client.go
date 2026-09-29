@@ -70,14 +70,19 @@ func NewClientWithSigner(rpcURL, contractAddress string, signer Signer) (*Client
 	return &Client{ec: ec, contract: contract, chainID: chainID, signer: signer}, nil
 }
 
-func (c *Client) transactor(ctx context.Context) (*bind.TransactOpts, error) {
-	opts := transactorFor(c.signer, c.chainID)
+// transactor builds the options the generated bindings sign through.
+//
+// The method name, amount and destination are carried to the signer so a
+// remote one can enforce policy on what is actually being authorised. A local
+// signer ignores them, which is why this is one code path rather than two.
+func (c *Client) transactor(ctx context.Context, method, correlationID string, amount *big.Int, to string) (*bind.TransactOpts, error) {
+	opts := transactorFor(bindContext(c.signer, method, correlationID, amount, to), c.chainID)
 	opts.Context = ctx
 	return opts, nil
 }
 
 func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (string, error) {
-	opts, err := c.transactor(context.Background())
+	opts, err := c.transactor(context.Background(), "bridgeMint", correlationID, amount, to)
 	if err != nil {
 		return "", err
 	}
@@ -89,7 +94,7 @@ func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (s
 }
 
 func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) (string, error) {
-	opts, err := c.transactor(context.Background())
+	opts, err := c.transactor(context.Background(), "bridgeBurn", correlationID, amount, from)
 	if err != nil {
 		return "", err
 	}
