@@ -1,4 +1,4 @@
-# Single source of truth for DAMP's RBAC model: 6 roles, 28 permissions.
+# Single source of truth for DAMP's RBAC model: 6 roles, 31 permissions.
 #
 # Generates (see shared/authz/gen, `make authz-gen`):
 #   - shared/authz/generated/permissions.go   — services/auth-proxy's role→permission
@@ -23,11 +23,16 @@
 # its reserves are. Those stay exclusive to `compliance` and `treasury`,
 # even for `admin`.
 #
-# reserves:manage is the newest member of that list and belongs there for a
-# specific reason: it can arm a custodian drift and edit reserve targets,
-# which between them can make a reconciliation break appear or disappear.
-# Whoever runs the platform must not also be able to change what the control
-# that watches it reports.
+# reserves:manage belongs there for a specific reason: it can arm a custodian
+# drift and edit reserve targets, which between them can make a reconciliation
+# break appear or disappear. Whoever runs the platform must not also be able to
+# change what the control that watches it reports.
+#
+# approvals:policies:manage is held by NO role, deliberately. Editing a policy
+# changes how many people must agree to a payout, or whether the proposer can
+# approve their own — so granting it to a role would let that role weaken
+# maker-checker and then use it. It is provisioned by the same out-of-band
+# process that provisions the platform itself.
 
 permissions:
   # --- Wallets (core-ledger) ---
@@ -100,6 +105,14 @@ permissions:
   reserves:manage:
     description: Manage custodians, reserve targets and fee schedules, and prepare attestations.
 
+  # --- Maker-checker (services/workflow, P5) ---
+  approvals:propose:
+    description: Open an approval request against a policy.
+  approvals:decide:
+    description: Approve or reject a pending approval request.
+  approvals:policies:manage:
+    description: Create and edit approval policies.
+
   # --- Reporting (services/reporting, P7) ---
   reports:read:
     description: Read trial balance packs, reconciliation reports, and dashboards.
@@ -169,6 +182,8 @@ roles:
       - kyc:submit
       - notifications:read:own
       - notifications:webhooks:manage
+      - approvals:propose
+      - approvals:decide
       - reserves:read
       - reports:read
       - admin:users:manage
@@ -183,6 +198,8 @@ roles:
       - compliance:cases:manage
       - compliance:blacklist:manage
       - notifications:read:own
+      - approvals:propose
+      - approvals:decide
       - reserves:read
       - reports:read
 
@@ -192,6 +209,7 @@ roles:
       - wallets:read:any
       - transactions:read:any
       - ledger:read
+      - approvals:propose
       - reserves:read
       - reports:read
 
@@ -204,6 +222,8 @@ roles:
       - ledger:read
       - ledger:admin
       - notifications:read:own
+      - approvals:propose
+      - approvals:decide
       - reserves:read
       - reserves:manage
       - reports:read
