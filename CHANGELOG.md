@@ -3,6 +3,104 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-09-29 — P7: reporting, audit trail & production readiness
+
+Branch `feat/p7-reporting-audit`. The last phase, and the one whose job is to
+make the previous six auditable.
+
+### Added
+
+- **`services/audit-trail`** — who did what, in a form that survives somebody
+  with database access deciding they would rather it said something else. Not
+  a log aggregator; Loki has the logs. This holds the events that are
+  *evidence*.
+  - **Two mechanisms, two questions.** The hash chain answers *"has anything
+    been removed"*, to anyone who can read the table, with no trust in the
+    process that wrote it. It cannot answer *"when was this written"* —
+    somebody who controls the database can rewrite it from any point and
+    produce a log that verifies perfectly. A Merkle root published externally
+    answers that. Either alone leaves a gap the other closes.
+  - **RFC 6962 domain separation**, and **an odd node is promoted, never
+    duplicated** — CVE-2012-2459. Duplicating it makes a tree of *n* leaves
+    collide with one where the last leaf genuinely appears twice, which for an
+    audit trail means two histories under one anchor: the exact property an
+    anchor exists to rule out. 13 tests, including that collision, the
+    second-preimage case the domain separators prevent, and every leaf of
+    every tree size up to 33 — the odd, non-power-of-two sizes are where the
+    promotion path runs, and an hour's events are never a convenient size.
+  - The proof endpoint returns **the algorithm alongside the proof**. An
+    inclusion proof somebody cannot independently check is a claim, not a
+    proof, and the details that matter are exactly the ones a verifier would
+    guess wrong.
+  - The default publisher writes roots to the service's own log and says so:
+    *deliberately weak*, because a root in a log this platform controls proves
+    nothing an attacker with that control could not also rewrite. With no
+    publisher at all, roots are still computed and stored — an unpublished
+    anchor is a weaker guarantee, not a lost one.
+- **`services/reporting`** — definitions, runs, CSV, Superset tokens.
+  - **It owns no numbers.** Every figure is read from the owning service at
+    run time and *frozen* into the run. A trial balance regenerated on demand
+    gives a different answer every time somebody opens it, which is useless as
+    a record. The export serves the stored result and carries its SHA-256 in a
+    header.
+  - No query interface: report kinds are a fixed vocabulary. A reporting
+    service that runs arbitrary SQL against other services' databases has
+    bypassed every boundary this platform has.
+  - **CSV formula injection is neutralised.** A field starting with `=`, `+`,
+    `-` or `@` is prefixed, because a customer whose account name is
+    `=HYPERLINK(...)` otherwise gets it executed in whoever opens the export —
+    and account names and invoice descriptions are customer-supplied and both
+    appear in reports.
+- **SLOs** (`docs/slos.md`) — five, each with the PromQL, what it protects,
+  and what it deliberately does *not* cover. 4xx is excluded from the
+  money-movement objective, because counting a correctly-refused deposit as a
+  failure would make the SLO improve whenever validation got weaker.
+  services/signer gets no objective of its own: a signer that is down is
+  already a saga that does not complete, and a signer-availability budget
+  creates pressure to loosen the refusals that make it valuable.
+- **The DR restore drill** (`docs/runbooks/dr-restore.md`) — written to be
+  performed, quarterly, with the wall-clock per phase recorded, because an RTO
+  nobody has measured is a number in a document. The indexer is deliberately
+  *not* backed up: it rebuilds from the chains, and a restored stale cursor is
+  worse than an empty one. Phase 4 is `make reconcile`, which is what says
+  whether the restore is *correct* rather than merely complete.
+- `audit:read` (32 permissions), both services in compose, k8s, Prometheus and
+  the bff's forward list.
+
+### Changed — the Superset hole
+
+`frontend/src/services/supersetService.ts` called Superset's
+`POST /api/v1/security/guest_token/` **from the browser**. That endpoint
+requires a Superset **admin** bearer token, so either an admin credential was
+being shipped to the browser or the call had never worked. The second is how
+it survived: nothing rendered a dashboard, so nothing surfaced the failure.
+
+- Tokens are now minted by services/reporting, where the credential lives.
+- **Row-level security is the access control.** `rlsFor` issues no clause to a
+  caller with an `:any` permission, a party-scoped clause to one with `:own`,
+  and **refuses** a caller with neither — a missing clause is not a safe
+  default, it is the absence of the control.
+- The permissions come from the `X-Permissions` header auth-proxy set, never
+  from a body field, which would be the caller naming its own access.
+- **More aviation lineage removed:** `CREW_REPORTS`, `FLIGHT_REPORTS`,
+  `MAINTENANCE_REPORTS` and `SAFETY_COMPLIANCE` dashboards, the
+  three-environment URL-building map, and a `staticGuestToken` option — a
+  bearer credential in a JS bundle. `supersetConfigManager.ts` (239 lines of
+  diagnostics for config that no longer exists) deleted.
+
+### Notes
+
+- **Not verified live.** 146 Node tests, 35 Foundry, 19 Anchor, the full Go
+  suite under `-race`. Nothing has talked to a real Superset instance, and no
+  anchor has been published anywhere but a log.
+- `services/audit-trail` has no *producers* yet. The recording endpoint works
+  and is tested through the Merkle layer, but wiring every service to emit its
+  own actor events is a change in nine services and belongs with each one's
+  next substantive edit rather than as a mechanical sweep here.
+- PDF export is not implemented — CSV is. A PDF renderer is a dependency with
+  a font stack and a headless browser, and the reports that matter are
+  consumed as data.
+
 ## 2026-09-29 — P6: key custody & contracts v2
 
 Branch `feat/p6-signer-custody`. The phase's goal: *no private key material in

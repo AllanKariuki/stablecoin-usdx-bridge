@@ -43,7 +43,7 @@ jobs:
           go-version-file: go.work
 
       - name: go vet
-        run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/...
+        run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/...
 
       - name: go test (unit + integration)
         env:
@@ -51,7 +51,7 @@ jobs:
           SIGNER_TEST_DATABASE_URL: postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
         run: |
           set -euo pipefail
-          go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
+          go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
           # Any skip, not just TestIntegration*: P2 added database-backed
           # suites under other names (TestConcurrentClaim,
           # TestSagaResumesAfterCrash, TestIdempotent*), and every t.Skip in
@@ -145,7 +145,10 @@ jobs:
             -c "CREATE DATABASE kyc_test OWNER kyc;" \
             -c "CREATE ROLE compliance WITH LOGIN PASSWORD 'compliance';" \
             -c "CREATE DATABASE compliance OWNER compliance;" \
-            -c "CREATE DATABASE compliance_test OWNER compliance;"
+            -c "CREATE DATABASE compliance_test OWNER compliance;" \
+            -c "CREATE ROLE reporting WITH LOGIN PASSWORD 'reporting';" \
+            -c "CREATE DATABASE reporting OWNER reporting;" \
+            -c "CREATE DATABASE reporting_test OWNER reporting;"
 
       - name: pnpm -r test
         run: pnpm -r --if-present run test

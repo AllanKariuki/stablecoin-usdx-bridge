@@ -1,17 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { getCurrentSupersetConfig, buildDashboardUrl } from '../../config/supersetConfig';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
+import supersetService from '../../services/supersetService';
 
 interface SupersetDashboardProps {
   dashboardId: string;
-  supersetUrl?: string;
   title?: string;
   height?: string;
-  width?: string;
-  guestToken?: string;
   className?: string;
-  allowFullscreen?: boolean;
   showFilters?: boolean;
-  externalLinkUrl?: string;
 }
 
 interface SupersetEmbedSDK {
@@ -22,218 +18,148 @@ interface SupersetEmbedSDK {
     fetchGuestToken: () => Promise<string>;
     dashboardUiConfig?: {
       hideTitle?: boolean;
-      hideTab?: boolean;
       hideChartControls?: boolean;
-      filters?: {
-        visible: boolean;
-        expanded: boolean;
-      };
+      filters?: { visible: boolean; expanded: boolean };
     };
   }) => Promise<void>;
 }
 
 declare global {
   interface Window {
-    supersetEmbeddedSdk: SupersetEmbedSDK;
+    supersetEmbeddedSdk?: SupersetEmbedSDK;
   }
 }
 
+/**
+ * An embedded Superset dashboard.
+ *
+ * The token comes from `services/reporting`, which mints it with the admin
+ * credential it holds and scopes it with row-level security derived from the
+ * caller's resolved permissions. This component used to `POST
+ * /api/superset/guest-token` — a route nothing has ever served — and fall
+ * back to a `guestToken` prop, so it had two paths and neither worked.
+ *
+ * The Superset domain comes back *with* the token rather than from frontend
+ * config: the server knows where its own Superset is, and a second copy in a
+ * JS bundle is a second thing to get wrong per environment.
+ */
 const SupersetDashboard: React.FC<SupersetDashboardProps> = ({
   dashboardId,
-  supersetUrl,
   title = 'Dashboard',
   height = '600px',
-  width = '100%',
-  guestToken,
   className = '',
-  allowFullscreen = true,
   showFilters = true,
-  externalLinkUrl
 }) => {
-  const dashboardRef = useRef<HTMLDivElement>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const mountRef = useRef<HTMLDivElement>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [sdkLoaded, setSdkLoaded] = useState(false);
 
-  // Get Superset configuration - use prop or config
-  const config = getCurrentSupersetConfig();
-  const effectiveSupersetUrl = supersetUrl || config.url;
-  const effectiveExternalUrl = externalLinkUrl || buildDashboardUrl(dashboardId, false);
+  // Fetched fresh on every call, not cached. The SDK invokes this again when
+  // a token expires, and a cached one would turn a tab left open overnight
+  // into a blank dashboard in the morning.
+  const fetchGuestToken = useCallback(async () => {
+    const { token } = await supersetService.guestToken(dashboardId);
+    return token;
+  }, [dashboardId]);
 
-  // Load Superset Embedded SDK
   useEffect(() => {
-    const loadSupersetSDK = () => {
-      return new Promise<void>((resolve, reject) => {
-        // Check if SDK is already loaded
-        if (window.supersetEmbeddedSdk) {
-          setSdkLoaded(true);
-          resolve();
-          return;
-        }
+    let cancelled = false;
 
-        const script = document.createElement('script');
-        script.src = `${effectiveSupersetUrl}/static/assets/embedded.js`;
-        script.async = true;
-        script.onload = () => {
-          setSdkLoaded(true);
-          resolve();
-        };
-        script.onerror = () => {
-          reject(new Error('Failed to load Superset SDK'));
-        };
-        document.head.appendChild(script);
-      });
-    };
-
-    loadSupersetSDK().catch(() => {
-      setError('Failed to load Superset SDK');
-      setIsLoading(false);
-    });
-  }, [effectiveSupersetUrl]);
-
-  // Embed dashboard when SDK is loaded
-  useEffect(() => {
-    const embedDashboard = async () => {
-      if (!sdkLoaded || !dashboardRef.current || !window.supersetEmbeddedSdk) {
-        return;
-      }
+    const run = async () => {
+      setLoading(true);
+      setError(null);
 
       try {
-        setIsLoading(true);
-        setError(null);
+        // The first call does double duty: it proves the caller may see this
+        // dashboard at all, and it tells us where Superset is. Discovering a
+        // permission problem here rather than inside the SDK is the
+        // difference between a readable message and an empty iframe.
+        const { supersetUrl } = await supersetService.guestToken(dashboardId);
+        if (cancelled) return;
 
-        // Clear any existing content
-        dashboardRef.current.innerHTML = '';
+        await loadSdk(supersetUrl);
+        if (cancelled || !mountRef.current || !window.supersetEmbeddedSdk) return;
 
+        mountRef.current.innerHTML = '';
         await window.supersetEmbeddedSdk.embedDashboard({
           id: dashboardId,
-          supersetDomain: effectiveSupersetUrl,
-          mountPoint: dashboardRef.current,
-          fetchGuestToken: async () => {
-            if (guestToken) {
-              return guestToken;
-            }
-            
-            // If no guest token provided, try to fetch from your API
-            try {
-              const response = await fetch('/api/superset/guest-token', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  dashboardId,
-                  user: {
-                    username: 'guest',
-                    first_name: 'Guest',
-                    last_name: 'User'
-                  },
-                  resources: [{
-                    type: 'dashboard',
-                    id: dashboardId
-                  }]
-                })
-              });
-              
-              if (!response.ok) {
-                throw new Error('Failed to fetch guest token');
-              }
-              
-              const data = await response.json();
-              return data.token;
-            } catch (err) {
-              console.error('Error fetching guest token:', err);
-              throw err;
-            }
-          },
+          supersetDomain: supersetUrl,
+          mountPoint: mountRef.current,
+          fetchGuestToken,
           dashboardUiConfig: {
-            hideTitle: !title,
-            hideTab: true,
+            hideTitle: true,
             hideChartControls: false,
-            filters: {
-              visible: showFilters,
-              expanded: false
-            }
-          }
+            filters: { visible: showFilters, expanded: false },
+          },
         });
-
-        setIsLoading(false);
+        if (!cancelled) setLoading(false);
       } catch (err) {
-        console.error('Error embedding dashboard:', err);
-        setError(err instanceof Error ? err.message : 'Failed to load dashboard');
-        setIsLoading(false);
+        if (cancelled) return;
+        setError(messageOf(err));
+        setLoading(false);
       }
     };
 
-    embedDashboard();
-  }, [sdkLoaded, dashboardId, effectiveSupersetUrl, guestToken, title, showFilters]);
-
-  const handleOpenExternal = () => {
-    window.open(effectiveExternalUrl, '_blank', 'noopener,noreferrer');
-  };
-
-  if (error) {
-    return (
-      <div className={`bg-red-50 border border-red-200 rounded-lg p-6 ${className}`}>
-        <div className="flex items-center">
-          <div className="flex-shrink-0">
-            <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-            </svg>
-          </div>
-          <div className="ml-3">
-            <h3 className="text-sm font-medium text-red-800">Dashboard Error</h3>
-            <p className="text-sm text-red-700 mt-1">{error}</p>
-            <button
-              onClick={handleOpenExternal}
-              className="mt-2 text-sm text-red-800 underline hover:text-red-600"
-            >
-              Open in new tab
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboardId, fetchGuestToken, showFilters]);
 
   return (
-    <div className={`bg-white rounded-lg shadow-sm border ${className}`}>
-      {title && (
-        <div className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
-          <div className="flex items-center gap-2">
-            {allowFullscreen && (
-              <button
-                onClick={handleOpenExternal}
-                className="flex items-center gap-1 px-3 py-1 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
-                title="Open in new tab"
-              >
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                </svg>
-                External View
-              </button>
-            )}
+    <div className={`bg-white rounded-lg border border-gray-200 ${className}`}>
+      <div className="px-4 py-3 border-b border-gray-200">
+        <h3 className="font-semibold text-gray-900">{title}</h3>
+      </div>
+
+      {loading && (
+        <div className="flex items-center justify-center" style={{ height }}>
+          <div className="text-center">
+            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+            <p className="text-gray-600 mt-2 text-sm">Loading dashboard…</p>
           </div>
         </div>
       )}
-      <div className="relative">
-        {isLoading && (
-          <div className="absolute inset-0 bg-gray-50 flex items-center justify-center z-10">
-            <div className="flex items-center space-x-2">
-              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
-              <span className="text-gray-600">Loading dashboard...</span>
-            </div>
+
+      {error && !loading && (
+        <div className="flex items-center justify-center p-8" style={{ height }}>
+          <div className="text-center max-w-md">
+            <AlertTriangle className="w-6 h-6 text-amber-500 mx-auto mb-2" />
+            <p className="text-gray-800 font-medium">This dashboard isn’t available</p>
+            <p className="text-gray-600 text-sm mt-1">{error}</p>
           </div>
-        )}
-        <div
-          ref={dashboardRef}
-          style={{ height, width }}
-          className="min-h-[400px] w-full"
-        />
-      </div>
+        </div>
+      )}
+
+      <div ref={mountRef} style={{ height, display: loading || error ? 'none' : 'block' }} />
     </div>
   );
 };
+
+/**
+ * Loads Superset's embed SDK from the Superset the server named.
+ *
+ * Resolved immediately if it is already on the page: the SDK is a global, and
+ * a second `<script>` for it would re-register the same object on every
+ * dashboard a page renders.
+ */
+function loadSdk(supersetUrl: string): Promise<void> {
+  if (window.supersetEmbeddedSdk) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = `${supersetUrl.replace(/\/$/, '')}/static/assets/embedded.js`;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Could not load the Superset embed SDK'));
+    document.head.appendChild(script);
+  });
+}
+
+function messageOf(err: unknown): string {
+  const response = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+  if (response) return response;
+  return err instanceof Error ? err.message : 'Unknown error';
+}
 
 export default SupersetDashboard;

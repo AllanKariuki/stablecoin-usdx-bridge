@@ -1,4 +1,4 @@
-# Single source of truth for DAMP's RBAC model: 6 roles, 31 permissions.
+# Single source of truth for DAMP's RBAC model: 6 roles, 32 permissions.
 #
 # Generates (see shared/authz/gen, `make authz-gen`):
 #   - shared/authz/generated/permissions.go   — services/auth-proxy's role→permission
@@ -117,6 +117,10 @@ permissions:
   reports:read:
     description: Read trial balance packs, reconciliation reports, and dashboards.
 
+  # --- Audit trail (services/audit-trail, P7) ---
+  audit:read:
+    description: Read the actor audit trail and verify its hash chain and anchors.
+
   # --- Identity / platform administration (services/identity) ---
   admin:users:manage:
     description: Manage parties, organizations, memberships, and role assignments.
@@ -186,6 +190,7 @@ roles:
       - approvals:decide
       - reserves:read
       - reports:read
+      - audit:read
       - admin:users:manage
 
   compliance:
@@ -202,6 +207,7 @@ roles:
       - approvals:decide
       - reserves:read
       - reports:read
+      - audit:read
 
   auditor:
     description: Independent read-only oversight.
@@ -212,6 +218,7 @@ roles:
       - approvals:propose
       - reserves:read
       - reports:read
+      - audit:read
 
   treasury:
     description: Financial/ledger administration, reserves, and fee schedules.
@@ -227,3 +234,4 @@ roles:
       - reserves:read
       - reserves:manage
       - reports:read
+      - audit:read

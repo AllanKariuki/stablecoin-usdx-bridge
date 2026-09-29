@@ -47,4 +47,11 @@ export class BffConfig {
 
   @IsString()
   COMPLIANCE_URL = '';
+
+  // P7.
+  @IsString()
+  REPORTING_URL = '';
+
+  @IsString()
+  AUDIT_TRAIL_URL = '';
 }

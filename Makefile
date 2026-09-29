@@ -74,8 +74,8 @@ test: test-unit test-integration test-eth test-sol test-node
 
 ## Go unit tests only — no Postgres required.
 test-unit:
-	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/...
-	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... -count=1 -race
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/...
+	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/... -count=1 -race
 
 ## Go integration tests against real Postgres — fails (not skips) if unreachable.
 # Also fails if a test that should run against Postgres got silently
@@ -125,6 +125,7 @@ build:
 	go build -o bin/auth-proxy ./services/auth-proxy/cmd/server
 	go build -o bin/indexer ./services/indexer/cmd/server
 	go build -o bin/signer ./services/signer/cmd/server
+	go build -o bin/audit-trail ./services/audit-trail/cmd/server
 
 ## Run core-ledger against local infra (needs core-ledger/.env — see .env.example).
 run: up
@@ -157,6 +158,8 @@ docker-build:
 	docker build -f services/kyc/Dockerfile -t usdx/kyc:dev .
 	docker build -f services/compliance/Dockerfile -t usdx/compliance:dev .
 	docker build -f services/signer/Dockerfile -t usdx/signer:dev .
+	docker build -f services/audit-trail/Dockerfile -t usdx/audit-trail:dev .
+	docker build -f services/reporting/Dockerfile -t usdx/reporting:dev .
 
 ## Bring up infra *and* the containerised API and worker.
 # This is what P2's definition of done needs: a worker you can `docker kill`
@@ -181,7 +184,7 @@ logs-worker:
 
 ## Format everything in place.
 fmt:
-	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/...
+	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/...
 	cd chains/ethereum && forge fmt
 	cd chains/solana && cargo fmt -p usdx_bridge
 
@@ -191,7 +194,7 @@ fmt-check:
 	cd chains/solana && cargo fmt -p usdx_bridge -- --check
 
 lint: fmt-check
-	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/...
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/...
 	cd chains/solana && cargo clippy -p usdx_bridge --tests -- -D warnings
 	pnpm -r --if-present run lint
 

@@ -439,6 +439,47 @@ services:
     ports:
       - "8084:8084"
 
+  audit-trail:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: services/audit-trail/Dockerfile
+    image: usdx/audit-trail:dev
+    container_name: usdx-audit-trail
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - services/audit-trail/.env
+    environment:
+      DATABASE_URL: postgres://audit_trail:audit_trail@postgres:5432/audit_trail?sslmode=disable
+      # Five minutes rather than an hour, so a demo produces an anchor and an
+      # inclusion proof inside a session rather than after one.
+      ANCHOR_INTERVAL: 5m
+    ports:
+      - "8085:8085"
+
+  reporting:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: services/reporting/Dockerfile
+    image: usdx/reporting:dev
+    container_name: usdx-reporting
+    depends_on:
+      postgres:
+        condition: service_healthy
+      core-ledger:
+        condition: service_started
+    env_file:
+      - services/reporting/.env
+    environment:
+      DATABASE_URL: postgres://reporting:reporting@postgres:5432/reporting?sslmode=disable
+      CORE_LEDGER_URL: http://core-ledger:8081
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+    ports:
+      - "3008:3008"
+
   # reconcile runs on a schedule, not as a long-lived process — the whole
   # point of extracting it from cmd/server was that the in-process ticker
   # ran once per API replica. Compose has no cron, so this is the
