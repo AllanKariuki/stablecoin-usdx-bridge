@@ -34,6 +34,8 @@ const (
 	PermissionApprovalsPoliciesManage Permission = "approvals:policies:manage"
 	// Open an approval request against a policy.
 	PermissionApprovalsPropose Permission = "approvals:propose"
+	// Read the actor audit trail and verify its hash chain and anchors.
+	PermissionAuditRead Permission = "audit:read"
 	// Bridge USD-X between chains.
 	PermissionBridgeCreate Permission = "bridge:create"
 	// Blacklist/pause an address or contract on-chain via the signer service.
@@ -119,6 +121,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionApprovalsDecide,
 		PermissionReservesRead,
 		PermissionReportsRead,
+		PermissionAuditRead,
 		PermissionAdminUsersManage,
 	},
 	RoleAuditor: {
@@ -128,6 +131,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionApprovalsPropose,
 		PermissionReservesRead,
 		PermissionReportsRead,
+		PermissionAuditRead,
 	},
 	RoleCompany: {
 		PermissionWalletsReadOwn,
@@ -157,6 +161,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionApprovalsDecide,
 		PermissionReservesRead,
 		PermissionReportsRead,
+		PermissionAuditRead,
 	},
 	RoleCustomer: {
 		PermissionWalletsReadOwn,
@@ -185,6 +190,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionReservesRead,
 		PermissionReservesManage,
 		PermissionReportsRead,
+		PermissionAuditRead,
 	},
 }
 

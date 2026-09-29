@@ -43,7 +43,7 @@ jobs:
           go-version-file: go.work
 
       - name: go vet
-        run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/...
+        run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/...
 
       - name: Create signer's test database
         # Service containers can't mount docker-entrypoint-initdb.d, so this is
@@ -65,7 +65,7 @@ jobs:
           # -p 1: the core-ledger packages share this one database and assert
           # on shared GL account deltas, so parallel packages corrupt each
           # other's before/after windows (see the Makefile's test-integration).
-          go test -p 1 ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
+          go test -p 1 ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
           # Any skip, not just TestIntegration*: P2 added database-backed
           # suites under other names (TestConcurrentClaim,
           # TestSagaResumesAfterCrash, TestIdempotent*), and every t.Skip in
@@ -166,7 +166,10 @@ jobs:
             -c "CREATE DATABASE kyc_test OWNER kyc;" \
             -c "CREATE ROLE compliance WITH LOGIN PASSWORD 'compliance';" \
             -c "CREATE DATABASE compliance OWNER compliance;" \
-            -c "CREATE DATABASE compliance_test OWNER compliance;"
+            -c "CREATE DATABASE compliance_test OWNER compliance;" \
+            -c "CREATE ROLE reporting WITH LOGIN PASSWORD 'reporting';" \
+            -c "CREATE DATABASE reporting OWNER reporting;" \
+            -c "CREATE DATABASE reporting_test OWNER reporting;"
 
       - name: pnpm -r test
         run: pnpm -r --if-present run test
