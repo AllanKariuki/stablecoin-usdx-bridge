@@ -321,6 +321,91 @@ services:
     ports:
       - "3000:3000"
 
+  workflow:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: services/workflow/Dockerfile
+    image: usdx/workflow:dev
+    container_name: usdx-workflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - services/workflow/.env
+    environment:
+      DATABASE_URL: postgres://workflow:workflow@postgres:5432/workflow?sslmode=disable
+    ports:
+      - "3006:3006"
+
+  kyc:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: services/kyc/Dockerfile
+    image: usdx/kyc:dev
+    container_name: usdx-kyc
+    depends_on:
+      postgres:
+        condition: service_healthy
+      workflow:
+        condition: service_started
+    env_file:
+      - services/kyc/.env
+    environment:
+      DATABASE_URL: postgres://kyc:kyc@postgres:5432/kyc?sslmode=disable
+      CORE_LEDGER_URL: http://core-ledger:8081
+      WORKFLOW_URL: http://workflow:3006
+      SELF_URL: http://kyc:3007
+      S3_ENDPOINT: http://minio:9000
+    ports:
+      - "3007:3007"
+
+  compliance:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: services/compliance/Dockerfile
+    image: usdx/compliance:dev
+    container_name: usdx-compliance
+    depends_on:
+      postgres:
+        condition: service_healthy
+      workflow:
+        condition: service_started
+    env_file:
+      - services/compliance/.env
+    environment:
+      DATABASE_URL: postgres://compliance:compliance@postgres:5432/compliance?sslmode=disable
+      CORE_LEDGER_URL: http://core-ledger:8081
+      WORKFLOW_URL: http://workflow:3006
+      SELF_URL: http://compliance:3004
+      NOTIFICATIONS_URL: http://notifications:3000
+    ports:
+      - "3004:3004"
+
+  # MinIO holds KYC documents. They never pass through services/kyc — the
+  # browser PUTs straight here on a presigned URL, which keeps passport scans
+  # out of that process's memory, its logs and its request traces.
+  minio:
+    profiles: ["app"]
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    container_name: usdx-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "59000:9000"
+      - "59001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
   # reconcile runs on a schedule, not as a long-lived process — the whole
   # point of extracting it from cmd/server was that the in-process ticker
   # ran once per API replica. Compose has no cron, so this is the
@@ -351,3 +436,4 @@ volumes:
   natsdata:
   promdata:
   grafanadata:
+  miniodata:

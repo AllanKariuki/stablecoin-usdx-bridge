@@ -36,4 +36,15 @@ export class BffConfig {
 
   @IsString()
   NOTIFICATIONS_URL = '';
+
+  // P5. Same treatment: forwarded, not reshaped, and empty is a supported
+  // state that answers 503 with a readable reason.
+  @IsString()
+  WORKFLOW_URL = '';
+
+  @IsString()
+  KYC_URL = '';
+
+  @IsString()
+  COMPLIANCE_URL = '';
 }

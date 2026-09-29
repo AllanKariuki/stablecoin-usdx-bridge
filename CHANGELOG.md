@@ -3,6 +3,108 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-09-29 — P5: onboarding, KYC & compliance
+
+Branch `feat/p5-kyc-compliance`. The phase's goal from `docs/building-plan.md`:
+*a stranger signs up, submits KYC, is auto-screened, reviewed and approved —
+and only then can deposit. A sanctioned counterparty is blocked at transfer
+time with a readable reason and a case.*
+
+### Added
+
+- **`services/workflow`** — maker-checker, once. The plan puts it first
+  because approval is needed in five places and *"implementing it five times
+  gives five definitions of approved"*.
+  - **The service executes nothing.** It stores a SHA-256 digest of what was
+    proposed and hands it back on approval; the caller re-computes that digest
+    over its own object and refuses to act if it differs. So a compromised
+    workflow service **cannot authorize anything** — it can return "approved"
+    for whatever it likes, and the caller will find no matching object.
+    Approval is a statement about a specific payload, not about a request id.
+  - The canonical encoding is tested from both directions: stability (key
+    order, absent vs `undefined`, repeated calls) and sensitivity (amount
+    changed, destination swapped, `"250"` vs `250`). Callers *reimplement* it
+    rather than asking workflow for the digest they verify against — asking
+    would let a compromised workflow choose it — and
+    `services/kyc/test/digest-agreement.spec.ts` imports both implementations
+    and asserts they agree, so a drift is a red build rather than the day
+    nothing can be approved any more.
+  - `exclude_initiator` defaults TRUE and is TRUE on all ten seeded policies.
+    One decision per person is a database constraint, not a UI convention: a
+    two-of-two policy one person could satisfy by clicking twice is a
+    one-of-one policy with extra steps.
+  - An action with **no policy is refused**, not waved through — otherwise
+    forgetting to write a policy is the same as deciding none was required.
+  - `approvals:policies:manage` is held by **no role**, including `admin`.
+    Editing a policy changes how many people must agree to a payout; a role
+    that held it could weaken maker-checker and then use it.
+- **`services/kyc`** — cases, documents, tiers, limits.
+  - **A CLEAR screen does not auto-approve.** It skips the human queue but
+    still passes through maker-checker: "clear" is a provider's opinion,
+    approval grants a tier that can move money, and a provider
+    misconfiguration would otherwise silently onboard everyone.
+  - **`PENDING_APPROVAL` is not `APPROVED`.** The tier is granted only when
+    workflow's decision returns *and its digest still matches the case*.
+  - **TIER_0 can do nothing**, which is what makes the DoD's "only then can
+    deposit" true by construction rather than by every caller remembering to
+    check. Gating reuses core-ledger's `POST /wallets/:id/status` and its
+    `ACCOUNT_FROZEN` 409 rather than inventing a second gate — and unfreezing
+    never thaws a wallet a *compliance* hold put on.
+  - `StubKyc` is **deterministic by email domain**, as the plan asks by name.
+    A random stub makes a demo that cannot be rehearsed and a rejection path
+    no test can arrange for.
+  - **Documents never pass through the service.** The browser PUTs straight to
+    object storage on a presigned URL, so passport scans stay out of this
+    process's memory, logs and traces — a compromise leaks references, not
+    files.
+- **`services/compliance`** — screening, rules, alerts, cases, SAR export,
+  enforcement.
+  - **Consumes `damp.ledger.transaction_posted.v1`**, written inside the same
+    `SERIALIZABLE` transaction as the journal lines, so there is no window in
+    which money moved and compliance was not told. That is the property the
+    outbox was built for in P2, a phase before anything consumed it.
+  - **The rules engine is pure functions** over a movement and a window of
+    history — no database, no clock, no network. A rule that decides whether
+    money may move has to be testable against a fabricated history; one that
+    needs a populated Postgres and a mocked clock gets tested once, at the
+    wrong values. 21 cases at the boundaries: `AMOUNT_THRESHOLD` fires *at*
+    the threshold (treating $10,000 as "over ten thousand" makes
+    exactly-at-the-limit the safe amount to send), `VELOCITY` counts the
+    movement being evaluated, `AGGREGATE_WINDOW` sums scaled integers,
+    `STRUCTURING` catches the pattern thresholds themselves create, and
+    `NEW_PARTY_LARGE_TX` treats a null first-seen as *new* rather than
+    exempting the very transaction it exists for.
+  - **No seeded rule ships as BLOCK.** A rule that can freeze a customer's
+    money on the day it is deployed has never been observed against real
+    traffic, and the false-positive rate of an unobserved rule is unknown by
+    definition.
+  - One case per party, not per alert; severity only rises; case notes are
+    append-only; a SAR **requires a narrative**, stored verbatim, because the
+    narrative is the report and regenerating it would produce a different
+    document each export.
+  - **Enforcement stops short, visibly.** Wallet freezes execute (no key
+    needed). Blacklist and pause are approved and then sit `APPROVED` with an
+    explicit reason, because submitting them needs a key holding
+    `COMPLIANCE_ROLE`/`PAUSER_ROLE` and custody is P6 — incomplete on purpose
+    rather than marked `EXECUTED` on the strength of nothing having happened.
+- `approvals:propose` / `approvals:decide` / `approvals:policies:manage`
+  (31 permissions). `auditor` holds propose and **not** decide: independent
+  oversight that can approve is not independent.
+- MinIO in compose, three service databases, k8s manifests with
+  NetworkPolicies, Prometheus targets, and bff forward routes listed
+  explicitly — a wildcard would have quietly exposed
+  `/internal/approvals/callback` through the gateway.
+
+### Notes
+
+- **Not verified live.** 125 tests pass across nine packages (56 of them new
+  in this phase: 15 digest, 20 kyc, 21 compliance rules). No service in this
+  phase has been run against a real database, a real screening vendor, or
+  MinIO.
+- The seeded policies are a starting position, not a compliance opinion. Who
+  may approve what, and how many of them, is a decision for whoever runs the
+  platform.
+
 ## 2026-09-28 — P4: money in and out
 
 Branch `feat/p4-payments-notifications`. The phase's goal from

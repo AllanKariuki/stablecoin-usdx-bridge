@@ -135,7 +135,16 @@ jobs:
             -c "CREATE DATABASE payments_test OWNER payments;" \
             -c "CREATE ROLE notifications WITH LOGIN PASSWORD 'notifications';" \
             -c "CREATE DATABASE notifications OWNER notifications;" \
-            -c "CREATE DATABASE notifications_test OWNER notifications;"
+            -c "CREATE DATABASE notifications_test OWNER notifications;" \
+            -c "CREATE ROLE workflow WITH LOGIN PASSWORD 'workflow';" \
+            -c "CREATE DATABASE workflow OWNER workflow;" \
+            -c "CREATE DATABASE workflow_test OWNER workflow;" \
+            -c "CREATE ROLE kyc WITH LOGIN PASSWORD 'kyc';" \
+            -c "CREATE DATABASE kyc OWNER kyc;" \
+            -c "CREATE DATABASE kyc_test OWNER kyc;" \
+            -c "CREATE ROLE compliance WITH LOGIN PASSWORD 'compliance';" \
+            -c "CREATE DATABASE compliance OWNER compliance;" \
+            -c "CREATE DATABASE compliance_test OWNER compliance;"
 
       - name: pnpm -r test
         run: pnpm -r --if-present run test

@@ -1,0 +1,240 @@
+# P5's three services. Grouped in one file because they are one deployment
+# unit in practice: kyc and compliance both depend on workflow, and a cluster
+# with two of the three is a cluster where approvals open and never resolve.
+
+# ---------------------------------------------------------------------------
+# workflow
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: workflow
+  labels:
+    app: workflow
+spec:
+  # Safe to scale. Every concurrency hazard here is guarded by the database
+  # rather than by a process being careful: UNIQUE (request_id, decided_by)
+  # stops one person satisfying a two-of-two policy, and the settle path is
+  # `WHERE status = 'PENDING'` so two simultaneous approvals produce one
+  # transition. The callback drain uses no locking because a duplicate
+  # delivery is expected — receivers dedupe on the Idempotency-Key.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: workflow
+  template:
+    metadata:
+      labels:
+        app: workflow
+    spec:
+      containers:
+        - name: workflow
+          # TODO: point at the real registry once CI publishes an image.
+          image: <Image>
+          ports:
+            - containerPort: 3006
+          env:
+            - name: PORT
+              value: "3006"
+            - name: DATABASE_URL
+              value: "postgres://workflow:workflow@postgres.default.svc.cluster.local:5432/workflow?sslmode=disable"
+          resources:
+            requests: { memory: "128Mi", cpu: "50m" }
+            limits: { memory: "256Mi", cpu: "500m" }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3006 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3006 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: workflow
+  labels: { app: workflow }
+spec:
+  selector: { app: workflow }
+  ports:
+    - { name: http, protocol: TCP, port: 3006, targetPort: 3006 }
+---
+# Only bff (the human surface) and the two services that propose actions.
+# Nothing outside the cluster reaches the record of what was approved.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: workflow-ingress
+spec:
+  podSelector: { matchLabels: { app: workflow } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: bff } }
+        - podSelector: { matchLabels: { app: kyc } }
+        - podSelector: { matchLabels: { app: compliance } }
+        - namespaceSelector: { matchLabels: { name: observability } }
+      ports:
+        - { protocol: TCP, port: 3006 }
+
+---
+# ---------------------------------------------------------------------------
+# kyc
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyc
+  labels:
+    app: kyc
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kyc
+  template:
+    metadata:
+      labels:
+        app: kyc
+    spec:
+      containers:
+        - name: kyc
+          image: <Image>
+          ports:
+            - containerPort: 3007
+          envFrom:
+            - secretRef:
+                name: kyc-secrets   # S3_ACCESS_KEY / S3_SECRET_KEY
+          env:
+            - name: PORT
+              value: "3007"
+            - name: DATABASE_URL
+              value: "postgres://kyc:kyc@postgres.default.svc.cluster.local:5432/kyc?sslmode=disable"
+            - name: CORE_LEDGER_URL
+              value: "http://core-ledger.default.svc.cluster.local:8081"
+            - name: WORKFLOW_URL
+              value: "http://workflow.default.svc.cluster.local:3006"
+            # Where workflow posts decisions back. Must be the Service name,
+            # not a pod IP: the callback is retried over minutes and the pod
+            # that proposed may be long gone by the time it is approved.
+            - name: SELF_URL
+              value: "http://kyc.default.svc.cluster.local:3007"
+          resources:
+            requests: { memory: "160Mi", cpu: "100m" }
+            limits: { memory: "320Mi", cpu: "500m" }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3007 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3007 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kyc
+  labels: { app: kyc }
+spec:
+  selector: { app: kyc }
+  ports:
+    - { name: http, protocol: TCP, port: 3007, targetPort: 3007 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kyc-ingress
+spec:
+  podSelector: { matchLabels: { app: kyc } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: bff } }
+        # workflow posts approval decisions to /internal/approvals/callback.
+        - podSelector: { matchLabels: { app: workflow } }
+        - namespaceSelector: { matchLabels: { name: observability } }
+      ports:
+        - { protocol: TCP, port: 3007 }
+
+---
+# ---------------------------------------------------------------------------
+# compliance
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance
+  labels:
+    app: compliance
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: compliance
+  template:
+    metadata:
+      labels:
+        app: compliance
+    spec:
+      containers:
+        - name: compliance
+          image: <Image>
+          ports:
+            - containerPort: 3004
+          env:
+            - name: PORT
+              value: "3004"
+            - name: DATABASE_URL
+              value: "postgres://compliance:compliance@postgres.default.svc.cluster.local:5432/compliance?sslmode=disable"
+            - name: CORE_LEDGER_URL
+              value: "http://core-ledger.default.svc.cluster.local:8081"
+            - name: WORKFLOW_URL
+              value: "http://workflow.default.svc.cluster.local:3006"
+            - name: SELF_URL
+              value: "http://compliance.default.svc.cluster.local:3004"
+            - name: NOTIFICATIONS_URL
+              value: "http://notifications.default.svc.cluster.local:3000"
+          resources:
+            requests: { memory: "192Mi", cpu: "150m" }
+            limits: { memory: "384Mi", cpu: "1000m" }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3004 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3004 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compliance
+  labels: { app: compliance }
+spec:
+  selector: { app: compliance }
+  ports:
+    - { name: http, protocol: TCP, port: 3004, targetPort: 3004 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: compliance-ingress
+spec:
+  podSelector: { matchLabels: { app: compliance } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: bff } }
+        - podSelector: { matchLabels: { app: workflow } }
+        # The outbox relay, which is how every posting reaches the rules
+        # engine — and the reason this service cannot miss one.
+        - podSelector: { matchLabels: { app: core-ledger-worker } }
+        - namespaceSelector: { matchLabels: { name: observability } }
+      ports:
+        - { protocol: TCP, port: 3004 }

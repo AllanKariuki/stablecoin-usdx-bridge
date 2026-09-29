@@ -72,6 +72,15 @@ spec:
         - podSelector:
             matchLabels:
               app: payments
+        # P5: kyc and compliance both freeze and unfreeze wallets through
+        # POST /wallets/:id/status — the route that already exists, rather
+        # than a second answer to "can this party transact".
+        - podSelector:
+            matchLabels:
+              app: kyc
+        - podSelector:
+            matchLabels:
+              app: compliance
       ports:
         - protocol: TCP
           port: 8081

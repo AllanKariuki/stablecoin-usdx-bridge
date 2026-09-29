@@ -146,6 +146,9 @@ docker-build:
 	docker build -f services/indexer/Dockerfile -t usdx/indexer:dev .
 	docker build -f services/payments/Dockerfile -t usdx/payments:dev .
 	docker build -f services/notifications/Dockerfile -t usdx/notifications:dev .
+	docker build -f services/workflow/Dockerfile -t usdx/workflow:dev .
+	docker build -f services/kyc/Dockerfile -t usdx/kyc:dev .
+	docker build -f services/compliance/Dockerfile -t usdx/compliance:dev .
 
 ## Bring up infra *and* the containerised API and worker.
 # This is what P2's definition of done needs: a worker you can `docker kill`
