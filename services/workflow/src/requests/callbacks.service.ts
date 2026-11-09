@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { SIGNATURE_HEADER, signCallback } from './callback-signature';
 import { RequestsService } from './requests.service';
 
 /**
@@ -11,12 +12,12 @@ import { RequestsService } from './requests.service';
  * service being up, and the downstream service should not miss the decision
  * because it happened to be restarting.
  *
- * The callback carries the **payload digest**, and that is the only thing in
- * it that authorizes anything. The receiving service re-computes the digest
- * over its own stored object and refuses to act if it differs — so this
- * delivery being spoofed, replayed or tampered with gains an attacker
- * nothing they could not do by calling the receiving service directly with a
- * digest that will not match.
+ * Two things make a callback actionable, and neither is enough alone. The
+ * **payload digest** says which payload was approved; the receiver
+ * re-computes it over its own stored object and refuses on mismatch. The
+ * **HMAC signature** says workflow sent it — the digest alone cannot, because
+ * anyone who can read the subject can recompute it. Receivers also check the
+ * request id against the one they recorded when they asked for approval.
  */
 @Injectable()
 export class CallbacksService implements OnModuleInit, OnModuleDestroy {
@@ -46,8 +47,14 @@ export class CallbacksService implements OnModuleInit, OnModuleDestroy {
     const pending = await this.requests.undeliveredCallbacks();
     let delivered = 0;
 
+    const secret = this.config.get<string>('CALLBACK_SECRET') ?? '';
     for (const request of pending) {
       try {
+        if (!secret) {
+          // Unsigned callbacks would be refused by every receiver; sending
+          // them would burn the retry budget on a config mistake.
+          throw new Error('CALLBACK_SECRET is not set; refusing to send an unsigned decision callback');
+        }
         const res = await fetch(request.callbackUrl, {
           method: 'POST',
           headers: {
@@ -56,6 +63,13 @@ export class CallbacksService implements OnModuleInit, OnModuleDestroy {
             // at-least-once, and acting twice on one approval is exactly the
             // double-payout maker-checker exists to prevent.
             'Idempotency-Key': `workflow:${request.id}:${request.status}`,
+            [SIGNATURE_HEADER]: signCallback(secret, {
+              requestId: request.id,
+              subjectType: request.subjectType,
+              subjectId: request.subjectId,
+              payloadDigest: request.payloadDigest,
+              status: request.status,
+            }),
           },
           body: JSON.stringify({
             requestId: request.id,
