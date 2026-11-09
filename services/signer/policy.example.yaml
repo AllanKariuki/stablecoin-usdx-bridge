@@ -14,6 +14,15 @@
 # with no rule is REFUSED — forgetting to write one is not the same as
 # deciding a method is unrestricted.
 
+# Contracts (Ethereum) and programs (Solana) the signer will sign calls to. The
+# decoder proves what a transaction says; only this list says whether the
+# contract it calls is ours. A chain with no entry signs nothing.
+targets:
+  ETHEREUM:
+    - "0x0000000000000000000000000000000000000000"   # USDX proxy — replace per deployment
+  SOLANA:
+    - "9GFGtYxGtZg8Smk4yyya7zAT6V3WcLDsB9XWWQbxMS8"   # usdx_bridge program id
+
 rules:
   # ---- Ethereum ---------------------------------------------------------
   - chain: ETHEREUM

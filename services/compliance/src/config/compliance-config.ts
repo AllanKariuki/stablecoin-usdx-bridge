@@ -30,6 +30,12 @@ export class ComplianceConfig {
   @IsString()
   WORKFLOW_URL = '';
 
+  // HMAC key shared with services/workflow (its CALLBACK_SECRET). Without it
+  // every decision callback is refused.
+  @IsOptional()
+  @IsString()
+  WORKFLOW_CALLBACK_SECRET = '';
+
   @IsOptional()
   @IsString()
   SELF_URL = 'http://localhost:3004';

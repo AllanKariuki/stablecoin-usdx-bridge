@@ -23,4 +23,9 @@ export class WorkflowConfig {
   @IsInt()
   @Min(1)
   CALLBACK_DRAIN_SECONDS = 15;
+
+  // HMAC key for signing decision callbacks; callers hold the same value as
+  // WORKFLOW_CALLBACK_SECRET. Empty means callbacks are not sent.
+  @IsString()
+  CALLBACK_SECRET = '';
 }

@@ -107,3 +107,28 @@ application to notice, which is precisely the check somebody forgets.
 Outside `ENV=local`, missing mTLS configuration is a **refusal to start**. A
 signer reachable without a client certificate is a signer anybody on the
 network can mint with.
+
+## What the signer verifies (and what it no longer takes on trust)
+
+Policy runs against what the **bytes say**, never against fields the caller
+wrote next to them (`internal/decode`):
+
+- **Ethereum** requests carry the unsigned transaction (`tx`). The signer
+  decodes it, proves the digest is its hash under the transaction's own chain
+  id, and reads method, amount and destination from the calldata. Contract
+  creation, ETH value, a missing chain id and unknown selectors are refused.
+- **Solana** requests carry the serialised message as the digest. It must be a
+  canonical legacy message containing only one `bridge_mint`/`bridge_burn` for
+  an allowed program (plus the idempotent ATA create), with the relayer as fee
+  payer and all eight program accounts present. The claimed wallet is bound by
+  deriving its associated token account and requiring it to be the account the
+  instruction actually touches.
+- The caller's claimed method/amount/destination are cross-checked; any
+  disagreement is a recorded denial.
+- `targets:` in the policy file lists the contracts/programs that may be
+  called, per chain. A chain with no entry signs nothing — replace the
+  placeholder Ethereum address in `policy.example.yaml` per deployment.
+
+Not covered: the correlation id is not cross-checked against the bytes (it is
+a hash on Solana and a `bytes32` on Ethereum), and Solana `mint` is not
+allowlisted separately from the program.

@@ -51,6 +51,45 @@ contract USDXV2Test is Test {
         assertEq(usdx.version(), "v2");
     }
 
+    /// The standalone V2 re-declares V1's storage. If its layout drifted, these
+    /// would read the wrong slots after the upgrade.
+    function test_upgrade_preservesV1State() public {
+        // Fresh proxy so there is blacklist + replay state from V1 to carry.
+        USDX impl = new USDX();
+        ERC1967Proxy p = new ERC1967Proxy(address(impl), abi.encodeCall(USDX.initialize, (admin, relayer)));
+        USDX v1 = USDX(address(p));
+        vm.prank(relayer);
+        v1.bridgeMint(user, 5e6, keccak256("m1"));
+        vm.prank(relayer);
+        v1.bridgeBurn(user, 1e6, keccak256("b1"));
+        vm.prank(admin);
+        v1.blacklist(custody);
+
+        USDXV2 v2impl = new USDXV2();
+        vm.prank(admin);
+        v1.upgradeToAndCall(address(v2impl), "");
+        USDXV2 up = USDXV2(address(p));
+
+        assertTrue(up.isBlacklisted(custody));
+        assertTrue(up.processedMints(keccak256("m1")));
+        assertTrue(up.processedBurns(keccak256("b1")));
+        assertEq(up.balanceOf(user), 4e6);
+
+        // And the replay guards still bite after the upgrade.
+        vm.prank(relayer);
+        vm.expectRevert("USDX: correlation already minted");
+        up.bridgeMint(user, 1e6, keccak256("m1"));
+    }
+
+    /// Nobody but the upgrader may initialize V2: otherwise anyone could do it
+    /// between the upgrade and the admin's own call, flipping the flag on.
+    function test_initializeV2_onlyUpgrader() public {
+        vm.prank(user);
+        vm.expectRevert();
+        usdx.initializeV2(true);
+        assertFalse(usdx.requireBurnAllowance());
+    }
+
     /// The flag must default OFF on upgrade. Turning it on atomically would
     /// strand every in-flight bridge: a burn whose journal leg was already
     /// posted under V1's rules would revert for want of an allowance nobody

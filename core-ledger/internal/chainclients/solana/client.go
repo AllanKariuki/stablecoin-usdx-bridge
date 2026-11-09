@@ -16,6 +16,7 @@ import (
 
 const (
 	mintAuthoritySeed = "mint-authority"
+	configSeed        = "bridge-config" // chains/solana constants.rs CONFIG_SEED
 	processedSeed     = "processed"
 
 	pollInterval = 2 * time.Second
@@ -69,6 +70,14 @@ func NewClientWithSigner(rpcURL, programID, mintAddress string, signer Signer) (
 
 func (c *Client) mintAuthorityPDA() (solanago.PublicKey, error) {
 	pda, _, err := solanago.FindProgramAddress([][]byte{[]byte(mintAuthoritySeed)}, c.programID)
+	return pda, err
+}
+
+// configPDA is the BridgeConfig account (seed "bridge-config"). Since P6 the
+// program reads the relayer and the pause flag from it, so bridge_mint and
+// bridge_burn fail with a missing-account error without it.
+func (c *Client) configPDA() (solanago.PublicKey, error) {
+	pda, _, err := solanago.FindProgramAddress([][]byte{[]byte(configSeed)}, c.programID)
 	return pda, err
 }
 
@@ -162,6 +171,10 @@ func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (s
 	if err != nil {
 		return "", fmt.Errorf("deriving processed marker PDA: %w", err)
 	}
+	configPDA, err := c.configPDA()
+	if err != nil {
+		return "", fmt.Errorf("deriving BridgeConfig PDA: %w", err)
+	}
 	destATA, _, err := solanago.FindAssociatedTokenAddress(destWallet, c.mint)
 	if err != nil {
 		return "", fmt.Errorf("deriving destination ATA: %w", err)
@@ -174,6 +187,7 @@ func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (s
 		solanago.Meta(mintAuthority),
 		solanago.Meta(destATA).WRITE(),
 		solanago.Meta(processedMarker).WRITE(),
+		solanago.Meta(configPDA),
 		solanago.Meta(c.signer.PublicKey()).WRITE().SIGNER(),
 		solanago.Meta(solanago.TokenProgramID),
 		solanago.Meta(solanago.SystemProgramID),
@@ -216,6 +230,10 @@ func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) 
 	if err != nil {
 		return "", fmt.Errorf("deriving processed marker PDA: %w", err)
 	}
+	configPDA, err := c.configPDA()
+	if err != nil {
+		return "", fmt.Errorf("deriving BridgeConfig PDA: %w", err)
+	}
 	sourceATA, _, err := solanago.FindAssociatedTokenAddress(ownerWallet, c.mint)
 	if err != nil {
 		return "", fmt.Errorf("deriving source ATA: %w", err)
@@ -226,6 +244,7 @@ func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) 
 		solanago.Meta(mintAuthority),
 		solanago.Meta(sourceATA).WRITE(),
 		solanago.Meta(processedMarker).WRITE(),
+		solanago.Meta(configPDA),
 		solanago.Meta(c.signer.PublicKey()).WRITE().SIGNER(),
 		solanago.Meta(solanago.TokenProgramID),
 		solanago.Meta(solanago.SystemProgramID),

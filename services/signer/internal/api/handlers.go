@@ -20,9 +20,11 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/signer/internal/audit"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/signer/internal/decode"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/signer/internal/keystore"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/signer/internal/policy"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
@@ -58,16 +60,16 @@ type signRequest struct {
 	// ed25519 signs directly.
 	Digest string `json:"digest"`
 
-	// The decoded transaction, for policy. It is sent alongside the digest
-	// rather than derived from it because a digest cannot be inspected — an
-	// amount ceiling against 32 bytes of hash is meaningless, which is why
-	// the P2 Signer seam passes whole transactions.
-	//
-	// The service does NOT verify that these fields describe the digest: it
-	// cannot, without re-implementing two chains' transaction encoding. The
-	// caller is authenticated by mTLS and the mismatch would be visible in
-	// the audit log, which is the honest description of this boundary rather
-	// than a claim the policy is cryptographically bound to what is signed.
+	// Tx is the unsigned Ethereum transaction (binary, hex). Required for
+	// Ethereum: the signer decodes it, proves the digest is its hash, and takes
+	// method, amount and destination from the calldata. Solana needs no
+	// separate field because the digest IS the serialised message.
+	Tx string `json:"tx"`
+
+	// Method, Amount and Destination are the caller's CLAIM about what it is
+	// signing. They are not trusted: the signer derives the real values from
+	// the bytes (package decode), uses those for policy and the audit log, and
+	// refuses the request if a claim disagrees with what was decoded.
 	Amount        string `json:"amount"`
 	Destination   string `json:"destination"`
 	CorrelationID string `json:"correlation_id"`
@@ -145,6 +147,31 @@ func (h *Handlers) sign(c *fiber.Ctx) error {
 		})
 	}
 
+	// ---- decode ----------------------------------------------------------
+	//
+	// Policy runs against what the bytes say, not what the caller says. A
+	// compromised caller can describe a 10,000,000 mint as a 1 mint; it cannot
+	// make the transaction say so.
+	decoded, derr := h.decodeRequest(req, digest)
+	if derr == nil {
+		derr = decode.Reconcile(decoded, req.Method, req.Amount, req.Destination)
+	}
+	if derr == nil && !h.policy.TargetAllowed(req.Chain, decoded.Target) {
+		derr = fmt.Errorf("%s is not an allowed %s contract/program", decoded.Target, req.Chain)
+	}
+	if derr != nil {
+		reason := "unverifiable request: " + derr.Error()
+		h.record(c, req, caller, digest, "", audit.OutcomeDenied, reason)
+		h.logger.Warn("refused to sign", slog.String("caller", caller), slog.String("reason", reason))
+		return platform.WriteError(c, fiber.StatusForbidden, "POLICY_DENIED", reason)
+	}
+	// From here on, the decoded values replace the claimed ones everywhere.
+	req.Method, req.Destination = decoded.Method, decoded.Destination
+	req.Amount = ""
+	if decoded.Amount != nil {
+		req.Amount = decoded.Amount.String()
+	}
+
 	// ---- policy ----------------------------------------------------------
 	amount, hasAmount := new(big.Int).SetString(req.Amount, 10)
 	if !hasAmount {
@@ -215,6 +242,21 @@ func (h *Handlers) sign(c *fiber.Ctx) error {
 		PublicKey: h.publicKeyFor(c, req.KeyID),
 		AuditID:   record.ID,
 	})
+}
+
+func (h *Handlers) decodeRequest(req signRequest, digest []byte) (*decode.Decoded, error) {
+	switch strings.ToUpper(req.Chain) {
+	case "ETHEREUM":
+		raw, err := hex.DecodeString(trimHexPrefix(req.Tx))
+		if err != nil {
+			return nil, errors.New("tx must be hex")
+		}
+		return decode.Ethereum(raw, digest)
+	case "SOLANA":
+		return decode.Solana(digest, h.policy.TargetsFor("SOLANA"), req.Destination)
+	default:
+		return nil, fmt.Errorf("unsupported chain %q", req.Chain)
+	}
 }
 
 func (h *Handlers) record(

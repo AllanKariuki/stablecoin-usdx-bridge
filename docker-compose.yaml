@@ -342,6 +342,7 @@ services:
       - services/workflow/.env
     environment:
       DATABASE_URL: postgres://workflow:workflow@postgres:5432/workflow?sslmode=disable
+      CALLBACK_SECRET: ${WORKFLOW_CALLBACK_SECRET:-dev-workflow-callback-secret}
     ports:
       - "3006:3006"
 
@@ -363,6 +364,8 @@ services:
       DATABASE_URL: postgres://kyc:kyc@postgres:5432/kyc?sslmode=disable
       CORE_LEDGER_URL: http://core-ledger:8081
       WORKFLOW_URL: http://workflow:3006
+      # Dev default; real deployments must override (shared with workflow's CALLBACK_SECRET).
+      WORKFLOW_CALLBACK_SECRET: ${WORKFLOW_CALLBACK_SECRET:-dev-workflow-callback-secret}
       SELF_URL: http://kyc:3007
       S3_ENDPOINT: http://minio:9000
     ports:
@@ -386,6 +389,8 @@ services:
       DATABASE_URL: postgres://compliance:compliance@postgres:5432/compliance?sslmode=disable
       CORE_LEDGER_URL: http://core-ledger:8081
       WORKFLOW_URL: http://workflow:3006
+      # Dev default; real deployments must override (shared with workflow's CALLBACK_SECRET).
+      WORKFLOW_CALLBACK_SECRET: ${WORKFLOW_CALLBACK_SECRET:-dev-workflow-callback-secret}
       SELF_URL: http://compliance:3004
       NOTIFICATIONS_URL: http://notifications:3000
     ports:

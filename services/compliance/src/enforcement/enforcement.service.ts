@@ -119,7 +119,7 @@ export class EnforcementService {
    * stored, so an approval for a payload this service never proposed is
    * refused.
    */
-  async onApprovalDecision(input: { subjectId: string; payloadDigest: string; status: string }) {
+  async onApprovalDecision(input: { requestId: string; subjectId: string; payloadDigest: string; status: string }) {
     const { rows } = await this.db.query<Record<string, any>>(
       'SELECT * FROM enforcement_actions WHERE id = $1',
       [input.subjectId],
@@ -127,6 +127,12 @@ export class EnforcementService {
     const action = rows[0];
     if (!action) return { applied: false, reason: 'no such enforcement action' };
     if (action.status !== 'PENDING_APPROVAL') return { applied: false, reason: `action is ${action.status}` };
+
+    // Bound to the request this action actually opened.
+    if (!action.approval_request_id || action.approval_request_id !== input.requestId) {
+      this.logger.error(`REFUSING an approval for enforcement ${action.id}: request ${input.requestId} is not the one it opened`);
+      return { applied: false, reason: 'approval request id mismatch' };
+    }
 
     const expected = this.workflow.digest({
       actionId: action.id,

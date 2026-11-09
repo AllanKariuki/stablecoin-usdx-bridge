@@ -86,7 +86,21 @@ type Policy struct {
 	// the per-signature ceiling cannot catch: a thousand signatures each
 	// individually under the limit.
 	DailyLimits map[string]*big.Int
+
+	// Targets is, per chain, the contracts (Ethereum) or programs (Solana) the
+	// signer will sign calls to. A chain with none listed signs nothing: the
+	// decoder can prove what a transaction says, but only this list says
+	// whether the contract it calls is ours.
+	Targets map[string][]string
 }
+
+// TargetAllowed reports whether target is a listed contract/program for chain.
+func (p Policy) TargetAllowed(chain, target string) bool {
+	return containsFold(p.Targets[strings.ToUpper(chain)], target)
+}
+
+// TargetsFor returns the listed targets for a chain.
+func (p Policy) TargetsFor(chain string) []string { return p.Targets[strings.ToUpper(chain)] }
 
 // Decision is why a request was allowed or refused. The reason travels to the
 // audit log and to the caller, because "policy denied" with no explanation
