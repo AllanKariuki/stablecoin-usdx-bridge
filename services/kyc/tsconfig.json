@@ -10,7 +10,10 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "outDir": "./dist",
-    "rootDir": ".",
+    // "..", not ".": test/digest-agreement.spec.ts imports services/workflow's
+    // encoder on purpose, to prove the two agree. Emitting is
+    // tsconfig.build.json's job, and it narrows this back to src.
+    "rootDir": "..",
     "incremental": false,
     "skipLibCheck": true,
     "strict": true,
