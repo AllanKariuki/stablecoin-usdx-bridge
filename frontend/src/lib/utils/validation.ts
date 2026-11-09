@@ -6,7 +6,6 @@
  */
 
 import { z } from 'zod';
-import { Currency, OrderSide, OrderType } from '@/types/api';
 
 // ============================================================================
 // COMMON VALIDATORS

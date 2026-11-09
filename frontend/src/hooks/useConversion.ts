@@ -12,9 +12,6 @@ import type {
   ConversionConfirmation,
   TransactionStatusUpdate,
   TransactionStatus,
-  Currency,
-  Wallet,
-  KYCData,
 } from '../types/conversion';
 
 /**

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Shield, Calendar, DollarSign, AlertCircle } from 'lucide-react';
+import { Shield, AlertCircle } from 'lucide-react';
 import type { InsurancePolicy } from '@/types/financial';
 
 interface InsurancePolicyCardProps {

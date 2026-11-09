@@ -24,7 +24,7 @@ interface UserProfile {
 
 const KYCProfile = () => {
   const [isEditing, setIsEditing] = useState(false);
-  const [profile, setProfile] = useState<UserProfile>({
+  const [profile] = useState<UserProfile>({
     id: 'user123',
     firstName: 'William',
     lastName: 'Fancyson',

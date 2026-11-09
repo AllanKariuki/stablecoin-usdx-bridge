@@ -5,6 +5,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## 2026-11-09
 
+### Fixed — CI, red on `main` in three of four jobs
+- **Foundry never compiled.** `forge install` installed nothing: `lib/` is
+  gitignored and there is no `.gitmodules`. New `make eth-deps` shallow-clones
+  the tags `foundry.lock` pins and refuses a checkout at any other revision,
+  since the bytecode must match what is live on Sepolia.
+- **Anchor CLI wouldn't build.** `anchor-cli 1.2.0`'s locked dependencies
+  need rustc 1.91; CI built it with the program's pinned 1.89.0. The CLI now
+  gets its own toolchain; the program still builds on 1.89.0.
+- **Node services couldn't resolve `@damp/nest-platform`**, whose `dist/` is
+  gitignored and was never built in CI. CI and `make test-node` build the
+  shared packages first.
+- **Frontend lint had 69 `no-unused-vars` errors**, which the Node job would
+  have hit next. Removed the unused names (no new `tsc` errors, 145 → 76) and
+  deleted `src/examples/ConversionReduxExamples.tsx`, which nothing imported.
+
 ### Fixed — found by running P2's definition of done live (Sepolia)
 - **Integration tests shared the dev database, and a real worker tried to
   execute what they left behind.** `make test-integration` pointed

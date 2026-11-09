@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { TrendingUp, TrendingDown, Calendar, Info } from 'lucide-react';
-import type { CryptoCurrency, CryptoPrice } from '../../types/financial';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { TrendingUp, TrendingDown, Info } from 'lucide-react';
+import type { CryptoCurrency } from '../../types/financial';
 
 interface PricePoint {
   week: string;
@@ -68,7 +68,6 @@ export const CryptoDetails: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'about' | 'sell' | 'buy'>('about');
   const [selectedPrice, setSelectedPrice] = useState<string>('');
   const [selectedAmount, setSelectedAmount] = useState<string>('');
-  const [timeframe, setTimeframe] = useState<'24h' | '7d' | '30d' | '1y'>('7d');
 
   const handleBuy = () => {
     console.log('Buy order:', { price: selectedPrice, amount: selectedAmount });

@@ -129,7 +129,6 @@ const KYCUpload = () => {
     setDocuments(documents.filter(doc => doc.id !== id));
   };
 
-  const uploadedCount = documents.length;
   const approvedCount = documents.filter(d => d.status === 'approved').length;
   const totalRequired = documentTypes.length;
 

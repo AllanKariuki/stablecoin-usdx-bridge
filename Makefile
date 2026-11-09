@@ -1,5 +1,5 @@
 .PHONY: help up down logs up-app kill-worker logs-worker \
-	test test-unit test-integration test-eth test-sol test-node \
+	test test-unit test-integration test-eth eth-deps test-sol test-node \
 	build run run-worker docker-build \
 	lint fmt fmt-check \
 	authz-gen keycloak-realm \
@@ -86,9 +86,34 @@ test-integration: up
 		exit 1; \
 	fi
 
-## Foundry suite — requires `forge install` once first (see chains/ethereum/README.md).
-test-eth:
+## Foundry suite — fetches the pinned Solidity dependencies first if missing.
+test-eth: eth-deps
 	cd chains/ethereum && forge test
+
+## Fetch chains/ethereum's Solidity dependencies at the revisions foundry.lock pins.
+# Plain `forge install` does nothing here: lib/ is gitignored and there is no
+# .gitmodules for it to read, which is why CI's Foundry job could never
+# compile. Shallow clones of the pinned tags, plus only the one nested
+# submodule remappings.txt uses, rather than forge's full-history recursive
+# clone of OpenZeppelin. The revisions are checked against foundry.lock
+# because the compiled bytecode has to match what is deployed on Sepolia
+# (see foundry.toml) — skipped only for a lib/ copied in without its .git.
+ETH_LIB := chains/ethereum/lib
+eth-deps:
+	@set -euo pipefail; \
+	clone() { \
+		[ -d "$(ETH_LIB)/$$1" ] || git -c advice.detachedHead=false clone -q --depth 1 --branch "$$3" "https://github.com/$$2" "$(ETH_LIB)/$$1"; \
+		want=$$(jq -r --arg k "lib/$$1" '.[$$k].tag.rev' chains/ethereum/foundry.lock); \
+		have=unknown; \
+		if [ "$$(git -C "$(ETH_LIB)/$$1" rev-parse --show-toplevel 2>/dev/null)" = "$$(cd "$(ETH_LIB)/$$1" && pwd -P)" ]; then \
+			have=$$(git -C "$(ETH_LIB)/$$1" rev-parse HEAD); \
+		fi; \
+		[ "$$want" = "$$have" ] || [ "$$have" = unknown ] || { echo "$(ETH_LIB)/$$1 is at $$have, foundry.lock pins $$want"; exit 1; }; \
+	}; \
+	clone forge-std foundry-rs/forge-std v1.16.2; \
+	clone openzeppelin-contracts-upgradeable OpenZeppelin/openzeppelin-contracts-upgradeable v5.7.0; \
+	[ -f "$(ETH_LIB)/openzeppelin-contracts-upgradeable/lib/openzeppelin-contracts/package.json" ] || \
+		git -C "$(ETH_LIB)/openzeppelin-contracts-upgradeable" submodule update -q --init --depth 1 lib/openzeppelin-contracts
 
 ## Anchor/litesvm suite (builds with --arch v1 first — see chains/solana/README.md#testing).
 # Plain `anchor build`/`anchor test` defaults to an SBF arch litesvm can't verify.
@@ -101,6 +126,7 @@ test-sol:
 ## way test-integration does. --if-present skips frontend, which has no
 ## test script yet.
 test-node: up
+	pnpm --filter "./shared/node/**" run build
 	pnpm -r --if-present run test
 
 # ---------------------------------------------------------------------------

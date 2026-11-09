@@ -1,10 +1,9 @@
 import { useState } from 'react';
-import { Upload, Check, Clock, AlertCircle, FileText, CheckCircle2, User } from 'lucide-react';
-import type { KYCProfile, KYCStatus, DocumentType } from '../../types/financial';
+import { Upload, Check, Clock, AlertCircle, FileText, CheckCircle2 } from 'lucide-react';
+import type { KYCProfile, DocumentType } from '../../types/financial';
 
 const Verification = () => {
   const [currentStep, setCurrentStep] = useState(1);
-  const [uploadedDocs, setUploadedDocs] = useState<string[]>([]);
 
   // Mock data
   const kycProfile: KYCProfile = {

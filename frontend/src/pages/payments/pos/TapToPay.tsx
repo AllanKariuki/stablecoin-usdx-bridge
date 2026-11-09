@@ -13,7 +13,7 @@ interface NFCPayment {
 
 const TapToPay: React.FC = () => {
   const [step, setStep] = useState<PaymentStep>('idle');
-  const [nfcEnabled, setNfcEnabled] = useState(false);
+  const [, setNfcEnabled] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [lastPayment, setLastPayment] = useState<NFCPayment | null>(null);
   const [error, setError] = useState<string | null>(null);

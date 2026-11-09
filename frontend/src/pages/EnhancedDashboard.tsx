@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   BarChart3,
   TrendingUp,
@@ -38,7 +38,6 @@ interface FinancialMetrics {
 }
 
 const EnhancedDashboard: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'wallets' | 'insurance' | 'investments' | 'loans'>('overview');
 
   // Financial Metrics
   const metrics: FinancialMetrics[] = [

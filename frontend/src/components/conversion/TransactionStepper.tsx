@@ -42,7 +42,6 @@ interface TransactionStepperProps {
  */
 export function TransactionStepper({
   steps,
-  currentStep,
   className = '',
   orientation = 'horizontal',
 }: TransactionStepperProps) {

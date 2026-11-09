@@ -14,7 +14,7 @@ import {
   mockMerchants,
   mockPaymentRequests
 } from '../../../types/payments/mockPaymentsData';
-import { get, post, put, del } from '../../../api';
+import { get, post, put } from '../../../api';
 
 const initialState: PaymentsState = {
   payments: [],

@@ -37,14 +37,12 @@ const PaymentDetails: React.FC<PaymentDetailsProps> = ({
   deliveryType,
   scheduleDate,
   assetType,
-  selectedCurrency,
   onWalletChange,
   onAmountChange,
   onDescriptionChange,
   onDeliveryTypeChange,
   onScheduleDateChange,
   onAssetTypeChange,
-  onCurrencyChange,
   onContinue,
 }) => {
   // Fiat wallets

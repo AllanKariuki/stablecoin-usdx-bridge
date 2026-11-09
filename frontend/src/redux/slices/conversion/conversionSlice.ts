@@ -364,7 +364,7 @@ export const fetchStablecoinBalance = createAsyncThunk(
  */
 export const checkConversionLimits = createAsyncThunk(
   'conversion/checkConversionLimits',
-  async ({ amount, currency }: { amount: number; currency: string }, { getState, rejectWithValue }) => {
+  async ({ amount }: { amount: number; currency: string }, { getState, rejectWithValue }) => {
     try {
       const state = getState() as { conversion: ConversionState };
       const kyc = state.conversion.kycStatus;

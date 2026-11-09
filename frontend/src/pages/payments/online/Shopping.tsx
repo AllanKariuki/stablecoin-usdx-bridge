@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShoppingCart, Heart, ArrowLeft, Plus, Minus, Filter } from 'lucide-react';
+import { ShoppingCart, Plus, Minus, Filter } from 'lucide-react';
 import SearchableTable from '../../../components/general/SearchableTable';
 import type { FilterConfig } from '../../../types/general/searchTable';
 
@@ -124,7 +124,6 @@ const Shopping: React.FC = () => {
   const deliveryFee = cartTotal > 0 ? 5.99 : 0;
   const tax = (cartTotal * 0.08).toFixed(2);
 
-  const categories = ['All', 'Electronics', 'Fashion', 'Home'];
 
   // Mock shopping history data
   const shoppingHistory: ShoppingTransaction[] = [

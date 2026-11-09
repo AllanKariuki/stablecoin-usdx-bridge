@@ -379,7 +379,6 @@ export class ConversionClient {
 
     const toAmount = Number((request.amount * exchangeRate).toFixed(2));
     const processingFee = request.amount * 0.015; // 1.5%
-    const conversionFee = 0.5; // flat 0.5% on converted amount
     const bankFee = 2.5; // flat $2.50
 
     return {
