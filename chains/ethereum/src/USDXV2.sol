@@ -98,11 +98,7 @@ contract USDXV2 is USDX {
     ///      `_spendAllowance` has to happen *before* the burn and *after* the
     ///      replay check, and there is no ordering of a `super` call that
     ///      produces that.
-    function bridgeBurn(address from, uint256 amount, bytes32 correlationId)
-        external
-        override
-        onlyRole(BRIDGE_ROLE)
-    {
+    function bridgeBurn(address from, uint256 amount, bytes32 correlationId) external override onlyRole(BRIDGE_ROLE) {
         require(!processedBurns[correlationId], "USDX: correlation already burned");
         processedBurns[correlationId] = true;
 

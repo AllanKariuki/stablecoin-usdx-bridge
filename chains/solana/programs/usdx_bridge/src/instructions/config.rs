@@ -1,6 +1,9 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, error::ErrorCode, state::BridgeConfig, AdminChanged, PausedChanged, RelayerChanged};
+use crate::{
+    constants::*, error::ErrorCode, state::BridgeConfig, AdminChanged, PausedChanged,
+    RelayerChanged,
+};
 
 /// Creates the config account. Idempotent in practice because `init` fails if
 /// it already exists — running it twice is an error, not a reset, which is

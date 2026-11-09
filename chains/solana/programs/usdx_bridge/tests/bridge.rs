@@ -678,7 +678,10 @@ fn initialize_config_seeds_the_shipped_relayer_and_the_given_admin() {
     // Seeded from the constant the program shipped with, so an existing
     // deployment can initialise without knowing a pubkey out of band.
     assert_eq!(config.relayer, relayer_pubkey());
-    assert!(!config.paused, "a freshly initialised bridge must not be paused");
+    assert!(
+        !config.paused,
+        "a freshly initialised bridge must not be paused"
+    );
 }
 
 #[test]
@@ -733,8 +736,7 @@ fn initialize_config_rejects_a_zero_admin() {
         .data(),
     };
 
-    send(&mut svm, &[ix], &payer.pubkey(), &[&payer])
-        .expect_err("a zero admin must be rejected");
+    send(&mut svm, &[ix], &payer.pubkey(), &[&payer]).expect_err("a zero admin must be rejected");
 }
 
 #[test]
@@ -754,7 +756,13 @@ fn set_relayer_rotates_who_may_mint() {
     fund(&mut svm, &new_relayer.pubkey());
 
     // Before rotation the new relayer is nobody.
-    let before = bridge_mint_ix(mint, dest, 10, correlation_id("rot-before"), new_relayer.pubkey());
+    let before = bridge_mint_ix(
+        mint,
+        dest,
+        10,
+        correlation_id("rot-before"),
+        new_relayer.pubkey(),
+    );
     send(&mut svm, &[before], &payer.pubkey(), &[&payer])
         .expect_err("an un-rotated relayer must not be able to mint");
 
@@ -771,7 +779,13 @@ fn set_relayer_rotates_who_may_mint() {
     assert_eq!(read_config(&svm).relayer, new_relayer.pubkey());
 
     // After rotation the new relayer works...
-    let after = bridge_mint_ix(mint, dest, 10, correlation_id("rot-after"), new_relayer.pubkey());
+    let after = bridge_mint_ix(
+        mint,
+        dest,
+        10,
+        correlation_id("rot-after"),
+        new_relayer.pubkey(),
+    );
     send(&mut svm, &[after], &payer.pubkey(), &[&payer])
         .unwrap_or_else(|e| panic!("the rotated-in relayer should be able to mint: {e:?}"));
     assert_eq!(token_balance(&svm, &dest), 10);
@@ -846,7 +860,13 @@ fn set_paused_halts_minting_and_burning_and_is_reversible() {
 
     // Fund the account before pausing, so the burn path has something to
     // refuse to burn.
-    let seed = bridge_mint_ix(mint, ata, 1_000, correlation_id("pause-seed"), relayer_pubkey());
+    let seed = bridge_mint_ix(
+        mint,
+        ata,
+        1_000,
+        correlation_id("pause-seed"),
+        relayer_pubkey(),
+    );
     send(&mut svm, &[seed], &payer.pubkey(), &[&payer]).unwrap();
 
     let pause = admin_only_ix(
@@ -874,7 +894,13 @@ fn set_paused_halts_minting_and_burning_and_is_reversible() {
     );
     send(&mut svm, &[unpause], &payer.pubkey(), &[&payer, &admin]).unwrap();
 
-    let resumed = bridge_mint_ix(mint, ata, 5, correlation_id("pause-resume"), relayer_pubkey());
+    let resumed = bridge_mint_ix(
+        mint,
+        ata,
+        5,
+        correlation_id("pause-resume"),
+        relayer_pubkey(),
+    );
     send(&mut svm, &[resumed], &payer.pubkey(), &[&payer])
         .unwrap_or_else(|e| panic!("an unpaused bridge should mint again: {e:?}"));
     assert_eq!(token_balance(&svm, &ata), 1_005);
@@ -925,8 +951,13 @@ fn set_admin_hands_over_control_completely() {
         successor.pubkey(),
         usdx_instruction::SetPaused { paused: true }.data(),
     );
-    send(&mut svm, &[by_successor], &payer.pubkey(), &[&payer, &successor])
-        .unwrap_or_else(|e| panic!("the new admin should be able to act: {e:?}"));
+    send(
+        &mut svm,
+        &[by_successor],
+        &payer.pubkey(),
+        &[&payer, &successor],
+    )
+    .unwrap_or_else(|e| panic!("the new admin should be able to act: {e:?}"));
 
     // ...and the predecessor cannot. A handover that leaves the old admin
     // able to act is not a handover.
@@ -934,6 +965,11 @@ fn set_admin_hands_over_control_completely() {
         admin.pubkey(),
         usdx_instruction::SetPaused { paused: false }.data(),
     );
-    send(&mut svm, &[by_predecessor], &payer.pubkey(), &[&payer, &admin])
-        .expect_err("the previous admin must lose control");
+    send(
+        &mut svm,
+        &[by_predecessor],
+        &payer.pubkey(),
+        &[&payer, &admin],
+    )
+    .expect_err("the previous admin must lose control");
 }

@@ -16,6 +16,11 @@ DATABASE_URL ?= postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
 # design, and a real worker pointed at `bridge` will try to put them on chain.
 # See infra/postgres/init/02-ledger-test-db.sql.
 TEST_DATABASE_URL ?= postgres://bridge:bridge@localhost:55433/bridge_test?sslmode=disable
+# signer's own test database (infra/postgres/init/05-p6-databases.sql). Not
+# bridge_test: both services migrate with goose's default version table, so in
+# a shared database goose sees core-ledger's version 6, skips signer's 00001,
+# and the signatures table never exists.
+SIGNER_TEST_DATABASE_URL ?= postgres://signer:signer@localhost:55433/signer_test?sslmode=disable
 
 .DEFAULT_GOAL := help
 
@@ -90,15 +95,15 @@ test-unit:
 #
 # services/signer's audit tests need their own database (the append-only
 # trigger and the hash chain are database properties, so a fake would confirm
-# the Go code and none of them). Pointed at the same test database rather than
-# signer's own, because the suite only creates its own tables.
+# the Go code and none of them). It gets signer_test, never a database another
+# service migrates — see SIGNER_TEST_DATABASE_URL above.
 test-integration: up
 	@docker exec usdx-postgres psql -U bridge -d postgres -tAc \
 		"SELECT 1 FROM pg_database WHERE datname = 'bridge_test'" | grep -q 1 \
 		|| docker exec usdx-postgres createdb -U bridge -O bridge bridge_test
 	@set -euo pipefail; \
 	LEDGER_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" \
-	SIGNER_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" \
+	SIGNER_TEST_DATABASE_URL="$(SIGNER_TEST_DATABASE_URL)" \
 		go test -p 1 ./core-ledger/... ./services/signer/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
 	if grep -q '^--- SKIP:' /tmp/usdx-go-test.log; then \
 		echo "a test was skipped — LEDGER_TEST_DATABASE_URL must be set and reachable"; \

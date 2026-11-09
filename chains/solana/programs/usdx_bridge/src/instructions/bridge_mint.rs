@@ -1,7 +1,12 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount};
 
-use crate::{constants::*, error::ErrorCode, state::{BridgeConfig, ProcessedMarker}, BridgeMinted};
+use crate::{
+    constants::*,
+    error::ErrorCode,
+    state::{BridgeConfig, ProcessedMarker},
+    BridgeMinted,
+};
 
 #[derive(Accounts)]
 #[instruction(amount: u64, correlation_id: [u8; 32])]

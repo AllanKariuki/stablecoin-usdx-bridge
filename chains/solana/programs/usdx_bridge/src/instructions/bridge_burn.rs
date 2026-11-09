@@ -2,7 +2,12 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program_option::COption;
 use anchor_spl::token::{self, Burn, Mint, Token, TokenAccount};
 
-use crate::{constants::*, error::ErrorCode, state::{BridgeConfig, ProcessedMarker}, BridgeBurned};
+use crate::{
+    constants::*,
+    error::ErrorCode,
+    state::{BridgeConfig, ProcessedMarker},
+    BridgeBurned,
+};
 
 // Burns from `source` using the mint_authority PDA as the SPL *delegate*,
 // not the token owner — the owner must have already called
