@@ -1,0 +1,12 @@
+-- The Go integration suites (make test-integration) get their own database.
+--
+-- They used to share `bridge` with the dev stack, and they leave sagas behind
+-- on purpose — TestSagaResumesAfterCrash's whole job is to strand one
+-- mid-flight. The next `make up-app` worker then found them in its boot sweep
+-- and submitted them to whatever chain core-ledger/.env points at, which for
+-- the P2 live run is Sepolia. They only reverted because the fixtures use
+-- "0xUSER" as an address.
+--
+-- Like 01, this only runs on a fresh pgdata volume; the Makefile's
+-- test-integration target creates it on an existing one.
+CREATE DATABASE bridge_test OWNER bridge;

@@ -2,18 +2,15 @@ package ethereum
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"fmt"
 	"math/big"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 
@@ -36,7 +33,7 @@ type Client struct {
 	ec       *ethclient.Client
 	contract *gen.USDX
 	chainID  *big.Int
-	relayer  *ecdsa.PrivateKey
+	signer   Signer
 }
 
 // NewClient dials rpcURL and binds to the USDX proxy at contractAddress
@@ -45,6 +42,16 @@ type Client struct {
 // private key for the address holding BRIDGE_ROLE, the only account
 // allowed to call bridgeMint/bridgeBurn.
 func NewClient(rpcURL, contractAddress, relayerKeyHex string) (*Client, error) {
+	signer, err := NewLocalSigner(relayerKeyHex)
+	if err != nil {
+		return nil, err
+	}
+	return NewClientWithSigner(rpcURL, contractAddress, signer)
+}
+
+// NewClientWithSigner is the constructor P6 will call, handing in a signer
+// backed by the signer service instead of a key this process holds.
+func NewClientWithSigner(rpcURL, contractAddress string, signer Signer) (*Client, error) {
 	ec, err := ethclient.Dial(rpcURL)
 	if err != nil {
 		return nil, fmt.Errorf("dialing ethereum rpc: %w", err)
@@ -55,24 +62,16 @@ func NewClient(rpcURL, contractAddress, relayerKeyHex string) (*Client, error) {
 		return nil, fmt.Errorf("binding USDX contract: %w", err)
 	}
 
-	key, err := crypto.HexToECDSA(strings.TrimPrefix(relayerKeyHex, "0x"))
-	if err != nil {
-		return nil, fmt.Errorf("parsing relayer private key: %w", err)
-	}
-
 	chainID, err := ec.ChainID(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("fetching chain id: %w", err)
 	}
 
-	return &Client{ec: ec, contract: contract, chainID: chainID, relayer: key}, nil
+	return &Client{ec: ec, contract: contract, chainID: chainID, signer: signer}, nil
 }
 
 func (c *Client) transactor(ctx context.Context) (*bind.TransactOpts, error) {
-	opts, err := bind.NewKeyedTransactorWithChainID(c.relayer, c.chainID)
-	if err != nil {
-		return nil, fmt.Errorf("building transactor: %w", err)
-	}
+	opts := transactorFor(c.signer, c.chainID)
 	opts.Context = ctx
 	return opts, nil
 }
@@ -154,6 +153,11 @@ func (c *Client) waitForFinalizedBlock(ctx context.Context, blockNumber *big.Int
 	for {
 		header, err := c.ec.HeaderByNumber(ctx, big.NewInt(rpc.FinalizedBlockNumber.Int64()))
 		if err != nil {
+			// The deadline can land mid-call rather than in the select below;
+			// the receipt is already in hand, so that is still "not final yet".
+			if ctx.Err() != nil {
+				return fmt.Errorf("timed out waiting for block %s to finalize: %w: %w", blockNumber, bridge.ErrNotFinal, ctx.Err())
+			}
 			return fmt.Errorf("fetching finalized header: %w", err)
 		}
 		if header.Number.Cmp(blockNumber) >= 0 {
@@ -161,7 +165,7 @@ func (c *Client) waitForFinalizedBlock(ctx context.Context, blockNumber *big.Int
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for block %s to finalize: %w", blockNumber, ctx.Err())
+			return fmt.Errorf("timed out waiting for block %s to finalize: %w: %w", blockNumber, bridge.ErrNotFinal, ctx.Err())
 		case <-ticker.C:
 		}
 	}
@@ -173,6 +177,9 @@ func (c *Client) waitForConfirmations(ctx context.Context, blockNumber *big.Int,
 	for {
 		latest, err := c.ec.BlockNumber(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("timed out waiting for %d confirmations on block %s: %w: %w", confirmations, blockNumber, bridge.ErrNotFinal, ctx.Err())
+			}
 			return fmt.Errorf("fetching latest block number: %w", err)
 		}
 		have := latest - blockNumber.Uint64() + 1
@@ -181,7 +188,7 @@ func (c *Client) waitForConfirmations(ctx context.Context, blockNumber *big.Int,
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for %d confirmations on block %s: %w", confirmations, blockNumber, ctx.Err())
+			return fmt.Errorf("timed out waiting for %d confirmations on block %s: %w: %w", confirmations, blockNumber, bridge.ErrNotFinal, ctx.Err())
 		case <-ticker.C:
 		}
 	}

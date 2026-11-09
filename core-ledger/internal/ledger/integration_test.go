@@ -14,7 +14,7 @@ import (
 // the unique index behind idempotency, and the append-only trigger.
 //
 //	docker compose up -d postgres
-//	LEDGER_TEST_DATABASE_URL='postgres://bridge:bridge@localhost:5432/ledger_it?sslmode=disable' go test ./internal/ledger/ -run Integration -v
+//	LEDGER_TEST_DATABASE_URL='postgres://bridge:bridge@localhost:55433/bridge_test?sslmode=disable' go test ./internal/ledger/ -run Integration -v
 func testRepo(t *testing.T) (*Repository, *Service, context.Context) {
 	t.Helper()
 	dsn := os.Getenv("LEDGER_TEST_DATABASE_URL")
@@ -124,7 +124,7 @@ func TestIntegrationIssuanceLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	usdxWallet, err := repo.EnsureWallet(ctx, user, USDXCode, "ETHEREUM", "0xabc", "USD-X on Ethereum")
+	usdxWallet, err := repo.EnsureWallet(ctx, user, USDXCode, "ETHEREUM", "0x00000000000000000000000000000000000000E1", "USD-X on Ethereum")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,11 +175,11 @@ func TestIntegrationBridgeMovesValueThroughSuspense(t *testing.T) {
 	repo, svc, ctx := testRepo(t)
 	user := uniqueUser(t)
 
-	eth, err := repo.EnsureWallet(ctx, user, USDXCode, "ETHEREUM", "0xabc", "")
+	eth, err := repo.EnsureWallet(ctx, user, USDXCode, "ETHEREUM", "0x00000000000000000000000000000000000000E1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sol, err := repo.EnsureWallet(ctx, user, USDXCode, "SOLANA", "So1ana", "")
+	sol, err := repo.EnsureWallet(ctx, user, USDXCode, "SOLANA", "So11111111111111111111111111111111111111112", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestIntegrationRedemption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	usdxWallet, err := repo.EnsureWallet(ctx, user, USDXCode, "SOLANA", "So1", "")
+	usdxWallet, err := repo.EnsureWallet(ctx, user, USDXCode, "SOLANA", "So11111111111111111111111111111111111111112", "")
 	if err != nil {
 		t.Fatal(err)
 	}

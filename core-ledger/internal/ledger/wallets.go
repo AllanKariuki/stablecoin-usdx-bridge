@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/gagliardetto/solana-go"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -30,6 +32,11 @@ func (r *Repository) EnsureWallet(ctx context.Context, userID, currency, chain, 
 	}
 	if cur.Kind == CurrencyFiat && chain != "" {
 		return nil, postErr("UNEXPECTED_CHAIN", "%s is a fiat currency; a wallet in it cannot be on chain %s", currency, chain)
+	}
+	if cur.Kind == CurrencyCrypto {
+		if err := validateAddress(chain, address); err != nil {
+			return nil, err
+		}
 	}
 
 	if w, err := r.WalletFor(ctx, userID, currency, chain); err == nil {
@@ -68,6 +75,28 @@ func (r *Repository) EnsureWallet(ctx context.Context, userID, currency, chain, 
 	}
 
 	return r.WalletFor(ctx, userID, currency, chain)
+}
+
+// validateAddress rejects an on-chain wallet the saga could never settle.
+//
+// Before this, "0xUSER" was accepted: go-ethereum's HexToAddress quietly
+// turns anything unparseable into the zero address, so the wallet looked
+// fine until the worker's bridgeMint reverted on it, and an unknown chain
+// got as far as the table's CHECK constraint and came back as a 500.
+func validateAddress(chain, address string) error {
+	switch chain {
+	case "ETHEREUM":
+		if !common.IsHexAddress(address) || common.HexToAddress(address) == (common.Address{}) {
+			return postErr("INVALID_ADDRESS", "%q is not an Ethereum address", address)
+		}
+	case "SOLANA":
+		if _, err := solana.PublicKeyFromBase58(address); err != nil {
+			return postErr("INVALID_ADDRESS", "%q is not a Solana address", address)
+		}
+	default:
+		return postErr("UNKNOWN_CHAIN", "unknown chain %q; expected ETHEREUM or SOLANA", chain)
+	}
+	return nil
 }
 
 func (r *Repository) WalletFor(ctx context.Context, userID, currency, chain string) (*Wallet, error) {

@@ -1,6 +1,6 @@
-.PHONY: help up down logs \
+.PHONY: help up down logs up-app kill-worker logs-worker \
 	test test-unit test-integration test-eth test-sol test-node \
-	build run \
+	build run run-worker docker-build \
 	lint fmt fmt-check \
 	authz-gen keycloak-realm \
 	hooks-install secrets-scan \
@@ -12,6 +12,10 @@
 SHELL := /bin/bash
 
 DATABASE_URL ?= postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
+# Never the dev database: the saga suites leave in-flight sagas behind by
+# design, and a real worker pointed at `bridge` will try to put them on chain.
+# See infra/postgres/init/02-ledger-test-db.sql.
+TEST_DATABASE_URL ?= postgres://bridge:bridge@localhost:55433/bridge_test?sslmode=disable
 
 .DEFAULT_GOAL := help
 
@@ -66,12 +70,19 @@ test-unit:
 ## Go integration tests against real Postgres — fails (not skips) if unreachable.
 # Also fails if a test that should run against Postgres got silently
 # skipped instead (see the grep below), not just on a hard test failure.
+# -p 1 because every package shares one database and several assert on how
+# far a shared GL account (2300.BRIDGE) moved; run in parallel, one package's
+# postings land inside another's before/after window.
 test-integration: up
+	@docker exec usdx-postgres psql -U bridge -d postgres -tAc \
+		"SELECT 1 FROM pg_database WHERE datname = 'bridge_test'" | grep -q 1 \
+		|| docker exec usdx-postgres createdb -U bridge -O bridge bridge_test
 	@set -euo pipefail; \
-	LEDGER_TEST_DATABASE_URL="$(DATABASE_URL)" \
-		go test ./core-ledger/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
-	if grep -q '^--- SKIP: TestIntegration' /tmp/usdx-go-test.log; then \
-		echo "an integration test was skipped — LEDGER_TEST_DATABASE_URL must be set and reachable"; \
+	LEDGER_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" \
+		go test -p 1 ./core-ledger/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
+	if grep -q '^--- SKIP:' /tmp/usdx-go-test.log; then \
+		echo "a test was skipped — LEDGER_TEST_DATABASE_URL must be set and reachable"; \
+		grep '^--- SKIP:' /tmp/usdx-go-test.log; \
 		exit 1; \
 	fi
 
@@ -96,14 +107,41 @@ test-node: up
 # Build / run
 # ---------------------------------------------------------------------------
 
-## Build the core-ledger and auth-proxy binaries.
+## Build the core-ledger, saga worker and auth-proxy binaries.
 build:
 	go build -o bin/core-ledger ./core-ledger/cmd/server
+	go build -o bin/core-ledger-worker ./core-ledger/cmd/worker
 	go build -o bin/auth-proxy ./services/auth-proxy/cmd/server
 
 ## Run core-ledger against local infra (needs core-ledger/.env — see .env.example).
 run: up
 	cd core-ledger && go run ./cmd/server
+
+## Run the saga worker against local infra. The API only enqueues sagas now,
+## so nothing reaches a chain until this is running.
+run-worker: up
+	cd core-ledger && go run ./cmd/worker
+
+## Build the core-ledger image (API + worker, one image, two entrypoints).
+docker-build:
+	docker build -f core-ledger/Dockerfile -t usdx/core-ledger:dev .
+
+## Bring up infra *and* the containerised API and worker.
+# This is what P2's definition of done needs: a worker you can `docker kill`
+# mid-flight (see kill-worker) and watch the saga survive.
+up-app: docker-build
+	docker compose --profile app up -d
+	@echo "core-ledger on :8081, saga worker probes on :8181"
+
+## Kill the saga worker without a graceful stop, the way a crash would.
+# Compose restarts nothing on its own, so `make up-app` brings it back and the
+# boot sweep resumes whatever was in flight.
+kill-worker:
+	docker kill usdx-worker
+
+## Tail the saga worker's logs.
+logs-worker:
+	docker compose logs -f worker
 
 # ---------------------------------------------------------------------------
 # Formatting / linting

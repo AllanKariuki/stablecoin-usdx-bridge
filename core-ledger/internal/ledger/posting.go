@@ -324,6 +324,14 @@ func (r *Repository) postOnce(ctx context.Context, req PostRequest) (*Transactio
 		}
 
 		txn.Entries = entries
+
+		// Inside the same SERIALIZABLE transaction, deliberately: a journal
+		// that committed without its event, or an event about a transaction
+		// that rolled back, are both states no consumer can recover from.
+		if err := enqueueTransactionPosted(tx, txn, byID); err != nil {
+			return err
+		}
+
 		posted = txn
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelSerializable})

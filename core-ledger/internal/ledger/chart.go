@@ -161,8 +161,13 @@ func perCurrencyChart(c Currency) []accountSpec {
 			typ: ASSET, currency: c.Code, usage: UsageDetail},
 		accountSpec{code: GLReserveBacking(c.Code), name: "Reserve backing — " + c.Code, parent: GLReserveHd,
 			typ: LIABILITY, currency: c.Code, usage: UsageDetail},
+		// The one fiat account an operator may hand-post to, and the reason a
+		// manual journal has a second side at all: every other fiat account
+		// carries an invariant the posting engine maintains. A clearing
+		// account is where an unidentified bank credit or a correction sits
+		// until it is allocated, which is exactly the job manual entries do.
 		accountSpec{code: GLFiatSuspense(c.Code), name: "Fiat in transit — " + c.Code, parent: GLSuspenseHd,
-			typ: LIABILITY, currency: c.Code, usage: UsageDetail},
+			typ: LIABILITY, currency: c.Code, usage: UsageDetail, manual: true},
 		accountSpec{code: GLIssuanceFee(c.Code), name: "Issuance fees — " + c.Code, parent: GLIssuanceHd,
 			typ: REVENUE, currency: c.Code, usage: UsageDetail},
 		accountSpec{code: GLRedemptionFee(c.Code), name: "Redemption fees — " + c.Code, parent: GLRedemptionHd,
