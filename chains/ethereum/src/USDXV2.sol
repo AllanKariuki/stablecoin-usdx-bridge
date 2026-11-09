@@ -1,25 +1,54 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {USDX} from "./USDX.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 /// @title USDXV2
 /// @notice The upgrade P6 calls for: resolve the `bridgeBurn` asymmetry, and
 ///         give the platform a way to retire an unlimited burn power it
 ///         should never have had.
 ///
-/// @dev Storage is append-only. USDXV2 inherits USDX rather than redeclaring
-///      its layout, and every new variable is declared *after* the inherited
-///      ones — which is what makes this a safe UUPS upgrade of a live proxy.
-///      The `__gap` at the end reserves room for a V3 without pushing an
-///      inherited slot.
+/// @dev **Deliberately standalone — it does not inherit USDX.** USDX.sol is
+///      pinned to compile byte-for-byte to the implementation live on
+///      Sepolia (see foundry.toml), and inheriting it would have required
+///      editing it (`virtual` on bridgeMint/bridgeBurn), which changes its
+///      metadata hash and breaks the exact-match check. So V2 re-declares V1's
+///      bodies. The price is duplication; the risk it creates is storage-layout
+///      drift, which is why the declaration order below must match USDX.sol
+///      exactly — same bases in the same order, same three mappings first —
+///      and why test_upgrade_preservesV1State exists. New variables go *after*
+///      V1's, and `__gap` reserves room for a V3.
 ///
 ///      What this does NOT do is change the *shape* of bridgeMint/bridgeBurn.
 ///      core-ledger's ChainClient interface and the generated bindings stay
 ///      valid across the upgrade, so a ledger running the old bindings against
 ///      a V2 proxy keeps working. That property is why the new behaviour is
 ///      opt-in through a flag rather than a signature change.
-contract USDXV2 is USDX {
+contract USDXV2 is Initializable, ERC20Upgradeable, AccessControlUpgradeable, PausableUpgradeable, UUPSUpgradeable {
+    // ---- V1 declarations, verbatim from USDX.sol (layout-critical) ----
+    bytes32 public constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
+    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    bytes32 public constant COMPLIANCE_ROLE = keccak256("COMPLIANCE_ROLE");
+
+    mapping(address => bool) public isBlacklisted;
+    mapping(bytes32 => bool) public processedMints;
+    mapping(bytes32 => bool) public processedBurns;
+
+    event BridgeMinted(address indexed to, uint256 amount, bytes32 correlationId);
+    event BridgeBurned(address indexed from, uint256 amount, bytes32 correlationId);
+    event Blacklisted(address indexed account);
+    event Unblacklisted(address indexed account);
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     // ---------------------------------------------------------------------
     // The asymmetry
     //
@@ -76,7 +105,15 @@ contract USDXV2 is USDX {
     /// @dev reinitializer(2), not initializer: the proxy's storage has
     ///      already been initialized once by USDX.initialize, and running that
     ///      again would revert. Version 2 can only ever run once.
-    function initializeV2(bool requireAllowance) external reinitializer(2) {
+    ///
+    ///      Gated on UPGRADER_ROLE. Ungated, anyone could call it in the gap
+    ///      between `upgradeToAndCall(impl, "")` and the admin's own call,
+    ///      flipping requireBurnAllowance on (stranding in-flight bridges, the
+    ///      exact thing the flag defaults off to avoid) and spending the one
+    ///      version-2 initialization. Under `upgradeToAndCall` the proxy
+    ///      delegatecalls, so msg.sender is still the upgrader and the gate
+    ///      passes for the atomic path.
+    function initializeV2(bool requireAllowance) external reinitializer(2) onlyRole(UPGRADER_ROLE) {
         requireBurnAllowance = requireAllowance;
         emit BurnAllowanceRequirementSet(requireAllowance);
     }
@@ -98,7 +135,7 @@ contract USDXV2 is USDX {
     ///      `_spendAllowance` has to happen *before* the burn and *after* the
     ///      replay check, and there is no ordering of a `super` call that
     ///      produces that.
-    function bridgeBurn(address from, uint256 amount, bytes32 correlationId) external override onlyRole(BRIDGE_ROLE) {
+    function bridgeBurn(address from, uint256 amount, bytes32 correlationId) external onlyRole(BRIDGE_ROLE) {
         require(!processedBurns[correlationId], "USDX: correlation already burned");
         processedBurns[correlationId] = true;
 
@@ -113,6 +150,57 @@ contract USDXV2 is USDX {
         _burn(from, amount);
         emit BridgeBurned(from, amount, correlationId);
     }
+
+    // ---- the rest of V1's surface, unchanged ----
+
+    function initialize(address admin, address bridgeRelayer) public initializer {
+        __ERC20_init("USD-X", "USDX");
+        __AccessControl_init();
+        __Pausable_init();
+
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(UPGRADER_ROLE, admin);
+        _grantRole(PAUSER_ROLE, admin);
+        _grantRole(COMPLIANCE_ROLE, admin);
+        _grantRole(BRIDGE_ROLE, bridgeRelayer);
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+
+    function bridgeMint(address to, uint256 amount, bytes32 correlationId) external onlyRole(BRIDGE_ROLE) {
+        require(!processedMints[correlationId], "USDX: correlation already minted");
+        processedMints[correlationId] = true;
+        _mint(to, amount);
+        emit BridgeMinted(to, amount, correlationId);
+    }
+
+    function pause() external onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(PAUSER_ROLE) {
+        _unpause();
+    }
+
+    function blacklist(address account) external onlyRole(COMPLIANCE_ROLE) {
+        isBlacklisted[account] = true;
+        emit Blacklisted(account);
+    }
+
+    function unblacklist(address account) external onlyRole(COMPLIANCE_ROLE) {
+        isBlacklisted[account] = false;
+        emit Unblacklisted(account);
+    }
+
+    function _update(address from, address to, uint256 value) internal override whenNotPaused {
+        require(!isBlacklisted[from], "USDX: sender blacklisted");
+        require(!isBlacklisted[to], "USDX: recipient blacklisted");
+        super._update(from, to, value);
+    }
+
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {}
 
     function version() external pure returns (string memory) {
         return "v2";

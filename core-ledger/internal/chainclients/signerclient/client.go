@@ -84,10 +84,14 @@ func New(baseURL, certPath, keyPath, caPath string) (*Client, error) {
 // bytes of hash is meaningless. That is the whole reason the P2 Signer
 // interface takes a transaction rather than a digest.
 type SignRequest struct {
-	Chain         string
-	Method        string
-	KeyID         string
-	Digest        []byte
+	Chain  string
+	Method string
+	KeyID  string
+	Digest []byte
+	// Tx is the unsigned Ethereum transaction (MarshalBinary). The signer
+	// decodes it and proves Digest is its hash; Solana leaves it empty because
+	// the digest is the message.
+	Tx            []byte
 	Amount        *big.Int
 	Destination   string
 	CorrelationID string
@@ -117,6 +121,7 @@ func (c *Client) Sign(ctx context.Context, req SignRequest) (*SignResult, error)
 		"method":         req.Method,
 		"key_id":         req.KeyID,
 		"digest":         hex.EncodeToString(req.Digest),
+		"tx":             hex.EncodeToString(req.Tx),
 		"amount":         amount,
 		"destination":    req.Destination,
 		"correlation_id": req.CorrelationID,

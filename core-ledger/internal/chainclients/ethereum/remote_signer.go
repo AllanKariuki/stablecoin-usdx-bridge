@@ -81,11 +81,17 @@ func (s *remoteSigner) SignTx(tx *types.Transaction, chainID *big.Int) (*types.T
 	// and enforces policy on the decoded fields sent alongside.
 	digest := signer.Hash(tx)
 
+	raw, err := tx.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("encoding the transaction for the signer: %w", err)
+	}
+
 	result, err := s.client.Sign(context.Background(), signerclient.SignRequest{
 		Chain:         "ETHEREUM",
 		Method:        s.method,
 		KeyID:         s.keyID,
 		Digest:        digest[:],
+		Tx:            raw,
 		Amount:        s.amount,
 		Destination:   s.to,
 		CorrelationID: s.correlationID,
