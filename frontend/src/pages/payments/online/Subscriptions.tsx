@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, ArrowLeft, CheckCircle, Trash2, Filter } from 'lucide-react';
+import { Plus, CheckCircle, Trash2, Filter } from 'lucide-react';
 import SearchableTable from '../../../components/general/SearchableTable';
 import type { FilterConfig } from '../../../types/general/searchTable';
 

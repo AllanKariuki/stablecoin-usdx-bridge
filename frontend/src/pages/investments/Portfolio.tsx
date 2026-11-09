@@ -404,7 +404,7 @@ export default function InvestmentsPortfolio() {
                   cx="50%"
                   cy="50%"
                   labelLine={false}
-                  label={({ name, value }) => `${value}%`}
+                  label={({ value }) => `${value}%`}
                   innerRadius={50}
                   outerRadius={80}
                   fill="#8884d8"

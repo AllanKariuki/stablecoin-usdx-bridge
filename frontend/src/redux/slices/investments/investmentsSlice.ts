@@ -8,7 +8,7 @@ import type {
   InvestmentPerformance,
   InvestmentsState
 } from '../../../types/investments/investments';
-import { get, post, put, del } from '../../../api';
+import { get, post, del } from '../../../api';
 
 // Mock data
 const mockStocks: Stock[] = [
@@ -125,7 +125,7 @@ const initialState: InvestmentsState = {
 // Async thunks
 export const fetchStocks = createAsyncThunk(
   'investments/fetchStocks',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const response = await get('/investments/stocks');
       return response as { data: Stock[] };
@@ -138,7 +138,7 @@ export const fetchStocks = createAsyncThunk(
 
 export const fetchBonds = createAsyncThunk(
   'investments/fetchBonds',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const response = await get('/investments/bonds');
       return response as { data: Bond[] };
@@ -151,7 +151,7 @@ export const fetchBonds = createAsyncThunk(
 
 export const fetchMutualFunds = createAsyncThunk(
   'investments/fetchMutualFunds',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const response = await get('/investments/mutual-funds');
       return response as { data: MutualFund[] };
@@ -164,7 +164,7 @@ export const fetchMutualFunds = createAsyncThunk(
 
 export const fetchCryptoAssets = createAsyncThunk(
   'investments/fetchCryptoAssets',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const response = await get('/investments/crypto');
       return response as { data: CryptoAsset[] };
@@ -177,7 +177,7 @@ export const fetchCryptoAssets = createAsyncThunk(
 
 export const fetchPortfolio = createAsyncThunk(
   'investments/fetchPortfolio',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const response = await get('/investments/portfolio');
       return response as { data: InvestmentPortfolio };
@@ -190,7 +190,7 @@ export const fetchPortfolio = createAsyncThunk(
 
 export const fetchPerformance = createAsyncThunk(
   'investments/fetchPerformance',
-  async (_, { rejectWithValue }) => {
+  async () => {
     try {
       const response = await get('/investments/performance');
       return response as { data: InvestmentPerformance[] };
@@ -234,7 +234,7 @@ export const sellStock = createAsyncThunk(
 
 export const fetchStockDetails = createAsyncThunk(
   'investments/fetchStockDetails',
-  async (stockId: string, { rejectWithValue }) => {
+  async (stockId: string) => {
     try {
       const response = await get(`/investments/stocks/${stockId}`);
       return response as { data: Stock };

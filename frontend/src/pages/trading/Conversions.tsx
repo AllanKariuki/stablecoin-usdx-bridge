@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowRightLeft, Search, Calendar, TrendingUp, ChevronDown } from 'lucide-react';
+import { ArrowRightLeft, Search, Calendar, ChevronDown } from 'lucide-react';
 import type { Conversion } from '../../types/financial';
 
 const Conversions = () => {

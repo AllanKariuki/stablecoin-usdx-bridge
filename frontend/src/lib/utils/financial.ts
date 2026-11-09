@@ -253,7 +253,6 @@ export const calculateFDMaturityAmount = (
   annualRate: number,
   days: number
 ): number => {
-  const years = days / 365;
   const interest = calculateSimpleInterest(principal, annualRate, days);
   return principal + interest;
 };
@@ -373,18 +372,11 @@ export const calculateEstimatedTax = (
  */
 export const calculateCapitalGainsTax = (
   gain: number,
-  holdingPeriodMonths: number,
-  filingStatus: 'SINGLE' | 'MARRIED' | 'HEAD_OF_HOUSEHOLD' = 'SINGLE'
+  holdingPeriodMonths: number
 ): number => {
   if (gain <= 0) return 0;
 
   const isLongTerm = holdingPeriodMonths >= 12;
-  const rates = {
-    SINGLE: isLongTerm ? [0.0, 0.15, 0.2] : [0.1, 0.12, 0.22, 0.24, 0.32, 0.35, 0.37],
-    MARRIED: isLongTerm ? [0.0, 0.15, 0.2] : [0.1, 0.12, 0.22, 0.24, 0.32, 0.35, 0.37],
-    HEAD_OF_HOUSEHOLD: isLongTerm ? [0.0, 0.15, 0.2] : [0.1, 0.12, 0.22, 0.24, 0.32, 0.35, 0.37],
-  };
-
   // Simplified calculation - use 15% for long-term
   const rate = isLongTerm ? 0.15 : 0.25;
   return gain * rate;

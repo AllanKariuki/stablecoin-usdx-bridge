@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { X, Copy, Download, Upload, Snowflake, Tag, AlertCircle, TrendingUp, TrendingDown, ExternalLink, FileText } from 'lucide-react';
 import type { Wallet, WalletTransaction, WalletDetailStats, SweepHistory } from '../../types/wallet/wallet';
 import DataTable from '../general/DataTable';
@@ -10,8 +10,8 @@ interface WalletDetailDrawerProps {
 
 const WalletDetailDrawer: React.FC<WalletDetailDrawerProps> = ({ wallet, onClose }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'transactions' | 'sweeps'>('overview');
-  const [showSweepModal, setShowSweepModal] = useState(false);
-  const [showLabelModal, setShowLabelModal] = useState(false);
+  const [, setShowSweepModal] = useState(false);
+  const [, setShowLabelModal] = useState(false);
   const [page, setPage] = useState(1);
   const [recordsPerPage] = useState(10);
 

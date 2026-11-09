@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { MoreVertical, Mail, Phone, Facebook, Camera, TrendingUp } from 'lucide-react';
+import { MoreVertical, Mail, Phone, Facebook, Camera } from 'lucide-react';
 
 interface HoldingData {
   symbol: string;

@@ -117,6 +117,13 @@ jobs:
       - name: pnpm install
         run: pnpm install --frozen-lockfile
 
+      - name: Build shared Node packages
+        # @damp/nest-platform resolves to dist/ (package.json "main"/"types"),
+        # which is gitignored. A local checkout has it from an earlier build;
+        # a fresh CI checkout does not, and every service importing it failed
+        # with TS2307 before running a single test.
+        run: pnpm --filter "./shared/node/**" run build
+
       - name: Create identity's databases
         # GitHub Actions service containers don't support mounting
         # docker-entrypoint-initdb.d/ the way docker-compose.yaml does (see
@@ -150,9 +157,10 @@ jobs:
 
       - uses: foundry-rs/foundry-toolchain@v1
 
-      - name: forge install
-        working-directory: chains/ethereum
-        run: forge install
+      - name: Fetch pinned Solidity dependencies
+        # Not `forge install`: lib/ is gitignored and there is no .gitmodules,
+        # so it installed nothing and every later step failed to compile.
+        run: make eth-deps
 
       - name: forge fmt --check
         working-directory: chains/ethereum
@@ -207,7 +215,14 @@ jobs:
         # Pinned to 1.2.0 to match programs/usdx_bridge/Cargo.toml's
         # anchor-lang/anchor-spl version exactly — this is the version
         # verified locally throughout this repo's test suite.
-        run: cargo install anchor-cli --version 1.2.0 --locked
+        #
+        # Built with its own toolchain, not the program's: anchor-cli 1.2.0's
+        # locked dependencies need rustc >= 1.91 (cargo-platform 0.3.3), while
+        # rust-toolchain.toml pins the program to 1.89.0. The CLI is a build
+        # tool, so its compiler has no bearing on the program's bytecode.
+        run: |
+          rustup toolchain install 1.91.0 --profile minimal
+          cargo +1.91.0 install anchor-cli --version 1.2.0 --locked
 
       - name: anchor build --arch v1
         working-directory: chains/solana

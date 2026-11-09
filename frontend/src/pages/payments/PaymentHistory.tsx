@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Filter } from 'lucide-react';
+import { Filter } from 'lucide-react';
 import SearchableTable from '../../components/general/SearchableTable';
 import type { FilterConfig } from '../../types/general/searchTable';
 

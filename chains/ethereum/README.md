@@ -66,7 +66,7 @@ decimals.
 ## Setup / deployment
 
 ```bash
-forge install                     # pull OpenZeppelin + other deps (see .gitmodules)
+make -C ../.. eth-deps            # pinned OpenZeppelin + forge-std (see foundry.lock)
 forge build
 forge test
 

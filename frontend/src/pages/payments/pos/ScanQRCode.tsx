@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Camera, X, Check, AlertCircle } from 'lucide-react';
+import { Camera, Check, AlertCircle } from 'lucide-react';
 
 interface ScannedPayment {
   merchantId: string;
@@ -11,7 +11,6 @@ interface ScannedPayment {
 }
 
 const ScanQRCode: React.FC = () => {
-  const [isScanning, setIsScanning] = useState(false);
   const [scannedData, setScannedData] = useState<ScannedPayment | null>(null);
   const [paymentStatus, setPaymentStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
   const cameraRef = useRef<HTMLInputElement>(null);
