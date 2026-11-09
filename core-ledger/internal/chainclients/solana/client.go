@@ -248,6 +248,10 @@ func (c *Client) WaitForFinality(txHash string, finalityLevel string) error {
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+	// included is whether the cluster has reported this signature as landed
+	// without error, which is what separates "not final yet" from "never
+	// seen" when the wait runs out.
+	included := false
 	for {
 		statuses, err := c.rpc.GetSignatureStatuses(ctx, true, sig)
 		if err == nil && len(statuses.Value) > 0 && statuses.Value[0] != nil {
@@ -258,9 +262,13 @@ func (c *Client) WaitForFinality(txHash string, finalityLevel string) error {
 			if reachedCommitment(status.ConfirmationStatus, want) {
 				return nil
 			}
+			included = true
 		}
 		select {
 		case <-ctx.Done():
+			if included {
+				return fmt.Errorf("timed out waiting for tx %s to reach %q: %w: %w", txHash, finalityLevel, bridge.ErrNotFinal, ctx.Err())
+			}
 			return fmt.Errorf("timed out waiting for tx %s to reach %q: %w", txHash, finalityLevel, ctx.Err())
 		case <-ticker.C:
 		}

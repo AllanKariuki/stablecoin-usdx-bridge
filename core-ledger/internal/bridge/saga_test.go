@@ -24,7 +24,7 @@ import (
 // saga does about a chain's answer, not the chain.
 //
 //	docker compose up -d postgres
-//	LEDGER_TEST_DATABASE_URL='postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable' \
+//	LEDGER_TEST_DATABASE_URL='postgres://bridge:bridge@localhost:55433/bridge_test?sslmode=disable' \
 //	  go test ./internal/bridge -run TestSagaResumesAfterCrash -count=20
 
 // fakeChain records every call and lets a test decide what the nth one
@@ -169,7 +169,7 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatalf("EnsureWallet USD: %v", err)
 	}
-	usdx, err := repo.EnsureWallet(ctx, user, "USDX", "ETHEREUM", "0xUSER", "USD-X")
+	usdx, err := repo.EnsureWallet(ctx, user, "USDX", "ETHEREUM", "0x00000000000000000000000000000000000000E1", "USD-X")
 	if err != nil {
 		t.Fatalf("EnsureWallet USDX: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestSagaBridgeUsesEachChainsOwnAddress(t *testing.T) {
 		t.Fatalf("seeding mint failed: %+v", res)
 	}
 
-	solana, err := f.repo.EnsureWallet(f.ctx, f.user, "USDX", "SOLANA", "SoLANAaddress1111111111111111111111111111", "USD-X Solana")
+	solana, err := f.repo.EnsureWallet(f.ctx, f.user, "USDX", "SOLANA", "So11111111111111111111111111111111111111112", "USD-X Solana")
 	if err != nil {
 		t.Fatalf("EnsureWallet SOLANA: %v", err)
 	}

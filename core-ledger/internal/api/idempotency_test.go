@@ -26,7 +26,7 @@ import (
 // posting.
 //
 //	docker compose up -d postgres
-//	LEDGER_TEST_DATABASE_URL='postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable' \
+//	LEDGER_TEST_DATABASE_URL='postgres://bridge:bridge@localhost:55433/bridge_test?sslmode=disable' \
 //	  go test ./internal/api -run TestIdempotent -count=1
 
 var (
@@ -77,8 +77,8 @@ func newHarness(t *testing.T) *harness {
 	h.usd = h.wallet(t, "USD", "", "")
 	h.usdPayee = h.payeeWallet(t)
 	h.kes = h.wallet(t, "KES", "", "")
-	h.usdxEth = h.wallet(t, "USDX", "ETHEREUM", "0xUSER")
-	h.usdxSolana = h.wallet(t, "USDX", "SOLANA", "SoLUSER")
+	h.usdxEth = h.wallet(t, "USDX", "ETHEREUM", "0x00000000000000000000000000000000000000E1")
+	h.usdxSolana = h.wallet(t, "USDX", "SOLANA", "So11111111111111111111111111111111111111112")
 
 	// Fund the USD wallet, then move USD-X into the Ethereum wallet the way
 	// the platform really does: issue (which parks it in suspense), then

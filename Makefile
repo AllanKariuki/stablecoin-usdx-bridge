@@ -12,6 +12,10 @@
 SHELL := /bin/bash
 
 DATABASE_URL ?= postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
+# Never the dev database: the saga suites leave in-flight sagas behind by
+# design, and a real worker pointed at `bridge` will try to put them on chain.
+# See infra/postgres/init/02-ledger-test-db.sql.
+TEST_DATABASE_URL ?= postgres://bridge:bridge@localhost:55433/bridge_test?sslmode=disable
 
 .DEFAULT_GOAL := help
 
@@ -66,10 +70,16 @@ test-unit:
 ## Go integration tests against real Postgres — fails (not skips) if unreachable.
 # Also fails if a test that should run against Postgres got silently
 # skipped instead (see the grep below), not just on a hard test failure.
+# -p 1 because every package shares one database and several assert on how
+# far a shared GL account (2300.BRIDGE) moved; run in parallel, one package's
+# postings land inside another's before/after window.
 test-integration: up
+	@docker exec usdx-postgres psql -U bridge -d postgres -tAc \
+		"SELECT 1 FROM pg_database WHERE datname = 'bridge_test'" | grep -q 1 \
+		|| docker exec usdx-postgres createdb -U bridge -O bridge bridge_test
 	@set -euo pipefail; \
-	LEDGER_TEST_DATABASE_URL="$(DATABASE_URL)" \
-		go test ./core-ledger/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
+	LEDGER_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" \
+		go test -p 1 ./core-ledger/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
 	if grep -q '^--- SKIP:' /tmp/usdx-go-test.log; then \
 		echo "a test was skipped — LEDGER_TEST_DATABASE_URL must be set and reachable"; \
 		grep '^--- SKIP:' /tmp/usdx-go-test.log; \

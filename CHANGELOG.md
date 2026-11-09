@@ -3,6 +3,45 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-09
+
+### Fixed — found by running P2's definition of done live (Sepolia)
+- **Integration tests shared the dev database, and a real worker tried to
+  execute what they left behind.** `make test-integration` pointed
+  `LEDGER_TEST_DATABASE_URL` at `bridge`, the same database `make up-app`
+  runs on, and the saga suites strand in-flight sagas on purpose. The first
+  live worker boot swept 113 of them and submitted them to Sepolia; nothing
+  landed only because the fixtures used `0xUSER` as an address and every
+  `bridgeMint` reverted in gas estimation. Tests now get their own
+  `bridge_test` database (`infra/postgres/init/02-ledger-test-db.sql` on a
+  fresh volume; the Makefile creates it on an existing one).
+- **Go integration packages corrupted each other's assertions.** `go test
+  ./core-ledger/...` runs packages in parallel against one database, and
+  several assert on how far a shared GL account (`2300.BRIDGE`) moved — so
+  the suite failed intermittently. Both the Makefile and CI now pass `-p 1`.
+- **`POST /wallets` validated nothing on chain.** An unknown chain
+  (`ethereum` for `ETHEREUM`) reached the table's CHECK constraint and came
+  back a 500; an unparseable Ethereum address was accepted, because
+  go-ethereum's `HexToAddress` silently maps it to the zero address, and the
+  wallet looked fine until its first mint reverted. `EnsureWallet` now
+  rejects both with 400s (`UNKNOWN_CHAIN`, `INVALID_ADDRESS`).
+- **Waiting for Sepolia finality spent the saga's attempt budget.** A chain
+  client's finality wait lasts five minutes; Sepolia's finalized checkpoint
+  trails the head by 13–19. Each timeout was charged as a failed attempt, so
+  every healthy mint used three or four of its twelve on the way to
+  `COMPLETED`. Chain clients now wrap `bridge.ErrNotFinal` when the
+  transaction is included and succeeded but not yet final, and the worker
+  gives that attempt back and rechecks in 15s. A missing receipt is still an
+  ordinary timeout, so a dropped or reorged transaction still dead-letters.
+- **docker-compose's API container listened on whatever `PORT` `.env` set**,
+  away from the port its mapping and healthcheck assume. `PORT` is now pinned
+  inside the container, and both host ports are overridable
+  (`CORE_LEDGER_HOST_PORT`, `WORKER_HOST_PORT`) for hosts where 8081/8181 are
+  taken.
+- **The core-ledger container never reported healthy.** Its healthcheck hit
+  `localhost`, which busybox `wget` resolves to `::1`; Fiber listens on IPv4
+  only. It now targets `127.0.0.1`.
+
 ## 2026-09-25
 
 ### Added

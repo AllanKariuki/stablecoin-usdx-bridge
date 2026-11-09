@@ -43,6 +43,10 @@ type Config struct {
 	PollInterval  time.Duration
 	RetryPolicy   retry.Policy
 	ShutdownGrace time.Duration
+
+	// FinalityRecheck is how soon a saga whose transaction is included but
+	// not yet final is picked up again. No backoff: nothing failed.
+	FinalityRecheck time.Duration
 }
 
 func DefaultConfig() Config {
@@ -55,8 +59,9 @@ func DefaultConfig() Config {
 		// out around an hour of trying — long enough to ride out an RPC
 		// provider's bad afternoon, short enough that a genuinely broken saga
 		// reaches a human the same day.
-		RetryPolicy:   retry.Policy{Base: 2 * time.Second, Max: 5 * time.Minute, Budget: 12},
-		ShutdownGrace: 30 * time.Second,
+		RetryPolicy:     retry.Policy{Base: 2 * time.Second, Max: 5 * time.Minute, Budget: 12},
+		ShutdownGrace:   30 * time.Second,
+		FinalityRecheck: 15 * time.Second,
 	}
 }
 
@@ -193,6 +198,17 @@ func (w *Worker) process(ctx context.Context, t *ledger.BridgeTransfer) {
 		// budget and dead-letter a saga that never reached a chain.
 		if err := w.repo.ReleaseContended(ctx, t.CorrelationID, w.cfg.Lease); err != nil {
 			log.Error("releasing a contended saga failed", slog.Any("error", err))
+		}
+		return
+
+	case errors.Is(result.Err, bridge.ErrNotFinal):
+		// The transaction is on chain and succeeded; the chain is just slower
+		// to finalize than one wait lasts. Same treatment as contention: the
+		// attempt is given back, and the saga is looked at again shortly.
+		log.Info("saga waiting on chain finality",
+			slog.String("stage", result.Stage), slog.Any("error", result.Err))
+		if err := w.repo.ReleaseContended(ctx, t.CorrelationID, w.cfg.FinalityRecheck); err != nil {
+			log.Error("rescheduling a saga awaiting finality failed", slog.Any("error", err))
 		}
 		return
 

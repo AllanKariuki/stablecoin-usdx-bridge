@@ -25,7 +25,7 @@ import (
 // out rows from a Go map (testing the map).
 //
 //	docker compose up -d postgres
-//	LEDGER_TEST_DATABASE_URL='postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable' \
+//	LEDGER_TEST_DATABASE_URL='postgres://bridge:bridge@localhost:55433/bridge_test?sslmode=disable' \
 //	  go test ./internal/outbox -run TestConcurrentClaim -race -count=10
 
 // One connection pool for the whole test binary. Each Repository and each

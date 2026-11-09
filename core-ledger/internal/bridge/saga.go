@@ -28,6 +28,18 @@ const (
 // ErrLockHeld means another worker is running this exact saga right now.
 var ErrLockHeld = errors.New("another worker holds this saga")
 
+// ErrNotFinal means the chain call landed and succeeded, and the chain simply
+// has not finalized it yet. Chain clients wrap it only once they have seen the
+// transaction included without error — a missing receipt or an unknown
+// signature is an ordinary timeout, because that is what a dropped or
+// reorged-out transaction looks like.
+//
+// It is not a failure, so it does not spend the attempt budget. Sepolia's
+// finalized checkpoint trails the head by two epochs, 13 to 19 minutes, which
+// is three or four of a chain client's five-minute waits; charging each one
+// as a failed attempt put a healthy mint a third of the way to a dead letter.
+var ErrNotFinal = errors.New("included on chain, not final yet")
+
 // Result is what one attempt produced. The worker, not the saga, owns the
 // retry schedule and the attempt budget — the saga only says whether another
 // attempt could plausibly help.

@@ -153,6 +153,11 @@ func (c *Client) waitForFinalizedBlock(ctx context.Context, blockNumber *big.Int
 	for {
 		header, err := c.ec.HeaderByNumber(ctx, big.NewInt(rpc.FinalizedBlockNumber.Int64()))
 		if err != nil {
+			// The deadline can land mid-call rather than in the select below;
+			// the receipt is already in hand, so that is still "not final yet".
+			if ctx.Err() != nil {
+				return fmt.Errorf("timed out waiting for block %s to finalize: %w: %w", blockNumber, bridge.ErrNotFinal, ctx.Err())
+			}
 			return fmt.Errorf("fetching finalized header: %w", err)
 		}
 		if header.Number.Cmp(blockNumber) >= 0 {
@@ -160,7 +165,7 @@ func (c *Client) waitForFinalizedBlock(ctx context.Context, blockNumber *big.Int
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for block %s to finalize: %w", blockNumber, ctx.Err())
+			return fmt.Errorf("timed out waiting for block %s to finalize: %w: %w", blockNumber, bridge.ErrNotFinal, ctx.Err())
 		case <-ticker.C:
 		}
 	}
@@ -172,6 +177,9 @@ func (c *Client) waitForConfirmations(ctx context.Context, blockNumber *big.Int,
 	for {
 		latest, err := c.ec.BlockNumber(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				return fmt.Errorf("timed out waiting for %d confirmations on block %s: %w: %w", confirmations, blockNumber, bridge.ErrNotFinal, ctx.Err())
+			}
 			return fmt.Errorf("fetching latest block number: %w", err)
 		}
 		have := latest - blockNumber.Uint64() + 1
@@ -180,7 +188,7 @@ func (c *Client) waitForConfirmations(ctx context.Context, blockNumber *big.Int,
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for %d confirmations on block %s: %w", confirmations, blockNumber, ctx.Err())
+			return fmt.Errorf("timed out waiting for %d confirmations on block %s: %w: %w", confirmations, blockNumber, bridge.ErrNotFinal, ctx.Err())
 		case <-ticker.C:
 		}
 	}
