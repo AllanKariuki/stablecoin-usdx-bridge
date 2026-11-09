@@ -135,13 +135,21 @@ describe('SettlementService', () => {
     expect(h.notifications.paymentSettled).toHaveBeenCalledTimes(1);
   });
 
-  it('books what the rail says moved, not what was requested', async () => {
-    // An operator fee or a partial collection makes these differ. Booking the
-    // requested figure is how a ledger stops matching a bank statement.
+  it('does not book an amount the callback chose, leaving the intent for review', async () => {
+    // A callback that disagrees with the intent may be a partial collection,
+    // a fee, or forged. None of those may be booked automatically.
     const h = harness();
-    await h.service.onRailCallback('stub', callback({ amount: '249.00' }));
+    await h.service.onRailCallback('stub', callback({ amount: '99999.00' }));
 
-    expect(h.ledger.deposit).toHaveBeenCalledWith(expect.objectContaining({ amount: '249.00' }));
+    expect(h.ledger.deposit).not.toHaveBeenCalled();
+    expect(h.calls.markSettled).toBe(0);
+  });
+
+  it('settles when the callback amount matches the intent', async () => {
+    const h = harness();
+    await h.service.onRailCallback('stub', callback({ amount: '250.00' }));
+
+    expect(h.ledger.deposit).toHaveBeenCalledWith(expect.objectContaining({ amount: '250.00' }));
   });
 
   it('derives the ledger idempotency key from the intent, never randomly', async () => {

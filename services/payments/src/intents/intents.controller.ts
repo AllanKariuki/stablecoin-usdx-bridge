@@ -1,5 +1,8 @@
-import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req } from '@nestjs/common';
+import { timingSafeEqual } from 'node:crypto';
+import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type { Request } from 'express-serve-static-core';
+import { PaymentsConfig } from '../config/payments-config';
 import { CurrentUser, IdempotencyKey } from '../auth/current-user.decorator';
 import { toMoney } from '../money/money';
 import { RailRegistry } from '../rails/rail.registry';
@@ -14,6 +17,7 @@ export class IntentsController {
     private readonly repo: IntentsRepository,
     private readonly settlement: SettlementService,
     private readonly rails: RailRegistry,
+    private readonly config: ConfigService<PaymentsConfig, true>,
   ) {}
 
   @Get('payment-intents')
@@ -78,20 +82,22 @@ export class IntentsController {
   /**
    * Where rails post their results.
    *
-   * Unauthenticated by necessity — Safaricom does not hold a DAMP token — and
-   * therefore trusted only as far as the rail reference it carries: a
-   * callback is matched to an intent by a reference this platform issued and
-   * the rail echoed back, and one that matches nothing is logged and dropped.
-   * Nothing in the body decides *how much* money moves except the amount, and
-   * that is re-checked against what the intent asked for.
+   * Safaricom does not hold a DAMP token, so this route is outside user auth —
+   * but it is not open. A rail reference is not a secret (Daraja's
+   * CheckoutRequestID appears in logs and SMS-adjacent tooling), so matching
+   * one is not proof the caller is the rail. The caller must also present
+   * RAIL_CALLBACK_SECRET; with none configured every call is refused. Beyond
+   * that, a callback is matched to an intent by a reference this platform
+   * issued, one that matches nothing is logged and dropped, and the amount it
+   * reports must equal what the intent asked for (see SettlementService).
    *
-   * Always 200. A rail that receives anything else retries, often forever,
-   * and a 500 from a malformed body would turn one bad callback into a
-   * permanent retry loop.
+   * Parse failures and unknown references still return 200: a rail that
+   * receives anything else retries, often forever.
    */
   @Post('rails/:rail/callback')
   @HttpCode(200)
   async callback(@Param('rail') rail: string, @Body() body: unknown, @Req() req: Request) {
+    this.assertCallbackSecret(req);
     const provider = this.rails.get(rail);
     const parsed = provider.parseCallback(body);
 
@@ -103,6 +109,20 @@ export class IntentsController {
 
     await this.settlement.onRailCallback(provider.name, parsed);
     return { received: true, matched: true, railRef: parsed.railRef, source: req.ip };
+  }
+
+  private assertCallbackSecret(req: Request): void {
+    const expected = this.config.get('RAIL_CALLBACK_SECRET', { infer: true }) ?? '';
+    const header = req.headers['x-rail-callback-token'];
+    const query = req.query?.token;
+    const presented = [header, query].find((v): v is string => typeof v === 'string') ?? '';
+    const a = Buffer.from(presented);
+    const b = Buffer.from(expected);
+    // Length is compared first because timingSafeEqual throws on unequal
+    // lengths; the length of the secret is not itself sensitive.
+    if (!expected || a.length !== b.length || !timingSafeEqual(a, b)) {
+      throw new UnauthorizedException('rail callback not authenticated');
+    }
   }
 }
 
