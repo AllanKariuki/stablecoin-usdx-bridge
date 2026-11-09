@@ -60,17 +60,20 @@ export class SettlementService {
       return;
     }
 
-    // The amount the rail says actually moved, not the amount that was asked
-    // for. They differ more often than they should — an operator fee, a
-    // partial collection — and settling the requested figure when the rail
-    // moved another is how a ledger stops matching a bank statement.
-    const amount = callback.amount ?? intent.amount;
-    if (amount !== intent.amount) {
-      this.logger.warn(
-        `${rail} settled ${amount} ${intent.currency} against intent ${intent.id} for ${intent.amount}; ` +
-          `booking what the rail moved`,
+    // A callback may not choose the figure that gets booked. A rail that
+    // reports a different amount than the intent asked for is either a partial
+    // collection, an operator fee, or a forged callback, and the ledger cannot
+    // tell which. Booking it automatically lets whoever can reach this route
+    // credit an arbitrary amount; so a mismatch is not booked. The intent
+    // stays PROCESSING for an operator to resolve against the bank statement.
+    if (callback.amount !== undefined && callback.amount !== intent.amount) {
+      this.logger.error(
+        `${rail} reported ${callback.amount} ${intent.currency} against intent ${intent.id} for ${intent.amount}; ` +
+          `NOT settling — needs operator review`,
       );
+      return;
     }
+    const amount = intent.amount;
 
     await this.settle(intent, amount);
   }

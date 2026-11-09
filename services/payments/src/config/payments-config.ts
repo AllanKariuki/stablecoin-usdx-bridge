@@ -71,6 +71,14 @@ export class PaymentsConfig {
   @IsString()
   MPESA_CALLBACK_URL = '';
 
+  // Shared secret a rail must present on POST /rails/:rail/callback, as
+  // `?token=` (Daraja cannot send headers, so it goes in MPESA_CALLBACK_URL)
+  // or an `x-rail-callback-token` header. Empty means the HTTP callback route
+  // rejects everything: unauthenticated settlement is not a usable default.
+  // The stub rail settles in-process and does not need it.
+  @IsString()
+  RAIL_CALLBACK_SECRET = '';
+
   @Type(() => Boolean)
   @IsBoolean()
   STUB_RAIL_ENABLED = true;

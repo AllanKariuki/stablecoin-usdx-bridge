@@ -31,6 +31,12 @@ export class KycConfig {
   @IsString()
   WORKFLOW_URL = '';
 
+  // HMAC key shared with services/workflow (its CALLBACK_SECRET). Without it
+  // every decision callback is refused.
+  @IsOptional()
+  @IsString()
+  WORKFLOW_CALLBACK_SECRET = '';
+
   // Where workflow posts its decision back. Must be reachable from workflow.
   @IsOptional()
   @IsString()

@@ -261,6 +261,7 @@ export class CasesService {
    * not match the case is refused.
    */
   async onApprovalDecision(input: {
+    requestId: string;
     subjectId: string;
     payloadDigest: string;
     status: string;
@@ -269,6 +270,13 @@ export class CasesService {
     if (!kycCase) return { applied: false, reason: 'no such case' };
     if (kycCase.status !== 'PENDING_APPROVAL') {
       return { applied: false, reason: `case is ${kycCase.status}` };
+    }
+
+    // Bound to the request this case actually opened. A genuine decision for
+    // some other request, or a case with no request recorded, is not ours.
+    if (!kycCase.approvalRequestId || kycCase.approvalRequestId !== input.requestId) {
+      this.logger.error(`REFUSING an approval for ${kycCase.id}: request ${input.requestId} is not the one it opened`);
+      return { applied: false, reason: 'approval request id mismatch' };
     }
 
     const expected = this.workflow.digest({
