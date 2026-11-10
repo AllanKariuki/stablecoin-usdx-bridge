@@ -37,6 +37,26 @@ const (
 //
 // Returns the server's Listen error, if any (nil on a clean shutdown).
 func Run(app *fiber.App, addr string, health *Health, logger *slog.Logger, cfg ShutdownConfig, cleanup ...func(context.Context) error) error {
+	return RunWith(app, addr, func() error { return app.Listen(addr) }, health, logger, cfg, cleanup...)
+}
+
+// RunWith is Run with the listen call supplied by the caller.
+//
+// It exists for services/signer, which listens with mutual TLS
+// (app.ListenMutualTLSWithCertificate) rather than a plain listener. The
+// alternative — a TLS branch inside Run — would put a security-critical
+// configuration in a helper every service imports, for one caller's benefit.
+// Everything after the listen is identical, which is the whole reason the
+// drain sequence lives here rather than being written out per service.
+func RunWith(
+	app *fiber.App,
+	addr string,
+	listen func() error,
+	health *Health,
+	logger *slog.Logger,
+	cfg ShutdownConfig,
+	cleanup ...func(context.Context) error,
+) error {
 	if cfg.DrainPeriod <= 0 {
 		cfg.DrainPeriod = defaultDrainPeriod
 	}
@@ -50,7 +70,7 @@ func Run(app *fiber.App, addr string, health *Health, logger *slog.Logger, cfg S
 	serveErrCh := make(chan error, 1)
 	go func() {
 		logger.Info("listening", slog.String("addr", addr))
-		serveErrCh <- app.Listen(addr)
+		serveErrCh <- listen()
 	}()
 
 	select {

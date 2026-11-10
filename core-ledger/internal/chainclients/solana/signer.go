@@ -2,6 +2,7 @@ package solana
 
 import (
 	"fmt"
+	"math/big"
 
 	solanago "github.com/gagliardetto/solana-go"
 )
@@ -26,6 +27,28 @@ type Signer interface {
 	// message. AWS KMS is why P6 cannot use one provider for both chains: it
 	// supports secp256k1 but not ed25519.
 	Sign(message []byte) (solanago.Signature, error)
+}
+
+// ContextualSigner is optionally implemented by a signer that can make use of
+// what is being signed — see the Ethereum package's identical seam for the
+// full reasoning. In short: a remote signer enforces amount ceilings and
+// destination allowlists, and a serialised message carries none of that in a
+// form it can read without re-implementing Anchor's instruction layout.
+//
+// The client hands over a *copy* bound to this call's values rather than
+// setting a field, because the worker runs several sagas concurrently against
+// one client and a shared mutable field would race — producing a signature
+// authorised against another transfer's amount.
+type ContextualSigner interface {
+	Signer
+	WithSigningContext(method, correlationID string, amount *big.Int, to string) Signer
+}
+
+func bindContext(s Signer, method, correlationID string, amount *big.Int, to string) Signer {
+	if cs, ok := s.(ContextualSigner); ok {
+		return cs.WithSigningContext(method, correlationID, amount, to)
+	}
+	return s
 }
 
 // localSigner holds the keypair in this process, loaded from a

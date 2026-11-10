@@ -56,6 +56,449 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **The core-ledger container never reported healthy.** Its healthcheck hit
   `localhost`, which busybox `wget` resolves to `::1`; Fiber listens on IPv4
   only. It now targets `127.0.0.1`.
+
+## 2026-09-29 — P7: reporting, audit trail & production readiness
+
+Branch `feat/p7-reporting-audit`. The last phase, and the one whose job is to
+make the previous six auditable.
+
+### Added
+
+- **`services/audit-trail`** — who did what, in a form that survives somebody
+  with database access deciding they would rather it said something else. Not
+  a log aggregator; Loki has the logs. This holds the events that are
+  *evidence*.
+  - **Two mechanisms, two questions.** The hash chain answers *"has anything
+    been removed"*, to anyone who can read the table, with no trust in the
+    process that wrote it. It cannot answer *"when was this written"* —
+    somebody who controls the database can rewrite it from any point and
+    produce a log that verifies perfectly. A Merkle root published externally
+    answers that. Either alone leaves a gap the other closes.
+  - **RFC 6962 domain separation**, and **an odd node is promoted, never
+    duplicated** — CVE-2012-2459. Duplicating it makes a tree of *n* leaves
+    collide with one where the last leaf genuinely appears twice, which for an
+    audit trail means two histories under one anchor: the exact property an
+    anchor exists to rule out. 13 tests, including that collision, the
+    second-preimage case the domain separators prevent, and every leaf of
+    every tree size up to 33 — the odd, non-power-of-two sizes are where the
+    promotion path runs, and an hour's events are never a convenient size.
+  - The proof endpoint returns **the algorithm alongside the proof**. An
+    inclusion proof somebody cannot independently check is a claim, not a
+    proof, and the details that matter are exactly the ones a verifier would
+    guess wrong.
+  - The default publisher writes roots to the service's own log and says so:
+    *deliberately weak*, because a root in a log this platform controls proves
+    nothing an attacker with that control could not also rewrite. With no
+    publisher at all, roots are still computed and stored — an unpublished
+    anchor is a weaker guarantee, not a lost one.
+- **`services/reporting`** — definitions, runs, CSV, Superset tokens.
+  - **It owns no numbers.** Every figure is read from the owning service at
+    run time and *frozen* into the run. A trial balance regenerated on demand
+    gives a different answer every time somebody opens it, which is useless as
+    a record. The export serves the stored result and carries its SHA-256 in a
+    header.
+  - No query interface: report kinds are a fixed vocabulary. A reporting
+    service that runs arbitrary SQL against other services' databases has
+    bypassed every boundary this platform has.
+  - **CSV formula injection is neutralised.** A field starting with `=`, `+`,
+    `-` or `@` is prefixed, because a customer whose account name is
+    `=HYPERLINK(...)` otherwise gets it executed in whoever opens the export —
+    and account names and invoice descriptions are customer-supplied and both
+    appear in reports.
+- **SLOs** (`docs/slos.md`) — five, each with the PromQL, what it protects,
+  and what it deliberately does *not* cover. 4xx is excluded from the
+  money-movement objective, because counting a correctly-refused deposit as a
+  failure would make the SLO improve whenever validation got weaker.
+  services/signer gets no objective of its own: a signer that is down is
+  already a saga that does not complete, and a signer-availability budget
+  creates pressure to loosen the refusals that make it valuable.
+- **The DR restore drill** (`docs/runbooks/dr-restore.md`) — written to be
+  performed, quarterly, with the wall-clock per phase recorded, because an RTO
+  nobody has measured is a number in a document. The indexer is deliberately
+  *not* backed up: it rebuilds from the chains, and a restored stale cursor is
+  worse than an empty one. Phase 4 is `make reconcile`, which is what says
+  whether the restore is *correct* rather than merely complete.
+- `audit:read` (32 permissions), both services in compose, k8s, Prometheus and
+  the bff's forward list.
+
+### Changed — the Superset hole
+
+`frontend/src/services/supersetService.ts` called Superset's
+`POST /api/v1/security/guest_token/` **from the browser**. That endpoint
+requires a Superset **admin** bearer token, so either an admin credential was
+being shipped to the browser or the call had never worked. The second is how
+it survived: nothing rendered a dashboard, so nothing surfaced the failure.
+
+- Tokens are now minted by services/reporting, where the credential lives.
+- **Row-level security is the access control.** `rlsFor` issues no clause to a
+  caller with an `:any` permission, a party-scoped clause to one with `:own`,
+  and **refuses** a caller with neither — a missing clause is not a safe
+  default, it is the absence of the control.
+- The permissions come from the `X-Permissions` header auth-proxy set, never
+  from a body field, which would be the caller naming its own access.
+- **More aviation lineage removed:** `CREW_REPORTS`, `FLIGHT_REPORTS`,
+  `MAINTENANCE_REPORTS` and `SAFETY_COMPLIANCE` dashboards, the
+  three-environment URL-building map, and a `staticGuestToken` option — a
+  bearer credential in a JS bundle. `supersetConfigManager.ts` (239 lines of
+  diagnostics for config that no longer exists) deleted.
+
+### Notes
+
+- **Not verified live.** 146 Node tests, 35 Foundry, 19 Anchor, the full Go
+  suite under `-race`. Nothing has talked to a real Superset instance, and no
+  anchor has been published anywhere but a log.
+- `services/audit-trail` has no *producers* yet. The recording endpoint works
+  and is tested through the Merkle layer, but wiring every service to emit its
+  own actor events is a change in nine services and belongs with each one's
+  next substantive edit rather than as a mechanical sweep here.
+- PDF export is not implemented — CSV is. A PDF renderer is a dependency with
+  a font stack and a headless browser, and the reports that matter are
+  consumed as data.
+
+## 2026-09-29 — P6: key custody & contracts v2
+
+Branch `feat/p6-signer-custody`. The phase's goal: *no private key material in
+any process env or on any disk; a compliance officer clicks Pause and Sepolia
+transfers halt within a block; rotate a relayer key with no service restart.*
+
+### Added
+
+- **`services/signer`** — the only process that can authorise a chain
+  transaction. core-ledger stops holding `ETH_RELAYER_PRIVATE_KEY` and asks a
+  service that holds it in Vault, over mutually-authenticated TLS.
+  - **The value is in what it refuses.** A key in Vault that signs whatever it
+    is handed has moved the risk, not removed it. The policy engine is pure
+    functions over a decoded request — no database, no clock, no network —
+    because a policy engine testable only by standing up a service is one
+    whose edge cases are untested, and its edge cases are the point. 17 tests
+    at those edges: default-deny for an unruled method, `>=` at the ceiling
+    boundary, case-insensitive address allowlists, first-match-wins ordering,
+    and a daily limit that catches what a per-signature ceiling cannot.
+  - **Policy is a mounted file, not an API.** An endpoint that could edit it
+    would give anyone who compromised the service a way to raise its own
+    ceilings before using them.
+  - **Idempotent on `(chain, method, correlation_id)`.** Without it a saga
+    retry after a timeout produces a *second valid signature for the same
+    movement* — the chain's replay guard stops the second transaction landing,
+    but the platform has authorised the same money twice and which signature
+    is real is unanswerable. A denial does not consume the slot; the same
+    correlation with a different digest is refused outright.
+  - **The audit log is append-only and hash-chained**, enforced by a database
+    trigger rather than by code being careful, and **verified at boot** — a
+    break discovered later cannot be dated, because every row after it is
+    equally suspect. Denials are recorded as carefully as approvals: a burst
+    of refusals is the first sign of a compromised caller probing, and a log
+    of successes only would show that as silence.
+  - Three backends. `local` **refuses to start unless `ENV=local`**. `vault`
+    signs ed25519 in Transit (the Solana key never leaves) and reads the
+    secp256k1 key from KV — a real weakness, stated as one, and the reason it
+    is labelled staging. `fireblocks` returns a *distinct* error rather than a
+    plausible one, because it signs asynchronously and pretending that fits a
+    synchronous method would hide the mismatch until somebody used it.
+  - There is no `Export` on `Backend`. Not an omission: a backend that can
+    export is a backend whose keys can leave.
+  - Its own namespace, with **egress** restricted as well as ingress — a
+    signer that could reach the internet is a signer that could exfiltrate
+    what it holds. Prometheus is deliberately *not* allowed in: a certificate
+    issued for scraping is a certificate that can also `POST /sign`.
+- **Solana `BridgeConfig` PDA** — `initialize_config`, `set_relayer`,
+  `set_admin`, `set_paused`. This is R6's fix: the relayer was a compile-time
+  constant, so rotating a suspected key meant rebuilding and redeploying the
+  program, with a governance window during which the compromised key still
+  worked. It is now one transaction. 9 new litesvm tests (19 total), including
+  the half that matters after a leak — the rotated-*out* relayer must stop
+  working, not just the rotated-in one start.
+  - `paused` closes a gap Ethereum never had: Solana's only answer to a
+    compromise was revoking the mint authority, which is irreversible and
+    takes the honest users with it.
+- **`USDXV2`** — resolves the `bridgeBurn` asymmetry. V1 burns any holder
+  unconditionally under `BRIDGE_ROLE`; Solana's has always been bounded by a
+  delegation the owner granted. The difference matters most in the case nobody
+  plans for: a leaked relayer key on Ethereum can burn *every* holder's
+  balance, including self-custodied holders who never touched the bridge.
+  V2 bounds it to an ERC-20 allowance.
+  - **The flag defaults OFF on upgrade.** Turning it on atomically would
+    strand every in-flight bridge: a burn whose journal leg was posted under
+    V1's rules would revert for want of an allowance nobody was asked for.
+  - Custody addresses are exemptible, because requiring the platform's own
+    pooled account to keep an allowance topped up adds a failure mode —
+    allowance exhausted mid-redemption — to the path that must not have one.
+  - 14 new Foundry tests (35 total), including the two that matter about the
+    override: the replay guard is re-implemented rather than inherited, and a
+    *refused* burn must leave the correlation id usable or a saga would be
+    permanently stuck on an id the contract considers spent.
+- `platform.RunWith` — `Run` with a caller-supplied listen call, so the signer
+  can serve mutual TLS without putting a security-critical TLS branch inside a
+  helper every service imports.
+
+### Changed
+
+- **The P2 `Signer` seam is finally used, and cost nothing** — exactly as
+  predicted. `bridge.ChainClient` does not change, the saga does not change,
+  and `bind.TransactOpts.Signer` was already the right hook. Solana was the
+  fiddlier swap and the reason the seam was opened two phases early:
+  `tx.Sign`'s callback must return the private key *by value*, which a remote
+  signer cannot satisfy at all.
+- Signers can now carry what they are authorising, via an optional
+  `ContextualSigner`. The client hands over a **copy** bound to one call's
+  values rather than setting a field — the worker runs several sagas
+  concurrently against one client, and a shared mutable field would race, with
+  the failure mode being a signature authorised against another transfer's
+  amount.
+- `ETH_RELAYER_PRIVATE_KEY` and `SOLANA_RELAYER_KEYPAIR_PATH` are no longer
+  `required`, with validation that exactly one of key-or-signer is configured
+  — so a deployment with neither fails at boot with a readable message rather
+  than at the first mint, hours later, inside the saga.
+
+### Notes
+
+- **Not verified live.** 25 signer tests (8 against real Postgres), 19 Anchor
+  tests, 35 Foundry tests, and the full Go suite under `-race`. Nothing has
+  talked to a real Vault, a real Fireblocks, or Sepolia. The `USDXV2` upgrade
+  has not been performed on the live proxy, and the Solana program has not
+  been redeployed — `initialize_config` must be called once after a deploy,
+  before any mint, or every `bridge_mint` fails on a missing config account.
+- **Transport deviates from the plan**, deliberately: HTTP/2 + mTLS rather
+  than gRPC + mTLS, for one Go-to-Go caller over four methods. Same security
+  properties, no protoc toolchain. See `services/signer/README.md`.
+- Vault's secp256k1 path reads the key into the signer's memory, because
+  Transit cannot produce the recoverable `[R‖S‖V]` form Ethereum needs. It is
+  a genuine weakness of the staging backend and the reason Fireblocks is the
+  production answer.
+- The plan's *"move `DEFAULT_ADMIN_ROLE` to a Gnosis Safe"* is an operational
+  step on a live contract, not a code change, and has not been performed.
+
+## 2026-09-29 — P5: onboarding, KYC & compliance
+
+Branch `feat/p5-kyc-compliance`. The phase's goal from `docs/building-plan.md`:
+*a stranger signs up, submits KYC, is auto-screened, reviewed and approved —
+and only then can deposit. A sanctioned counterparty is blocked at transfer
+time with a readable reason and a case.*
+
+### Added
+
+- **`services/workflow`** — maker-checker, once. The plan puts it first
+  because approval is needed in five places and *"implementing it five times
+  gives five definitions of approved"*.
+  - **The service executes nothing.** It stores a SHA-256 digest of what was
+    proposed and hands it back on approval; the caller re-computes that digest
+    over its own object and refuses to act if it differs. So a compromised
+    workflow service **cannot authorize anything** — it can return "approved"
+    for whatever it likes, and the caller will find no matching object.
+    Approval is a statement about a specific payload, not about a request id.
+  - The canonical encoding is tested from both directions: stability (key
+    order, absent vs `undefined`, repeated calls) and sensitivity (amount
+    changed, destination swapped, `"250"` vs `250`). Callers *reimplement* it
+    rather than asking workflow for the digest they verify against — asking
+    would let a compromised workflow choose it — and
+    `services/kyc/test/digest-agreement.spec.ts` imports both implementations
+    and asserts they agree, so a drift is a red build rather than the day
+    nothing can be approved any more.
+  - `exclude_initiator` defaults TRUE and is TRUE on all ten seeded policies.
+    One decision per person is a database constraint, not a UI convention: a
+    two-of-two policy one person could satisfy by clicking twice is a
+    one-of-one policy with extra steps.
+  - An action with **no policy is refused**, not waved through — otherwise
+    forgetting to write a policy is the same as deciding none was required.
+  - `approvals:policies:manage` is held by **no role**, including `admin`.
+    Editing a policy changes how many people must agree to a payout; a role
+    that held it could weaken maker-checker and then use it.
+- **`services/kyc`** — cases, documents, tiers, limits.
+  - **A CLEAR screen does not auto-approve.** It skips the human queue but
+    still passes through maker-checker: "clear" is a provider's opinion,
+    approval grants a tier that can move money, and a provider
+    misconfiguration would otherwise silently onboard everyone.
+  - **`PENDING_APPROVAL` is not `APPROVED`.** The tier is granted only when
+    workflow's decision returns *and its digest still matches the case*.
+  - **TIER_0 can do nothing**, which is what makes the DoD's "only then can
+    deposit" true by construction rather than by every caller remembering to
+    check. Gating reuses core-ledger's `POST /wallets/:id/status` and its
+    `ACCOUNT_FROZEN` 409 rather than inventing a second gate — and unfreezing
+    never thaws a wallet a *compliance* hold put on.
+  - `StubKyc` is **deterministic by email domain**, as the plan asks by name.
+    A random stub makes a demo that cannot be rehearsed and a rejection path
+    no test can arrange for.
+  - **Documents never pass through the service.** The browser PUTs straight to
+    object storage on a presigned URL, so passport scans stay out of this
+    process's memory, logs and traces — a compromise leaks references, not
+    files.
+- **`services/compliance`** — screening, rules, alerts, cases, SAR export,
+  enforcement.
+  - **Consumes `damp.ledger.transaction_posted.v1`**, written inside the same
+    `SERIALIZABLE` transaction as the journal lines, so there is no window in
+    which money moved and compliance was not told. That is the property the
+    outbox was built for in P2, a phase before anything consumed it.
+  - **The rules engine is pure functions** over a movement and a window of
+    history — no database, no clock, no network. A rule that decides whether
+    money may move has to be testable against a fabricated history; one that
+    needs a populated Postgres and a mocked clock gets tested once, at the
+    wrong values. 21 cases at the boundaries: `AMOUNT_THRESHOLD` fires *at*
+    the threshold (treating $10,000 as "over ten thousand" makes
+    exactly-at-the-limit the safe amount to send), `VELOCITY` counts the
+    movement being evaluated, `AGGREGATE_WINDOW` sums scaled integers,
+    `STRUCTURING` catches the pattern thresholds themselves create, and
+    `NEW_PARTY_LARGE_TX` treats a null first-seen as *new* rather than
+    exempting the very transaction it exists for.
+  - **No seeded rule ships as BLOCK.** A rule that can freeze a customer's
+    money on the day it is deployed has never been observed against real
+    traffic, and the false-positive rate of an unobserved rule is unknown by
+    definition.
+  - One case per party, not per alert; severity only rises; case notes are
+    append-only; a SAR **requires a narrative**, stored verbatim, because the
+    narrative is the report and regenerating it would produce a different
+    document each export.
+  - **Enforcement stops short, visibly.** Wallet freezes execute (no key
+    needed). Blacklist and pause are approved and then sit `APPROVED` with an
+    explicit reason, because submitting them needs a key holding
+    `COMPLIANCE_ROLE`/`PAUSER_ROLE` and custody is P6 — incomplete on purpose
+    rather than marked `EXECUTED` on the strength of nothing having happened.
+- `approvals:propose` / `approvals:decide` / `approvals:policies:manage`
+  (31 permissions). `auditor` holds propose and **not** decide: independent
+  oversight that can approve is not independent.
+- MinIO in compose, three service databases, k8s manifests with
+  NetworkPolicies, Prometheus targets, and bff forward routes listed
+  explicitly — a wildcard would have quietly exposed
+  `/internal/approvals/callback` through the gateway.
+
+### Notes
+
+- **Not verified live.** 125 tests pass across nine packages (56 of them new
+  in this phase: 15 digest, 20 kyc, 21 compliance rules). No service in this
+  phase has been run against a real database, a real screening vendor, or
+  MinIO.
+- The seeded policies are a starting position, not a compliance opinion. Who
+  may approve what, and how many of them, is a decision for whoever runs the
+  platform.
+
+## 2026-09-28 — P4: money in and out
+
+Branch `feat/p4-payments-notifications`. The phase's goal from
+`docs/building-plan.md`: *a customer links a bank account, deposits fiat,
+converts KES→USD, issues USD-X, and gets an email and an in-app notification
+at each step; a company issues an invoice and the customer pays it.*
+
+### Added
+
+- **`services/payments`** (NestJS) — payment intents, invoices, payment links,
+  beneficiaries, bank accounts and rails. It owns **no balance**: every intent
+  that settles posts one journal transaction through core-ledger, and the
+  entity back-reference comes free because `Deposit`/`Withdraw` already stamp
+  `entity_type = BANK_PAYMENT` with the caller's reference.
+  - **Settlement order is load-bearing:** the rail confirms, *then* the ledger
+    posts, *then* the intent is marked. Marking first would let a crash leave a
+    payment saying SETTLED with no journal entry behind it — a balance that
+    exists in a dashboard and nowhere else.
+  - **4xx and 5xx are not the same answer.** A 4xx is the ledger saying this
+    movement is not allowed and never will be, so the intent fails. A 5xx or a
+    network error is *"we don't know"*, and the intent is deliberately **not**
+    failed — the rail has already moved the money, and marking FAILED on a
+    don't-know is a lie about somebody's bank account. It re-throws instead, so
+    the rail retries, and `payments:<intent id>` makes the retry safe.
+  - **`StubRail` settles through its own callback, not inline.** A stub
+    returning `{status: 'SETTLED'}` from `collect()` would leave the settlement
+    path — the code that decides money moved — untested until the day a real
+    rail was plugged in. It also fails on demand (an amount ending in `.13`),
+    because a payments service whose demo data always succeeds has a failure
+    path nobody has ever run.
+  - **M-Pesa via Daraja sandbox** (STK Push to collect, B2C to disburse), for
+    the plan's stated reason: free and self-service. Unconfigured is a normal
+    state — `RailRegistry` falls back to the stub and logs it, rather than
+    500-ing routes the frontend already calls. Daraja's two incompatible
+    callback shapes are parsed behind one method so none of that mess reaches
+    settlement. An amount with cents is **refused** rather than sent: Daraja
+    truncates silently, which would settle a different amount than the intent
+    records.
+  - **Only the last four digits of an account number are stored.** Once the
+    rail has its opaque handle, the number is a credential for a customer's
+    bank relationship and nothing more.
+  - Invoices carry an unguessable `pay_token`; voiding clears it, which makes
+    voiding a revocation rather than a label.
+- **`services/notifications`** (NestJS) on **:3000 with `/ws`** — the port and
+  path `frontend/public/runtime-config.js` has declared since before this
+  service existed. Templates, preferences, a delivery log, and HMAC-signed
+  outbound webhooks.
+  - **The delivery row is written before anything is sent.** A notification
+    sent but not recorded is one nobody can prove happened. In a dispute,
+    *"did they know"* is a different question from *"did it happen"*, and this
+    table is the only answer to the first.
+  - **Consumes core-ledger's transactional outbox** at `/internal/outbox`,
+    which is where reconciliation's break alerts land. P3 gave `alert()` a
+    metric and an event instead of a `log.Printf`; this is the thing on the
+    other end, and the last link in making R7 untrue.
+  - **The socket is a fan-out, not an API** — the only inbound message
+    accepted is a ping. A client that could *act* over the WebSocket would be
+    acting over a channel that bypasses the gateway's route table, where every
+    permission check this platform has lives.
+  - WebSocket auth happens in this service rather than at Traefik because a
+    browser cannot set headers on `new WebSocket()`. It is the one place
+    outside auth-proxy that verifies a JWT, and it establishes *who* is
+    connecting and nothing else.
+  - Webhook signatures sign the timestamp **with** the body, so a captured
+    request cannot be replayed. The secret is returned once: one that can be
+    re-read from an API proves nothing.
+- **bff upstream proxy** — route shapes listed explicitly rather than a
+  wildcard, so the set of publicly reachable paths is readable in one file and
+  matches auth-proxy's rules one for one. A blanket `@All('*')` would make a
+  new upstream endpoint publicly reachable the moment it was written.
+- `notifications:read:own` / `notifications:webhooks:manage` (28 permissions),
+  Mailpit in the `obs` profile, and both services in compose, k8s and
+  Prometheus.
+
+### Changed — the frontend stops inventing data
+
+Three slices were structured so that **a failed request wrote mock data into
+state as though it had come from the server**. The screens looked fully
+working and were not wired to anything.
+
+- **`bankAccountsSlice`** — every one of its seven thunks caught its own error
+  and `rejectWithValue`'d a `MOCK_*` blob. Rewritten against the real
+  `/banks/*` routes with no fallback. The two-section "my accounts" / "linked
+  accounts" UI became one list, because registered and verified are *statuses
+  of one account*, not two kinds of object — showing both made an account
+  appear twice the moment it was verified.
+- **`conversionClient`** — `const USE_MOCK = 'true'`, a non-empty string and so
+  unconditionally truthy, with the env-driven line commented out directly
+  above it. Every FX quote and conversion was invented. It now reads
+  `VITE_USE_MOCK_API`, posts to `/fx/quotes` and `/fx/conversions` (the routes
+  core-ledger has always served; the bare `/quotes` it used to post to has
+  never existed), and uses the app's shared axios instance — the old one built
+  its own client against a default that now points at the notifications
+  WebSocket, carrying a bearer token from a `localStorage` key nothing has
+  ever written.
+- **`unifiedNotificationsSlice`** — `GET /notifications/unified` (never
+  served), catching the 404 and returning three hardcoded notices. Now reads
+  services/notifications, and receives live pushes over the WebSocket.
+- **The aviation lineage finally leaves.** The notification system was built
+  around NOTAMs — *Notice to Air Missions*, with altitude bands, a
+  start/end schedule and a `/dispatch/notam-alerts/:id` route — from the app
+  this frontend was forked from, the same lineage P0 purged Cesium, three.js
+  and the flight/crew chart components from. Replaced with the four event
+  families this platform actually emits: payment, ledger, reserves, system.
+- **Removed `@types/axios`** — a 2016 DefinitelyTyped stub for axios 0.9 that
+  declares a global `Axios` namespace and shadowed the types axios has shipped
+  in-package since 0.14. Every `AxiosInstance` in the app was resolving to it.
+
+### Notes
+
+- **Not verified live.** 69 Node tests pass (11 of them on the settlement path
+  specifically), the frontend builds and its 13 tests pass, `docker compose
+  config` validates. Nothing here has talked to Daraja, a real bank, or an SMTP
+  server that isn't Mailpit.
+- The frontend's pre-existing `tsc` debt is unchanged at ~145 errors, none of
+  them in a file this phase touched (see the P1 note: the portal was forked
+  from an unrelated multi-asset template and carries trading/investments/
+  insurance/loans pages that aren't planned services at all). `vite build`
+  succeeds, as it did before.
+- `conversionClient`'s mock methods still don't type-check. They are the
+  documented `VITE_USE_MOCK_API` escape hatch and were already broken; deleting
+  ~300 lines of them was more scope than rewiring the client warranted.
+- WebSocket fan-out is per-process, so with more than one notifications replica
+  a customer connected to A misses a push produced on B. Tolerable rather than
+  ignored: the socket is not the durable path — every notification is written
+  to `deliveries` first and re-fetched on reconnect — so it costs latency, not
+  information. The exact fix is a shared pub/sub, and NATS has been in the
+  cluster since P3.
+
 ## 2026-09-28 — P3: on-chain truth
 
 Branch `feat/p3-onchain-truth`. The phase's goal from `docs/building-plan.md`:

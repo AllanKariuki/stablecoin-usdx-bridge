@@ -80,6 +80,12 @@ func main() {
 		USDXProgramID:            cfg.USDXProgramID,
 		USDXMintAddress:          cfg.USDXMintAddress,
 		SolanaRelayerKeypairPath: cfg.SolanaRelayerKeypairPath,
+		SignerURL:                cfg.SignerURL,
+		SignerCertPath:           cfg.SignerCertPath,
+		SignerKeyPath:            cfg.SignerKeyPath,
+		SignerCAPath:             cfg.SignerCAPath,
+		SignerEthKeyID:           cfg.SignerEthKeyID,
+		SignerSolKeyID:           cfg.SignerSolKeyID,
 	})
 	if cerr != nil {
 		logger.Warn("could not dial the chains; this run depends entirely on the indexer's snapshots",

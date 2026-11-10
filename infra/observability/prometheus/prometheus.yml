@@ -68,3 +68,46 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:3005"]
         labels: { service: rms }
+
+  - job_name: payments
+    static_configs:
+      - targets: ["host.docker.internal:3003"]
+        labels: { service: payments }
+
+  - job_name: notifications
+    static_configs:
+      - targets: ["host.docker.internal:3000"]
+        labels: { service: notifications }
+
+  - job_name: workflow
+    static_configs:
+      - targets: ["host.docker.internal:3006"]
+        labels: { service: workflow }
+
+  - job_name: kyc
+    static_configs:
+      - targets: ["host.docker.internal:3007"]
+        labels: { service: kyc }
+
+  - job_name: compliance
+    static_configs:
+      - targets: ["host.docker.internal:3004"]
+        labels: { service: compliance }
+
+  # The signer is scraped over plain HTTP in local development only. With
+  # mTLS on, Prometheus needs its own client certificate — see
+  # infra/k8s/signer-deployment.yaml's note.
+  - job_name: audit-trail
+    static_configs:
+      - targets: ["host.docker.internal:8085"]
+        labels: { service: audit-trail }
+
+  - job_name: reporting
+    static_configs:
+      - targets: ["host.docker.internal:3008"]
+        labels: { service: reporting }
+
+  - job_name: signer
+    static_configs:
+      - targets: ["host.docker.internal:8084"]
+        labels: { service: signer }

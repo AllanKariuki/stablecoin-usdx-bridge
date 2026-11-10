@@ -1,166 +1,64 @@
-import axios from 'axios';
-import { SUPERSET_CONFIG } from '../config/supersetConfig';
+import { post } from '../api';
 
-// Types for Superset API responses
-export interface GuestTokenRequest {
-  user: {
-    username: string;
-    first_name: string;
-    last_name: string;
-  };
-  resources: Array<{
-    type: 'dashboard' | 'chart';
-    id: string;
-  }>;
-  rls?: Array<{
-    clause: string;
-  }>;
-}
+/**
+ * Embedded Superset dashboards, through the platform's own gateway.
+ *
+ * **What changed, and why it had to.** This service used to call Superset's
+ * `POST /api/v1/security/guest_token/` directly from the browser. That
+ * endpoint requires a Superset **admin** bearer token — so either an admin
+ * credential was being shipped to the browser, or the call had never worked.
+ * The second is how it survived: nothing in the app rendered a dashboard, so
+ * nothing surfaced the failure.
+ *
+ * Guest tokens are now minted by `services/reporting`, where the admin
+ * credential lives, and handed to a browser the gateway has already
+ * authenticated. The browser never talks to Superset's API at all — only to
+ * the embed SDK, with a token it was given.
+ *
+ * The token also carries row-level security clauses derived from the caller's
+ * *resolved* permissions, so a customer's dashboard is scoped to their own
+ * rows by the analytics database rather than by the dashboard being careful.
+ */
 
-export interface GuestTokenResponse {
+export interface GuestTokenResult {
   token: string;
-}
-
-export interface DashboardInfo {
-  id: string;
-  dashboard_title: string;
-  url: string;
-  thumbnail_url?: string;
-  changed_on: string;
-  changed_by: {
-    first_name: string;
-    last_name: string;
-  };
+  /** Where the embed SDK should load the dashboard from. */
+  supersetUrl: string;
+  /**
+   * Seconds. Returned so a long-lived page can refresh before expiry rather
+   * than discovering it mid-session with a blank iframe.
+   */
+  expiresInSeconds: number;
 }
 
 class SupersetService {
-  private readonly baseUrl: string;
-  private readonly apiClient;
-
-  constructor() {
-    this.baseUrl = SUPERSET_CONFIG.SUPERSET_URL;
-    this.apiClient = axios.create({
-      baseURL: this.baseUrl,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
+  /**
+   * Requests a guest token for one dashboard.
+   *
+   * No username, no permissions, no RLS clauses are passed: all three are
+   * decided server-side from the identity auth-proxy resolved. A client that
+   * could name its own permissions would be a client that could name its own
+   * access.
+   */
+  async guestToken(dashboardId: string): Promise<GuestTokenResult> {
+    return post<GuestTokenResult, Record<string, never>>(
+      `/reports/dashboards/${encodeURIComponent(dashboardId)}/guest-token`,
+      {},
+    );
   }
 
   /**
-   * Generate a guest token for embedded dashboard access
+   * The callback the Superset embed SDK wants.
+   *
+   * It is called on mount and again whenever the token expires, which is why
+   * it fetches fresh every time rather than caching: a cached token in a tab
+   * left open overnight is a blank dashboard in the morning.
    */
-  async generateGuestToken(request: GuestTokenRequest): Promise<string> {
-    try {
-      const response = await this.apiClient.post<GuestTokenResponse>(
-        '/api/v1/security/guest_token/',
-        request
-      );
-      return response.data.token;
-    } catch (error) {
-      console.error('Error generating guest token:', error);
-      throw new Error('Failed to generate guest token');
-    }
-  }
-
-  /**
-   * Get dashboard information
-   */
-  async getDashboardInfo(dashboardId: string): Promise<DashboardInfo> {
-    try {
-      const response = await this.apiClient.get<DashboardInfo>(
-        `/api/v1/dashboard/${dashboardId}`
-      );
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching dashboard info:', error);
-      throw new Error('Failed to fetch dashboard information');
-    }
-  }
-
-  /**
-   * Get dashboard export URL
-   */
-  getDashboardExportUrl(dashboardId: string, format: 'pdf' | 'png' = 'pdf'): string {
-    return `${this.baseUrl}/api/v1/dashboard/${dashboardId}/export/${format}/`;
-  }
-
-  /**
-   * Get available dashboards (requires authentication)
-   */
-  async getAvailableDashboards(): Promise<DashboardInfo[]> {
-    try {
-      const response = await this.apiClient.get<{ result: DashboardInfo[] }>('/api/v1/dashboard/');
-      return response.data.result || [];
-    } catch (error) {
-      console.error('Error fetching available dashboards:', error);
-      throw new Error('Failed to fetch available dashboards');
-    }
-  }
-
-  /**
-   * Check if Superset instance is accessible
-   */
-  async healthCheck(): Promise<boolean> {
-    try {
-      const response = await this.apiClient.get('/health');
-      return response.status === 200;
-    } catch (error) {
-      console.error('Superset health check failed:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Create a guest token with default permissions for a specific dashboard
-   */
-  async createDashboardGuestToken(
-    dashboardId: string,
-    username: string = 'guest',
-    firstName: string = 'Guest',
-    lastName: string = 'User'
-  ): Promise<string> {
-    const tokenRequest: GuestTokenRequest = {
-      user: {
-        username,
-        first_name: firstName,
-        last_name: lastName,
-      },
-      resources: [
-        {
-          type: 'dashboard',
-          id: dashboardId,
-        },
-      ],
-    };
-
-    return this.generateGuestToken(tokenRequest);
-  }
+  fetchGuestToken = async (dashboardId: string): Promise<string> => {
+    const { token } = await this.guestToken(dashboardId);
+    return token;
+  };
 }
 
-// Create and export a singleton instance
 export const supersetService = new SupersetService();
-
-// Helper function to check if Superset is properly configured
-export const validateSupersetConfig = (): boolean => {
-  if (!SUPERSET_CONFIG.SUPERSET_URL) {
-    console.warn('Superset URL not configured. Please set REACT_APP_SUPERSET_URL in your environment variables.');
-    return false;
-  }
-
-  const requiredDashboards = Object.values(SUPERSET_CONFIG.DASHBOARDS);
-  const missingDashboards = requiredDashboards.filter(id => !id || id.includes('dashboard'));
-  
-  if (missingDashboards.length > 0) {
-    console.warn('Some dashboard IDs are not configured. Please set the following environment variables:');
-    console.warn('- REACT_APP_CREW_DASHBOARD_ID');
-    console.warn('- REACT_APP_FLIGHT_DASHBOARD_ID');
-    console.warn('- REACT_APP_MAINTENANCE_DASHBOARD_ID');
-    console.warn('- REACT_APP_SAFETY_DASHBOARD_ID');
-    return false;
-  }
-
-  return true;
-};
-
-export default SupersetService;
+export default supersetService;

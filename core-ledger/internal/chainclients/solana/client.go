@@ -16,6 +16,7 @@ import (
 
 const (
 	mintAuthoritySeed = "mint-authority"
+	configSeed        = "bridge-config" // chains/solana constants.rs CONFIG_SEED
 	processedSeed     = "processed"
 
 	pollInterval = 2 * time.Second
@@ -72,6 +73,14 @@ func (c *Client) mintAuthorityPDA() (solanago.PublicKey, error) {
 	return pda, err
 }
 
+// configPDA is the BridgeConfig account (seed "bridge-config"). Since P6 the
+// program reads the relayer and the pause flag from it, so bridge_mint and
+// bridge_burn fail with a missing-account error without it.
+func (c *Client) configPDA() (solanago.PublicKey, error) {
+	pda, _, err := solanago.FindProgramAddress([][]byte{[]byte(configSeed)}, c.programID)
+	return pda, err
+}
+
 func (c *Client) processedMarkerPDA(correlationID string) (solanago.PublicKey, error) {
 	hash := bridge.CorrelationIDHash(correlationID)
 	pda, _, err := solanago.FindProgramAddress([][]byte{[]byte(processedSeed), hash[:]}, c.programID)
@@ -105,7 +114,18 @@ func encodeBridgeArgs(discriminator []byte, amount *big.Int, correlationID strin
 	return data
 }
 
-func (c *Client) sendInstructions(ctx context.Context, instructions ...solanago.Instruction) (string, error) {
+// signingContext is what a remote signer needs to apply policy: which
+// instruction this is, for which saga, moving how much, to whom. A local
+// signer ignores it, which is why sendInstructions takes it unconditionally
+// rather than there being two send paths.
+type signingContext struct {
+	method        string
+	correlationID string
+	amount        *big.Int
+	to            string
+}
+
+func (c *Client) sendInstructions(ctx context.Context, sctx signingContext, instructions ...solanago.Instruction) (string, error) {
 	latest, err := c.rpc.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil {
 		return "", fmt.Errorf("fetching latest blockhash: %w", err)
@@ -118,7 +138,7 @@ func (c *Client) sendInstructions(ctx context.Context, instructions ...solanago.
 
 	// Not tx.Sign: its callback must hand back the private key by value,
 	// which a signer that does not hold one cannot do. See signer.go.
-	if err := signTransaction(tx, c.signer); err != nil {
+	if err := signTransaction(tx, bindContext(c.signer, sctx.method, sctx.correlationID, sctx.amount, sctx.to)); err != nil {
 		return "", err
 	}
 
@@ -151,6 +171,10 @@ func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (s
 	if err != nil {
 		return "", fmt.Errorf("deriving processed marker PDA: %w", err)
 	}
+	configPDA, err := c.configPDA()
+	if err != nil {
+		return "", fmt.Errorf("deriving BridgeConfig PDA: %w", err)
+	}
 	destATA, _, err := solanago.FindAssociatedTokenAddress(destWallet, c.mint)
 	if err != nil {
 		return "", fmt.Errorf("deriving destination ATA: %w", err)
@@ -163,6 +187,7 @@ func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (s
 		solanago.Meta(mintAuthority),
 		solanago.Meta(destATA).WRITE(),
 		solanago.Meta(processedMarker).WRITE(),
+		solanago.Meta(configPDA),
 		solanago.Meta(c.signer.PublicKey()).WRITE().SIGNER(),
 		solanago.Meta(solanago.TokenProgramID),
 		solanago.Meta(solanago.SystemProgramID),
@@ -173,7 +198,9 @@ func (c *Client) BridgeMint(to string, amount *big.Int, correlationID string) (s
 		encodeBridgeArgs(anchorDiscriminator("bridge_mint"), amount, correlationID),
 	)
 
-	return c.sendInstructions(ctx, createATA.Build(), bridgeMint)
+	return c.sendInstructions(ctx,
+		signingContext{method: "bridgeMint", correlationID: correlationID, amount: amount, to: to},
+		createATA.Build(), bridgeMint)
 }
 
 // BridgeBurn burns from `from`'s associated token account, using the
@@ -203,6 +230,10 @@ func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) 
 	if err != nil {
 		return "", fmt.Errorf("deriving processed marker PDA: %w", err)
 	}
+	configPDA, err := c.configPDA()
+	if err != nil {
+		return "", fmt.Errorf("deriving BridgeConfig PDA: %w", err)
+	}
 	sourceATA, _, err := solanago.FindAssociatedTokenAddress(ownerWallet, c.mint)
 	if err != nil {
 		return "", fmt.Errorf("deriving source ATA: %w", err)
@@ -213,6 +244,7 @@ func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) 
 		solanago.Meta(mintAuthority),
 		solanago.Meta(sourceATA).WRITE(),
 		solanago.Meta(processedMarker).WRITE(),
+		solanago.Meta(configPDA),
 		solanago.Meta(c.signer.PublicKey()).WRITE().SIGNER(),
 		solanago.Meta(solanago.TokenProgramID),
 		solanago.Meta(solanago.SystemProgramID),
@@ -223,7 +255,9 @@ func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) 
 		encodeBridgeArgs(anchorDiscriminator("bridge_burn"), amount, correlationID),
 	)
 
-	return c.sendInstructions(ctx, bridgeBurn)
+	return c.sendInstructions(ctx,
+		signingContext{method: "bridgeBurn", correlationID: correlationID, amount: amount, to: from},
+		bridgeBurn)
 }
 
 // WaitForFinality matches bridge.ChainClient's signature (the same string

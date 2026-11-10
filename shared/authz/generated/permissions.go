@@ -28,6 +28,14 @@ const (
 const (
 	// Manage parties, organizations, memberships, and role assignments.
 	PermissionAdminUsersManage Permission = "admin:users:manage"
+	// Approve or reject a pending approval request.
+	PermissionApprovalsDecide Permission = "approvals:decide"
+	// Create and edit approval policies.
+	PermissionApprovalsPoliciesManage Permission = "approvals:policies:manage"
+	// Open an approval request against a policy.
+	PermissionApprovalsPropose Permission = "approvals:propose"
+	// Read the actor audit trail and verify its hash chain and anchors.
+	PermissionAuditRead Permission = "audit:read"
 	// Bridge USD-X between chains.
 	PermissionBridgeCreate Permission = "bridge:create"
 	// Blacklist/pause an address or contract on-chain via the signer service.
@@ -48,6 +56,10 @@ const (
 	PermissionLedgerAdmin Permission = "ledger:admin"
 	// Read trial balance, integrity checks, and account balances.
 	PermissionLedgerRead Permission = "ledger:read"
+	// Read the caller's own notifications and notification preferences.
+	PermissionNotificationsReadOwn Permission = "notifications:read:own"
+	// Register and remove outbound webhook endpoints.
+	PermissionNotificationsWebhooksManage Permission = "notifications:webhooks:manage"
 	// Manage payments across an organization's sub-accounts.
 	PermissionPaymentsManageAny Permission = "payments:manage:any"
 	// Read the caller's own payment intents, invoices, and payouts.
@@ -103,16 +115,23 @@ var RolePermissions = map[Role][]Permission{
 		PermissionPaymentsWriteOwn,
 		PermissionPaymentsManageAny,
 		PermissionKycSubmit,
+		PermissionNotificationsReadOwn,
+		PermissionNotificationsWebhooksManage,
+		PermissionApprovalsPropose,
+		PermissionApprovalsDecide,
 		PermissionReservesRead,
 		PermissionReportsRead,
+		PermissionAuditRead,
 		PermissionAdminUsersManage,
 	},
 	RoleAuditor: {
 		PermissionWalletsReadAny,
 		PermissionTransactionsReadAny,
 		PermissionLedgerRead,
+		PermissionApprovalsPropose,
 		PermissionReservesRead,
 		PermissionReportsRead,
+		PermissionAuditRead,
 	},
 	RoleCompany: {
 		PermissionWalletsReadOwn,
@@ -127,6 +146,8 @@ var RolePermissions = map[Role][]Permission{
 		PermissionPaymentsWriteOwn,
 		PermissionPaymentsManageAny,
 		PermissionKycSubmit,
+		PermissionNotificationsReadOwn,
+		PermissionNotificationsWebhooksManage,
 	},
 	RoleCompliance: {
 		PermissionWalletsReadAny,
@@ -135,8 +156,12 @@ var RolePermissions = map[Role][]Permission{
 		PermissionKycReview,
 		PermissionComplianceCasesManage,
 		PermissionComplianceBlacklistManage,
+		PermissionNotificationsReadOwn,
+		PermissionApprovalsPropose,
+		PermissionApprovalsDecide,
 		PermissionReservesRead,
 		PermissionReportsRead,
+		PermissionAuditRead,
 	},
 	RoleCustomer: {
 		PermissionWalletsReadOwn,
@@ -150,6 +175,8 @@ var RolePermissions = map[Role][]Permission{
 		PermissionPaymentsReadOwn,
 		PermissionPaymentsWriteOwn,
 		PermissionKycSubmit,
+		PermissionNotificationsReadOwn,
+		PermissionNotificationsWebhooksManage,
 	},
 	RoleTreasury: {
 		PermissionWalletsReadAny,
@@ -157,9 +184,13 @@ var RolePermissions = map[Role][]Permission{
 		PermissionTransactionsReverse,
 		PermissionLedgerRead,
 		PermissionLedgerAdmin,
+		PermissionNotificationsReadOwn,
+		PermissionApprovalsPropose,
+		PermissionApprovalsDecide,
 		PermissionReservesRead,
 		PermissionReservesManage,
 		PermissionReportsRead,
+		PermissionAuditRead,
 	},
 }
 

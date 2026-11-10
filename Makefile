@@ -16,6 +16,11 @@ DATABASE_URL ?= postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
 # design, and a real worker pointed at `bridge` will try to put them on chain.
 # See infra/postgres/init/02-ledger-test-db.sql.
 TEST_DATABASE_URL ?= postgres://bridge:bridge@localhost:55433/bridge_test?sslmode=disable
+# signer's own test database (infra/postgres/init/05-p6-databases.sql). Not
+# bridge_test: both services migrate with goose's default version table, so in
+# a shared database goose sees core-ledger's version 6, skips signer's 00001,
+# and the signatures table never exists.
+SIGNER_TEST_DATABASE_URL ?= postgres://signer:signer@localhost:55433/signer_test?sslmode=disable
 
 .DEFAULT_GOAL := help
 
@@ -62,6 +67,7 @@ logs:
 up-obs:
 	docker compose --profile obs up -d
 	@echo "grafana on http://localhost:53000 (anonymous viewer), prometheus on :59090"
+	@echo "mailpit on http://localhost:58025 — every email notifications sends lands here"
 
 ## Stop the observability stack.
 down-obs:
@@ -77,8 +83,8 @@ test: test-unit test-integration test-eth test-sol test-node
 
 ## Go unit tests only — no Postgres required.
 test-unit:
-	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
-	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... -count=1 -race
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/...
+	go test ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/... -count=1 -race
 
 ## Go integration tests against real Postgres — fails (not skips) if unreachable.
 # Also fails if a test that should run against Postgres got silently
@@ -86,13 +92,19 @@ test-unit:
 # -p 1 because every package shares one database and several assert on how
 # far a shared GL account (2300.BRIDGE) moved; run in parallel, one package's
 # postings land inside another's before/after window.
+#
+# services/signer's audit tests need their own database (the append-only
+# trigger and the hash chain are database properties, so a fake would confirm
+# the Go code and none of them). It gets signer_test, never a database another
+# service migrates — see SIGNER_TEST_DATABASE_URL above.
 test-integration: up
 	@docker exec usdx-postgres psql -U bridge -d postgres -tAc \
 		"SELECT 1 FROM pg_database WHERE datname = 'bridge_test'" | grep -q 1 \
 		|| docker exec usdx-postgres createdb -U bridge -O bridge bridge_test
 	@set -euo pipefail; \
 	LEDGER_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" \
-		go test -p 1 ./core-ledger/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
+	SIGNER_TEST_DATABASE_URL="$(SIGNER_TEST_DATABASE_URL)" \
+		go test -p 1 ./core-ledger/... ./services/signer/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
 	if grep -q '^--- SKIP:' /tmp/usdx-go-test.log; then \
 		echo "a test was skipped — LEDGER_TEST_DATABASE_URL must be set and reachable"; \
 		grep '^--- SKIP:' /tmp/usdx-go-test.log; \
@@ -133,8 +145,8 @@ eth-deps:
 test-sol:
 	cd chains/solana && anchor build --arch v1 --ignore-keys && cargo test -p usdx_bridge
 
-## Node workspace tests (shared/node/nest-platform, services/bff,
-## services/identity, services/rms). identity's suite needs real Postgres (see
+## Node workspace tests (nest-platform, bff, identity, rms, payments,
+## notifications). identity's suite needs real Postgres (see
 ## services/identity/test/fixtures/bootstrap.ts) — depends on `up` the same
 ## way test-integration does. --if-present skips frontend, which has no
 ## test script yet.
@@ -153,6 +165,8 @@ build:
 	go build -o bin/core-ledger-reconcile ./core-ledger/cmd/reconcile
 	go build -o bin/auth-proxy ./services/auth-proxy/cmd/server
 	go build -o bin/indexer ./services/indexer/cmd/server
+	go build -o bin/signer ./services/signer/cmd/server
+	go build -o bin/audit-trail ./services/audit-trail/cmd/server
 
 ## Run core-ledger against local infra (needs core-ledger/.env — see .env.example).
 run: up
@@ -175,11 +189,18 @@ run-indexer: up
 reconcile:
 	cd core-ledger && go run ./cmd/reconcile --triggered-by operator
 
-## Build the core-ledger image (API + worker + reconciler, one image, three
-## entrypoints) and the indexer image.
+## Build every service image.
 docker-build:
 	docker build -f core-ledger/Dockerfile -t usdx/core-ledger:dev .
 	docker build -f services/indexer/Dockerfile -t usdx/indexer:dev .
+	docker build -f services/payments/Dockerfile -t usdx/payments:dev .
+	docker build -f services/notifications/Dockerfile -t usdx/notifications:dev .
+	docker build -f services/workflow/Dockerfile -t usdx/workflow:dev .
+	docker build -f services/kyc/Dockerfile -t usdx/kyc:dev .
+	docker build -f services/compliance/Dockerfile -t usdx/compliance:dev .
+	docker build -f services/signer/Dockerfile -t usdx/signer:dev .
+	docker build -f services/audit-trail/Dockerfile -t usdx/audit-trail:dev .
+	docker build -f services/reporting/Dockerfile -t usdx/reporting:dev .
 
 ## Bring up infra *and* the containerised API and worker.
 # This is what P2's definition of done needs: a worker you can `docker kill`
@@ -204,7 +225,7 @@ logs-worker:
 
 ## Format everything in place.
 fmt:
-	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
+	go fmt ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/...
 	cd chains/ethereum && forge fmt
 	cd chains/solana && cargo fmt -p usdx_bridge
 
@@ -214,7 +235,7 @@ fmt-check:
 	cd chains/solana && cargo fmt -p usdx_bridge -- --check
 
 lint: fmt-check
-	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
+	go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/...
 	cd chains/solana && cargo clippy -p usdx_bridge --tests -- -D warnings
 	pnpm -r --if-present run lint
 

@@ -145,4 +145,124 @@ var Default = Table{
 	compile("POST", "/custodians/:custodianId/drift", authz.PermissionReservesManage),
 	compile("POST", "/attestations", authz.PermissionReservesManage),
 	compile("POST", "/attestations/:attestationId/publish", authz.PermissionReservesManage),
+
+	// Payments (P4). services/payments, reached through bff's upstream proxy.
+	//
+	// Bank accounts read and write under the same wallets:write permissions a
+	// deposit does, deliberately: registering an account you can withdraw to is
+	// as consequential as moving money, and giving it a separate permission
+	// would let a role hold one without the other.
+	compile("GET", "/banks/available", authz.PermissionPaymentsReadOwn),
+	compile("GET", "/banks/user-accounts", authz.PermissionPaymentsReadOwn),
+	compile("GET", "/banks/linked-accounts", authz.PermissionPaymentsReadOwn),
+	compile("GET", "/banks/beneficiaries", authz.PermissionPaymentsReadOwn),
+	compile("POST", "/banks/register", authz.PermissionPaymentsWriteOwn),
+	compile("POST", "/banks/link", authz.PermissionPaymentsWriteOwn),
+	compile("POST", "/banks/beneficiaries", authz.PermissionPaymentsWriteOwn),
+	compile("DELETE", "/banks/user-accounts/:accountId", authz.PermissionPaymentsWriteOwn),
+
+	compile("GET", "/payment-intents", authz.PermissionPaymentsReadOwn, authz.PermissionPaymentsManageAny),
+	compile("GET", "/payment-intents/:intentId", authz.PermissionPaymentsReadOwn, authz.PermissionPaymentsManageAny),
+	compile("POST", "/payment-intents", authz.PermissionPaymentsWriteOwn),
+	compile("POST", "/payment-intents/:intentId/cancel", authz.PermissionPaymentsWriteOwn),
+
+	compile("GET", "/invoices", authz.PermissionPaymentsReadOwn, authz.PermissionPaymentsManageAny),
+	compile("GET", "/invoices/:invoiceId", authz.PermissionPaymentsReadOwn, authz.PermissionPaymentsManageAny),
+	compile("POST", "/invoices", authz.PermissionPaymentsWriteOwn),
+	compile("POST", "/invoices/:invoiceId/void", authz.PermissionPaymentsWriteOwn),
+	compile("POST", "/invoices/:invoiceId/pay", authz.PermissionPaymentsWriteOwn),
+
+	// Notifications (P4).
+	//
+	// Two routes are deliberately absent and must stay absent:
+	//
+	//   - GET /invoices/pay/:token — a payment link is opened by somebody who
+	//     is not logged in, and the token is the credential. It resolves at
+	//     services/payments directly, not through the authenticated gateway.
+	//   - POST /rails/:rail/callback — Safaricom does not hold a DAMP token.
+	//     It reaches services/payments over its own ingress, never this one.
+	//
+	// A rule here for either would be a rule that could never be satisfied,
+	// and adding one "for completeness" would break both flows.
+	compile("GET", "/notifications", authz.PermissionNotificationsReadOwn),
+	compile("POST", "/notifications/read-all", authz.PermissionNotificationsReadOwn),
+	compile("POST", "/notifications/:notificationId/read", authz.PermissionNotificationsReadOwn),
+	compile("GET", "/notification-preferences", authz.PermissionNotificationsReadOwn),
+	compile("PUT", "/notification-preferences", authz.PermissionNotificationsReadOwn),
+
+	compile("GET", "/webhooks", authz.PermissionNotificationsWebhooksManage),
+	compile("POST", "/webhooks", authz.PermissionNotificationsWebhooksManage),
+	compile("DELETE", "/webhooks/:webhookId", authz.PermissionNotificationsWebhooksManage),
+
+	// Maker-checker (P5).
+	//
+	// Proposing and deciding are separate permissions because they are
+	// separate acts: `auditor` holds propose and not decide, because
+	// independent oversight that can approve is not independent.
+	compile("GET", "/approval-policies", authz.PermissionApprovalsPropose, authz.PermissionApprovalsDecide),
+	compile("GET", "/approval-requests", authz.PermissionApprovalsPropose, authz.PermissionApprovalsDecide),
+	compile("GET", "/approval-requests/:requestId", authz.PermissionApprovalsPropose, authz.PermissionApprovalsDecide),
+	compile("POST", "/approval-requests", authz.PermissionApprovalsPropose),
+	compile("POST", "/approval-requests/:requestId/cancel", authz.PermissionApprovalsPropose),
+	compile("POST", "/approval-requests/:requestId/approve", authz.PermissionApprovalsDecide),
+	compile("POST", "/approval-requests/:requestId/reject", authz.PermissionApprovalsDecide),
+
+	// KYC (P5). A customer submits their own; a compliance officer reviews
+	// anyone's. The split between kyc:submit and kyc:review is what stops the
+	// two being the same person.
+	compile("GET", "/kyc/status", authz.PermissionKycSubmit),
+	compile("GET", "/kyc/cases", authz.PermissionKycSubmit, authz.PermissionKycReview),
+	compile("POST", "/kyc/cases", authz.PermissionKycSubmit),
+	compile("POST", "/kyc/cases/:caseId/documents", authz.PermissionKycSubmit),
+	compile("POST", "/kyc/cases/:caseId/documents/upload-url", authz.PermissionKycSubmit),
+	compile("POST", "/kyc/cases/:caseId/submit", authz.PermissionKycSubmit),
+	compile("GET", "/kyc/tiers", authz.PermissionKycSubmit, authz.PermissionKycReview),
+
+	compile("GET", "/kyc/queue", authz.PermissionKycReview),
+	compile("GET", "/kyc/cases/:caseId", authz.PermissionKycReview),
+	compile("POST", "/kyc/cases/:caseId/review", authz.PermissionKycReview),
+	compile("GET", "/kyc/parties/:partyId/tier", authz.PermissionKycReview, authz.PermissionComplianceCasesManage),
+
+	// Compliance (P5).
+	compile("GET", "/compliance/alerts", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/alerts/:alertId/dismiss", authz.PermissionComplianceCasesManage),
+	compile("GET", "/compliance/cases", authz.PermissionComplianceCasesManage),
+	compile("GET", "/compliance/cases/:caseId", authz.PermissionComplianceCasesManage),
+	compile("GET", "/compliance/cases/:caseId/sar", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/cases/:caseId/notes", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/cases/:caseId/assign", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/cases/:caseId/close", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/screenings", authz.PermissionComplianceCasesManage),
+
+	// Blacklisting and pausing. A separate permission from case management,
+	// because reading and investigating is a different act from freezing
+	// somebody's tokens — and both still go through maker-checker.
+	compile("GET", "/compliance/enforcement", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/enforcement", authz.PermissionComplianceBlacklistManage),
+
+	// Reporting (P7). Every report checks its own required_permission inside
+	// the service as well — the definition names it, so adding a report that
+	// exposes more than its siblings does not mean editing this table and
+	// hoping somebody notices.
+	compile("GET", "/reports", authz.PermissionReportsRead),
+	compile("GET", "/reports/runs", authz.PermissionReportsRead),
+	compile("GET", "/reports/runs/:runId", authz.PermissionReportsRead),
+	compile("GET", "/reports/runs/:runId/export.csv", authz.PermissionReportsRead),
+	compile("POST", "/reports/:definitionId/run", authz.PermissionReportsRead),
+
+	// A Superset guest token. Deliberately NOT gated on reports:read: a
+	// customer embedding their own payments dashboard holds payments:read:own
+	// and nothing else, and the actual restriction is the row-level security
+	// clause the token carries — which services/reporting derives from the
+	// caller's full permission set and refuses to issue without.
+	compile("POST", "/reports/dashboards/:dashboardId/guest-token",
+		authz.PermissionReportsRead, authz.PermissionPaymentsReadOwn, authz.PermissionWalletsReadOwn),
+
+	// Audit trail (P7). Read-only through the gateway; recording is
+	// /internal/events, which services post to inside the cluster and which
+	// has no rule here at all.
+	compile("GET", "/audit/events", authz.PermissionAuditRead),
+	compile("GET", "/audit/events/:eventId/proof", authz.PermissionAuditRead),
+	compile("GET", "/audit/anchors", authz.PermissionAuditRead),
+	compile("GET", "/audit/verify", authz.PermissionAuditRead),
 }

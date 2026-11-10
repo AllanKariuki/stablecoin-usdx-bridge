@@ -43,17 +43,29 @@ jobs:
           go-version-file: go.work
 
       - name: go vet
-        run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
+        run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/...
+
+      - name: Create signer's test database
+        # Service containers can't mount docker-entrypoint-initdb.d, so this is
+        # infra/postgres/init/05-p6-databases.sql run by hand.
+        run: |
+          PGPASSWORD=bridge psql -h localhost -p 55433 -U bridge -d bridge \
+            -c "CREATE ROLE signer WITH LOGIN PASSWORD 'signer';" \
+            -c "CREATE DATABASE signer_test OWNER signer;"
 
       - name: go test (unit + integration)
         env:
           LEDGER_TEST_DATABASE_URL: postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
+          # Its own database, not the ledger's: both migrate with goose's
+          # default version table, so sharing one makes signer skip its
+          # migrations (see the Makefile's SIGNER_TEST_DATABASE_URL).
+          SIGNER_TEST_DATABASE_URL: postgres://signer:signer@localhost:55433/signer_test?sslmode=disable
         run: |
           set -euo pipefail
           # -p 1: the core-ledger packages share this one database and assert
           # on shared GL account deltas, so parallel packages corrupt each
           # other's before/after windows (see the Makefile's test-integration).
-          go test -p 1 ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
+          go test -p 1 ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
           # Any skip, not just TestIntegration*: P2 added database-backed
           # suites under other names (TestConcurrentClaim,
           # TestSagaResumesAfterCrash, TestIdempotent*), and every t.Skip in
@@ -78,8 +90,9 @@ jobs:
           }
 
   # ---------------------------------------------------------------------
-  # Node workspace (shared/node/nest-platform, services/bff,
-  # services/identity, services/rms) — one pnpm workspace, one job.
+  # Node workspace (shared/node/nest-platform, services/bff, services/identity,
+  # services/rms, services/payments, services/notifications) — one pnpm
+  # workspace, one job.
   # identity's e2e specs need a real Postgres (see
   # services/identity/test/fixtures/bootstrap.ts, mirroring the Go job's own
   # LEDGER_TEST_DATABASE_URL reasoning); bff, nest-platform and rms's specs
@@ -138,7 +151,25 @@ jobs:
             -c "CREATE DATABASE identity_test OWNER identity;" \
             -c "CREATE ROLE rms WITH LOGIN PASSWORD 'rms';" \
             -c "CREATE DATABASE rms OWNER rms;" \
-            -c "CREATE DATABASE rms_test OWNER rms;"
+            -c "CREATE DATABASE rms_test OWNER rms;" \
+            -c "CREATE ROLE payments WITH LOGIN PASSWORD 'payments';" \
+            -c "CREATE DATABASE payments OWNER payments;" \
+            -c "CREATE DATABASE payments_test OWNER payments;" \
+            -c "CREATE ROLE notifications WITH LOGIN PASSWORD 'notifications';" \
+            -c "CREATE DATABASE notifications OWNER notifications;" \
+            -c "CREATE DATABASE notifications_test OWNER notifications;" \
+            -c "CREATE ROLE workflow WITH LOGIN PASSWORD 'workflow';" \
+            -c "CREATE DATABASE workflow OWNER workflow;" \
+            -c "CREATE DATABASE workflow_test OWNER workflow;" \
+            -c "CREATE ROLE kyc WITH LOGIN PASSWORD 'kyc';" \
+            -c "CREATE DATABASE kyc OWNER kyc;" \
+            -c "CREATE DATABASE kyc_test OWNER kyc;" \
+            -c "CREATE ROLE compliance WITH LOGIN PASSWORD 'compliance';" \
+            -c "CREATE DATABASE compliance OWNER compliance;" \
+            -c "CREATE DATABASE compliance_test OWNER compliance;" \
+            -c "CREATE ROLE reporting WITH LOGIN PASSWORD 'reporting';" \
+            -c "CREATE DATABASE reporting OWNER reporting;" \
+            -c "CREATE DATABASE reporting_test OWNER reporting;"
 
       - name: pnpm -r test
         run: pnpm -r --if-present run test

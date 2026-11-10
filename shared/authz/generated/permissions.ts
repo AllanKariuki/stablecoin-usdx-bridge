@@ -10,6 +10,10 @@ export type Role =
 
 export type Permission =
   "admin:users:manage" |
+  "approvals:decide" |
+  "approvals:policies:manage" |
+  "approvals:propose" |
+  "audit:read" |
   "bridge:create" |
   "compliance:blacklist:manage" |
   "compliance:cases:manage" |
@@ -20,6 +24,8 @@ export type Permission =
   "kyc:submit" |
   "ledger:admin" |
   "ledger:read" |
+  "notifications:read:own" |
+  "notifications:webhooks:manage" |
   "payments:manage:any" |
   "payments:read:own" |
   "payments:write:own" |
@@ -56,16 +62,23 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "payments:write:own",
     "payments:manage:any",
     "kyc:submit",
+    "notifications:read:own",
+    "notifications:webhooks:manage",
+    "approvals:propose",
+    "approvals:decide",
     "reserves:read",
     "reports:read",
+    "audit:read",
     "admin:users:manage",
   ],
   "auditor": [
     "wallets:read:any",
     "transactions:read:any",
     "ledger:read",
+    "approvals:propose",
     "reserves:read",
     "reports:read",
+    "audit:read",
   ],
   "company": [
     "wallets:read:own",
@@ -80,6 +93,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "payments:write:own",
     "payments:manage:any",
     "kyc:submit",
+    "notifications:read:own",
+    "notifications:webhooks:manage",
   ],
   "compliance": [
     "wallets:read:any",
@@ -88,8 +103,12 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "kyc:review",
     "compliance:cases:manage",
     "compliance:blacklist:manage",
+    "notifications:read:own",
+    "approvals:propose",
+    "approvals:decide",
     "reserves:read",
     "reports:read",
+    "audit:read",
   ],
   "customer": [
     "wallets:read:own",
@@ -103,6 +122,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "payments:read:own",
     "payments:write:own",
     "kyc:submit",
+    "notifications:read:own",
+    "notifications:webhooks:manage",
   ],
   "treasury": [
     "wallets:read:any",
@@ -110,9 +131,13 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "transactions:reverse",
     "ledger:read",
     "ledger:admin",
+    "notifications:read:own",
+    "approvals:propose",
+    "approvals:decide",
     "reserves:read",
     "reserves:manage",
     "reports:read",
+    "audit:read",
   ],
 };
 

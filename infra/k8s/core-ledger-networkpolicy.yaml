@@ -66,6 +66,21 @@ spec:
         - podSelector:
             matchLabels:
               app: reconcile
+        # P4: services/payments settles every intent through /deposits,
+        # /withdrawals or /transfers. It owns no balance of its own, which is
+        # exactly why it has to call the ledger for each one.
+        - podSelector:
+            matchLabels:
+              app: payments
+        # P5: kyc and compliance both freeze and unfreeze wallets through
+        # POST /wallets/:id/status — the route that already exists, rather
+        # than a second answer to "can this party transact".
+        - podSelector:
+            matchLabels:
+              app: kyc
+        - podSelector:
+            matchLabels:
+              app: compliance
       ports:
         - protocol: TCP
           port: 8081

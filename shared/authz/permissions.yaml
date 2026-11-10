@@ -1,4 +1,4 @@
-# Single source of truth for DAMP's RBAC model: 6 roles, 26 permissions.
+# Single source of truth for DAMP's RBAC model: 6 roles, 32 permissions.
 #
 # Generates (see shared/authz/gen, `make authz-gen`):
 #   - shared/authz/generated/permissions.go   — services/auth-proxy's role→permission
@@ -23,11 +23,16 @@
 # its reserves are. Those stay exclusive to `compliance` and `treasury`,
 # even for `admin`.
 #
-# reserves:manage is the newest member of that list and belongs there for a
-# specific reason: it can arm a custodian drift and edit reserve targets,
-# which between them can make a reconciliation break appear or disappear.
-# Whoever runs the platform must not also be able to change what the control
-# that watches it reports.
+# reserves:manage belongs there for a specific reason: it can arm a custodian
+# drift and edit reserve targets, which between them can make a reconciliation
+# break appear or disappear. Whoever runs the platform must not also be able to
+# change what the control that watches it reports.
+#
+# approvals:policies:manage is held by NO role, deliberately. Editing a policy
+# changes how many people must agree to a payout, or whether the proposer can
+# approve their own — so granting it to a role would let that role weaken
+# maker-checker and then use it. It is provisioned by the same out-of-band
+# process that provisions the platform itself.
 
 permissions:
   # --- Wallets (core-ledger) ---
@@ -76,6 +81,12 @@ permissions:
   payments:manage:any:
     description: Manage payments across an organization's sub-accounts.
 
+  # --- Notifications (services/notifications, P4) ---
+  notifications:read:own:
+    description: Read the caller's own notifications and notification preferences.
+  notifications:webhooks:manage:
+    description: Register and remove outbound webhook endpoints.
+
   # --- KYC (services/kyc, P5) ---
   kyc:submit:
     description: Submit KYC documents and profile information.
@@ -94,9 +105,21 @@ permissions:
   reserves:manage:
     description: Manage custodians, reserve targets and fee schedules, and prepare attestations.
 
+  # --- Maker-checker (services/workflow, P5) ---
+  approvals:propose:
+    description: Open an approval request against a policy.
+  approvals:decide:
+    description: Approve or reject a pending approval request.
+  approvals:policies:manage:
+    description: Create and edit approval policies.
+
   # --- Reporting (services/reporting, P7) ---
   reports:read:
     description: Read trial balance packs, reconciliation reports, and dashboards.
+
+  # --- Audit trail (services/audit-trail, P7) ---
+  audit:read:
+    description: Read the actor audit trail and verify its hash chain and anchors.
 
   # --- Identity / platform administration (services/identity) ---
   admin:users:manage:
@@ -117,6 +140,8 @@ roles:
       - payments:read:own
       - payments:write:own
       - kyc:submit
+      - notifications:read:own
+      - notifications:webhooks:manage
 
   company:
     description: An organization account acting on behalf of itself and its sub-accounts.
@@ -133,6 +158,8 @@ roles:
       - payments:write:own
       - payments:manage:any
       - kyc:submit
+      - notifications:read:own
+      - notifications:webhooks:manage
 
   admin:
     description: Platform/IT administrator. Deliberately excludes kyc:review,
@@ -157,8 +184,13 @@ roles:
       - payments:write:own
       - payments:manage:any
       - kyc:submit
+      - notifications:read:own
+      - notifications:webhooks:manage
+      - approvals:propose
+      - approvals:decide
       - reserves:read
       - reports:read
+      - audit:read
       - admin:users:manage
 
   compliance:
@@ -170,8 +202,12 @@ roles:
       - kyc:review
       - compliance:cases:manage
       - compliance:blacklist:manage
+      - notifications:read:own
+      - approvals:propose
+      - approvals:decide
       - reserves:read
       - reports:read
+      - audit:read
 
   auditor:
     description: Independent read-only oversight.
@@ -179,8 +215,10 @@ roles:
       - wallets:read:any
       - transactions:read:any
       - ledger:read
+      - approvals:propose
       - reserves:read
       - reports:read
+      - audit:read
 
   treasury:
     description: Financial/ledger administration, reserves, and fee schedules.
@@ -190,6 +228,10 @@ roles:
       - transactions:reverse
       - ledger:read
       - ledger:admin
+      - notifications:read:own
+      - approvals:propose
+      - approvals:decide
       - reserves:read
       - reserves:manage
       - reports:read
+      - audit:read

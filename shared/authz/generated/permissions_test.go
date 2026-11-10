@@ -13,9 +13,9 @@ import "testing"
 // would still pass if a *sixth* sensitive permission were added and quietly
 // granted to admin.
 func TestAdminIsNotTheDefaultRole(t *testing.T) {
-	const totalPermissions = 26
-	// 26 defined minus the 5 excluded below.
-	const adminPermissions = 21
+	const totalPermissions = 32
+	// 32 defined, minus the 6 excluded below.
+	const adminPermissions = 26
 
 	if got := len(allPermissions()); got != totalPermissions {
 		t.Fatalf("expected %d total permissions defined, got %d", totalPermissions, got)
@@ -35,6 +35,11 @@ func TestAdminIsNotTheDefaultRole(t *testing.T) {
 		// disappear. Whoever runs the platform must not also be able to
 		// change what the control watching it reports.
 		PermissionReservesManage,
+		// Editing a policy changes how many people must agree to a payout, or
+		// whether the proposer can approve their own. A role that held this
+		// could weaken maker-checker and then use it — so NO role holds it,
+		// not even admin.
+		PermissionApprovalsPoliciesManage,
 	}
 	for _, perm := range excluded {
 		if HasPermission(RoleAdmin, perm) {
@@ -85,6 +90,10 @@ func allPermissions() map[Permission]bool {
 		PermissionPaymentsReadOwn: true, PermissionPaymentsWriteOwn: true,
 		PermissionPaymentsManageAny: true, PermissionKycSubmit: true, PermissionKycReview: true,
 		PermissionComplianceCasesManage: true, PermissionComplianceBlacklistManage: true,
+		PermissionNotificationsReadOwn: true, PermissionNotificationsWebhooksManage: true,
+		PermissionApprovalsPropose: true, PermissionApprovalsDecide: true,
+		PermissionAuditRead: true,
+		PermissionApprovalsPoliciesManage: true,
 		PermissionReservesRead: true, PermissionReservesManage: true,
 		PermissionReportsRead: true, PermissionAdminUsersManage: true,
 	}

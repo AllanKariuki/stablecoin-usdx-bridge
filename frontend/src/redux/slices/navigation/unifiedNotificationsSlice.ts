@@ -1,184 +1,156 @@
-import { createSlice, createAsyncThunk, type PayloadAction, createSelector } from '@reduxjs/toolkit';
-import type { 
-  UnifiedNotification, 
-  UnifiedNotificationsState, 
+import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit';
+import type {
+  NotificationCategory,
+  NotificationSeverity,
   NotificationStats,
-  SystemNotification,
-  NotamNotification,
-  GeneralNotification
+  PlatformNotification,
+  UnifiedNotificationsState,
 } from '../../../types/navigation/unifiedNotifications';
-import { get } from '../../../api';
+import { get, post } from '../../../api';
 
-const initialStats: NotificationStats = {
+/**
+ * Notifications, against services/notifications.
+ *
+ * `fetchNotifications` used to `GET /notifications/unified` — a route nothing
+ * has ever served — catch the resulting 404, and return a hardcoded array of
+ * three invented notices, one of which was a NOTAM. The bell showed an unread
+ * count that was always the same three items on every account.
+ *
+ * There is no fallback now. An empty list means no notifications; an error
+ * means the request failed, and the UI says which.
+ */
+
+const emptyStats: NotificationStats = {
   total: 0,
   unread: 0,
-  byCategory: { system: 0, notam: 0, general: 0 },
-  byPriority: { low: 0, medium: 0, high: 0, critical: 0 }
+  byCategory: { payment: 0, ledger: 0, reserves: 0, system: 0 },
+  bySeverity: { info: 0, success: 0, warning: 0, critical: 0 },
 };
 
 const initialState: UnifiedNotificationsState = {
   notifications: [],
   loading: false,
   error: null,
-  stats: initialStats,
-  lastUpdated: null
+  stats: emptyStats,
+  lastUpdated: null,
 };
 
-// Calculate statistics from notifications
-const calculateStats = (notifications: UnifiedNotification[]): NotificationStats => {
+/**
+ * The event name carries its own category: `payment.settled`,
+ * `damp.ledger.transaction_posted.v1`, `damp.reserves.reconciliation_break_
+ * opened.v1`. Deriving it here rather than having the backend send a second
+ * field keeps the event name the single source of truth for what an event is.
+ */
+function categoryOf(event: string): NotificationCategory {
+  if (event.startsWith('payment.') || event.startsWith('invoice.')) return 'payment';
+  if (event.includes('.ledger.')) return 'ledger';
+  if (event.includes('.reserves.')) return 'reserves';
+  return 'system';
+}
+
+interface NotificationResponse {
+  id: string;
+  event: string;
+  title: string;
+  message: string;
+  severity: NotificationSeverity;
+  data: Record<string, unknown>;
+  read: boolean;
+  createdAt: string;
+}
+
+function toNotification(row: NotificationResponse): PlatformNotification {
+  return {
+    id: row.id,
+    event: row.event,
+    title: row.title,
+    message: row.message,
+    severity: row.severity,
+    category: categoryOf(row.event),
+    data: row.data ?? {},
+    isRead: row.read,
+    timestamp: row.createdAt,
+  };
+}
+
+function statsOf(notifications: PlatformNotification[]): NotificationStats {
   const stats: NotificationStats = {
     total: notifications.length,
-    unread: notifications.filter(n => !n.isRead).length,
-    byCategory: { system: 0, notam: 0, general: 0 },
-    byPriority: { low: 0, medium: 0, high: 0, critical: 0 }
+    unread: notifications.filter((n) => !n.isRead).length,
+    byCategory: { payment: 0, ledger: 0, reserves: 0, system: 0 },
+    bySeverity: { info: 0, success: 0, warning: 0, critical: 0 },
   };
-
-  notifications.forEach(notification => {
-    stats.byCategory[notification.category]++;
-    stats.byPriority[notification.priority]++;
-  });
-
+  for (const n of notifications) {
+    stats.byCategory[n.category] += 1;
+    stats.bySeverity[n.severity] += 1;
+  }
   return stats;
-};
+}
 
-// Async thunks
-export const fetchNotifications = createAsyncThunk(
+function errorMessage(error: unknown, fallback: string): string {
+  const message = (error as { response?: { data?: { error?: string } } })?.response?.data?.error;
+  return message || (error instanceof Error ? error.message : fallback);
+}
+
+export const fetchNotifications = createAsyncThunk<PlatformNotification[], void, { rejectValue: string }>(
   'unifiedNotifications/fetchAll',
-  async () => {
+  async (_, { rejectWithValue }) => {
     try {
-      const response = await get('/notifications/unified');
-      return response as UnifiedNotification[];
-  } catch {
-      // Mock data for fallback
-      const mockNotifications: UnifiedNotification[] = [
-        {
-          id: '1',
-          title: 'System Maintenance',
-          message: 'Scheduled maintenance will begin at 02:00 UTC',
-          timestamp: new Date().toISOString(),
-          isRead: false,
-          category: 'system',
-          priority: 'high',
-          systemType: 'maintenance',
-          level: 'warning',
-          actionRequired: true
-        } as SystemNotification,
-        {
-          id: '2',
-          title: 'New General Announcement',
-          message: 'Updated flight procedures are now in effect',
-          timestamp: new Date(Date.now() - 3600000).toISOString(),
-          isRead: false,
-          category: 'general',
-          priority: 'medium',
-          type: 'announcement'
-        } as GeneralNotification
-      ];
-      return mockNotifications;
+      const response = await get<{ notifications: NotificationResponse[] }>('/notifications');
+      return response.notifications.map(toNotification);
+    } catch (error) {
+      return rejectWithValue(errorMessage(error, 'Failed to load notifications'));
     }
-  }
+  },
 );
 
-export const markNotificationAsRead = createAsyncThunk(
-  'unifiedNotifications/markAsRead',
-  async (notificationId: string) => {
+export const markNotificationRead = createAsyncThunk<string, string, { rejectValue: string }>(
+  'unifiedNotifications/markRead',
+  async (id, { rejectWithValue }) => {
     try {
-      await get(`/notifications/${notificationId}/read`);
-      return notificationId;
-  } catch {
-      // Still mark as read locally even if API fails
-      return notificationId;
+      await post<{ id: string }, Record<string, never>>(`/notifications/${id}/read`, {});
+      return id;
+    } catch (error) {
+      return rejectWithValue(errorMessage(error, 'Failed to mark as read'));
     }
-  }
+  },
 );
 
-export const markAllAsRead = createAsyncThunk(
-  'unifiedNotifications/markAllAsRead',
-  async () => {
+export const markAllNotificationsRead = createAsyncThunk<void, void, { rejectValue: string }>(
+  'unifiedNotifications/markAllRead',
+  async (_, { rejectWithValue }) => {
     try {
-      await get('/notifications/mark-all-read');
-      return true;
-  } catch {
-      // Still mark all as read locally even if API fails
-      return true;
+      await post<{ marked: number }, Record<string, never>>('/notifications/read-all', {});
+    } catch (error) {
+      return rejectWithValue(errorMessage(error, 'Failed to mark all as read'));
     }
-  }
+  },
 );
 
 const unifiedNotificationsSlice = createSlice({
   name: 'unifiedNotifications',
   initialState,
   reducers: {
-    addNotification: (state, action: PayloadAction<UnifiedNotification>) => {
-      state.notifications.unshift(action.payload);
-      state.stats = calculateStats(state.notifications);
+    /**
+     * A notification pushed over the WebSocket.
+     *
+     * Prepended and deduped by id, because the same notification can arrive
+     * twice: once live over the socket and once in the next `fetchNotifications`
+     * — and a duplicate in the list would double the unread count.
+     */
+    notificationReceived(state, action: PayloadAction<PlatformNotification>) {
+      state.notifications = [
+        action.payload,
+        ...state.notifications.filter((n) => n.id !== action.payload.id),
+      ].slice(0, 100);
+      state.stats = statsOf(state.notifications);
       state.lastUpdated = new Date().toISOString();
     },
-    
-    removeNotification: (state, action: PayloadAction<string>) => {
-      state.notifications = state.notifications.filter(n => n.id !== action.payload);
-      state.stats = calculateStats(state.notifications);
-      state.lastUpdated = new Date().toISOString();
+    clearAllNotifications(state) {
+      state.notifications = [];
+      state.stats = emptyStats;
     },
-    
-    updateNotification: (state, action: PayloadAction<{ id: string; updates: Partial<UnifiedNotification> }>) => {
-      const { id, updates } = action.payload;
-      const index = state.notifications.findIndex(n => n.id === id);
-      if (index !== -1) {
-        Object.assign(state.notifications[index], updates);
-        state.stats = calculateStats(state.notifications);
-        state.lastUpdated = new Date().toISOString();
-      }
-    },
-    
-
-    
-    addNotamNotification: (state, action: PayloadAction<Omit<NotamNotification, 'id' | 'timestamp' | 'isRead' | 'category'>>) => {
-      const notification: NotamNotification = {
-        ...action.payload,
-        id: `notam_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        timestamp: new Date().toISOString(),
-        isRead: false,
-        category: 'notam',
-        title: `NOTAM ${action.payload.notam_id}`,
-        message: action.payload.description
-      };
-      state.notifications.unshift(notification);
-      state.stats = calculateStats(state.notifications);
-      state.lastUpdated = new Date().toISOString();
-    },
-    
-    addSystemNotification: (state, action: PayloadAction<Omit<SystemNotification, 'id' | 'timestamp' | 'isRead' | 'category'>>) => {
-      const notification: SystemNotification = {
-        ...action.payload,
-        id: `system_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        timestamp: new Date().toISOString(),
-        isRead: false,
-        category: 'system'
-      };
-      state.notifications.unshift(notification);
-      state.stats = calculateStats(state.notifications);
-      state.lastUpdated = new Date().toISOString();
-    },
-    
-    addGeneralNotification: (state, action: PayloadAction<Omit<GeneralNotification, 'id' | 'timestamp' | 'isRead' | 'category'>>) => {
-      const notification: GeneralNotification = {
-        ...action.payload,
-        id: `general_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        timestamp: new Date().toISOString(),
-        isRead: false,
-        category: 'general'
-      };
-      state.notifications.unshift(notification);
-      state.stats = calculateStats(state.notifications);
-      state.lastUpdated = new Date().toISOString();
-    },
-    
-    clearError: (state) => {
-      state.error = null;
-    }
   },
-  
   extraReducers: (builder) => {
     builder
       .addCase(fetchNotifications.pending, (state) => {
@@ -186,101 +158,44 @@ const unifiedNotificationsSlice = createSlice({
         state.error = null;
       })
       .addCase(fetchNotifications.fulfilled, (state, action) => {
-        state.loading = false;
         state.notifications = action.payload;
-        state.stats = calculateStats(action.payload);
+        state.stats = statsOf(action.payload);
+        state.loading = false;
         state.lastUpdated = new Date().toISOString();
       })
       .addCase(fetchNotifications.rejected, (state, action) => {
         state.loading = false;
-        state.error = action.error.message || 'Failed to fetch notifications';
+        state.error = action.payload ?? 'Failed to load notifications';
       })
-      
-      .addCase(markNotificationAsRead.fulfilled, (state, action) => {
-        const notification = state.notifications.find(n => n.id === action.payload);
-        if (notification && !notification.isRead) {
-          notification.isRead = true;
-          notification.readAt = new Date().toISOString();
-          state.stats = calculateStats(state.notifications);
-          state.lastUpdated = new Date().toISOString();
-        }
+      .addCase(markNotificationRead.fulfilled, (state, action) => {
+        const found = state.notifications.find((n) => n.id === action.payload);
+        if (found) found.isRead = true;
+        state.stats = statsOf(state.notifications);
       })
-      
-      .addCase(markAllAsRead.fulfilled, (state) => {
-        state.notifications.forEach(notification => {
-          if (!notification.isRead) {
-            notification.isRead = true;
-            notification.readAt = new Date().toISOString();
-          }
+      .addCase(markAllNotificationsRead.fulfilled, (state) => {
+        state.notifications.forEach((n) => {
+          n.isRead = true;
         });
-        state.stats = calculateStats(state.notifications);
-        state.lastUpdated = new Date().toISOString();
+        state.stats = statsOf(state.notifications);
       });
-  }
+  },
 });
 
-// Selectors
-// export const selectAllNotifications = (state: { unifiedNotifications: UnifiedNotificationsState }) => 
-//   state.unifiedNotifications.notifications;
-
-// export const selectNotificationsByCategory = (category: 'system' | 'notam' | 'general') => 
-//   (state: { unifiedNotifications: UnifiedNotificationsState }) =>
-//     state.unifiedNotifications.notifications.filter(n => n.category === category);
-
-// export const selectUnreadNotifications = (state: { unifiedNotifications: UnifiedNotificationsState }) =>
-//   state.unifiedNotifications.notifications.filter(n => !n.isRead);
-export const selectAllNotifications = (state: { unifiedNotifications: UnifiedNotificationsState }) => 
-  state.unifiedNotifications.notifications;
-
-// Memoized selector for notifications by category
-export const selectNotificationsByCategory = createSelector(
-  [
-    selectAllNotifications,
-    (_state: { unifiedNotifications: UnifiedNotificationsState }, category: 'system' | 'notam' | 'general') => category
-  ],
-  (notifications, category) => notifications.filter(n => n.category === category)
-);
-
-// Alternative approach: Create individual memoized selectors for each category
-export const selectGeneralNotifications = createSelector(
-  [selectAllNotifications],
-  (notifications) => notifications.filter(n => n.category === 'general')
-);
-
-export const selectSystemNotifications = createSelector(
-  [selectAllNotifications],
-  (notifications) => notifications.filter(n => n.category === 'system')
-);
-
-export const selectNotamNotifications = createSelector(
-  [selectAllNotifications],
-  (notifications) => notifications.filter(n => n.category === 'notam')
-);
-
-export const selectUnreadNotifications = createSelector(
-  [selectAllNotifications],
-  (notifications) => notifications.filter(n => !n.isRead)
-);
-
-export const selectNotificationStats = (state: { unifiedNotifications: UnifiedNotificationsState }) =>
-  state.unifiedNotifications.stats;
-
-export const selectNotificationsLoading = (state: { unifiedNotifications: UnifiedNotificationsState }) =>
-  state.unifiedNotifications.loading;
-
-export const selectNotificationsError = (state: { unifiedNotifications: UnifiedNotificationsState }) =>
-  state.unifiedNotifications.error;
-
-
-
-export const {
-  addNotification,
-  removeNotification,
-  updateNotification,
-  addNotamNotification,
-  addSystemNotification,
-  addGeneralNotification,
-  clearError
-} = unifiedNotificationsSlice.actions;
-
+export const { notificationReceived, clearAllNotifications } = unifiedNotificationsSlice.actions;
 export default unifiedNotificationsSlice.reducer;
+
+// --- Selectors -------------------------------------------------------------
+
+const selectSlice = (state: { unifiedNotifications: UnifiedNotificationsState }) => state.unifiedNotifications;
+
+export const selectAllNotifications = createSelector(selectSlice, (s) => s.notifications);
+export const selectNotificationStats = createSelector(selectSlice, (s) => s.stats);
+export const selectNotificationsLoading = createSelector(selectSlice, (s) => s.loading);
+export const selectNotificationsError = createSelector(selectSlice, (s) => s.error);
+
+export const selectNotificationsByCategory = (category: NotificationCategory) =>
+  createSelector(selectAllNotifications, (all) => all.filter((n) => n.category === category));
+
+export const selectUnreadNotifications = createSelector(selectAllNotifications, (all) =>
+  all.filter((n) => !n.isRead),
+);
