@@ -10,7 +10,6 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/chainclients"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/config"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
-	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/reconciliation"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
 
 	"github.com/gofiber/fiber/v2"
@@ -57,8 +56,12 @@ func main() {
 
 	ledgerSvc := ledger.NewService(repo, cfg.Fees())
 
-	// The API no longer runs sagas — cmd/worker does — but reconciliation
-	// still needs both chain clients to read supply.
+	// The API no longer runs sagas — cmd/worker does — and no longer runs
+	// reconciliation either: that moved to cmd/reconcile, scheduled as a
+	// CronJob with concurrencyPolicy: Forbid, because the in-process ticker
+	// ran once per replica and scaling the API tripled the reconciliation
+	// load for no extra assurance. What the API still needs both clients for
+	// is CustodyAddress on wallet creation.
 	clients, err := chainclients.Dial(logger, chainclients.Params{
 		EthRPCURL:                cfg.EthRPCURL,
 		USDXProxyAddress:         cfg.USDXProxyAddress,
@@ -72,14 +75,6 @@ func main() {
 		logger.Error("connecting to chains", slog.Any("error", err))
 		os.Exit(1)
 	}
-
-	// RunForever has no way to be stopped — it takes no context and its
-	// ticker is never cancelled. It also runs once per replica rather than
-	// once total. Both are known, tracked for the P3 extraction into a
-	// leader-elected CronJob (see the reconciliation section of the plan);
-	// not fixed here so this doesn't pretend to support cancellation it
-	// doesn't have.
-	go reconciliation.NewJob(repo, clients.Ethereum, clients.Solana).RunForever()
 
 	health := platform.NewHealth(serviceName, version, commit)
 	health.AddCheck("database", repo.Ping)

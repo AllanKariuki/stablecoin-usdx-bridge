@@ -350,6 +350,13 @@ var ErrNoTrustBankSnapshot = errors.New("no trust bank snapshot recorded yet")
 // LatestTrustBankBalance returns the most recently recorded fiat reserve
 // balance and when it was captured, for the reconciliation job to compare
 // against circulating on-chain supply.
+//
+// Deprecated: it reads one row and therefore one custodian. Use
+// CustodianBalance, which sums each custodian's latest statement for a
+// currency — a second custodian would otherwise silently replace the first at
+// whichever as_of landed last. Kept because it is the narrower question
+// ("what is the single most recent thing any custodian said") and a few
+// operator views still ask exactly that.
 func (r *Repository) LatestTrustBankBalance() (*big.Int, time.Time, error) {
 	var row TrustBankSnapshot
 	err := r.db.Order("as_of DESC").First(&row).Error
