@@ -13,6 +13,7 @@ export type Permission =
   "approvals:decide" |
   "approvals:policies:manage" |
   "approvals:propose" |
+  "audit:read" |
   "bridge:create" |
   "compliance:blacklist:manage" |
   "compliance:cases:manage" |
@@ -67,6 +68,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "approvals:decide",
     "reserves:read",
     "reports:read",
+    "audit:read",
     "admin:users:manage",
   ],
   "auditor": [
@@ -76,6 +78,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "approvals:propose",
     "reserves:read",
     "reports:read",
+    "audit:read",
   ],
   "company": [
     "wallets:read:own",
@@ -105,6 +108,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "approvals:decide",
     "reserves:read",
     "reports:read",
+    "audit:read",
   ],
   "customer": [
     "wallets:read:own",
@@ -133,6 +137,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "reserves:read",
     "reserves:manage",
     "reports:read",
+    "audit:read",
   ],
 };
 

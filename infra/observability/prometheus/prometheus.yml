@@ -97,6 +97,16 @@ scrape_configs:
   # The signer is scraped over plain HTTP in local development only. With
   # mTLS on, Prometheus needs its own client certificate — see
   # infra/k8s/signer-deployment.yaml's note.
+  - job_name: audit-trail
+    static_configs:
+      - targets: ["host.docker.internal:8085"]
+        labels: { service: audit-trail }
+
+  - job_name: reporting
+    static_configs:
+      - targets: ["host.docker.internal:3008"]
+        labels: { service: reporting }
+
   - job_name: signer
     static_configs:
       - targets: ["host.docker.internal:8084"]

@@ -239,4 +239,30 @@ var Default = Table{
 	// somebody's tokens — and both still go through maker-checker.
 	compile("GET", "/compliance/enforcement", authz.PermissionComplianceCasesManage),
 	compile("POST", "/compliance/enforcement", authz.PermissionComplianceBlacklistManage),
+
+	// Reporting (P7). Every report checks its own required_permission inside
+	// the service as well — the definition names it, so adding a report that
+	// exposes more than its siblings does not mean editing this table and
+	// hoping somebody notices.
+	compile("GET", "/reports", authz.PermissionReportsRead),
+	compile("GET", "/reports/runs", authz.PermissionReportsRead),
+	compile("GET", "/reports/runs/:runId", authz.PermissionReportsRead),
+	compile("GET", "/reports/runs/:runId/export.csv", authz.PermissionReportsRead),
+	compile("POST", "/reports/:definitionId/run", authz.PermissionReportsRead),
+
+	// A Superset guest token. Deliberately NOT gated on reports:read: a
+	// customer embedding their own payments dashboard holds payments:read:own
+	// and nothing else, and the actual restriction is the row-level security
+	// clause the token carries — which services/reporting derives from the
+	// caller's full permission set and refuses to issue without.
+	compile("POST", "/reports/dashboards/:dashboardId/guest-token",
+		authz.PermissionReportsRead, authz.PermissionPaymentsReadOwn, authz.PermissionWalletsReadOwn),
+
+	// Audit trail (P7). Read-only through the gateway; recording is
+	// /internal/events, which services post to inside the cluster and which
+	// has no rule here at all.
+	compile("GET", "/audit/events", authz.PermissionAuditRead),
+	compile("GET", "/audit/events/:eventId/proof", authz.PermissionAuditRead),
+	compile("GET", "/audit/anchors", authz.PermissionAuditRead),
+	compile("GET", "/audit/verify", authz.PermissionAuditRead),
 }
