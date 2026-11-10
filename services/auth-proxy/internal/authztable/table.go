@@ -193,4 +193,50 @@ var Default = Table{
 	compile("GET", "/webhooks", authz.PermissionNotificationsWebhooksManage),
 	compile("POST", "/webhooks", authz.PermissionNotificationsWebhooksManage),
 	compile("DELETE", "/webhooks/:webhookId", authz.PermissionNotificationsWebhooksManage),
+
+	// Maker-checker (P5).
+	//
+	// Proposing and deciding are separate permissions because they are
+	// separate acts: `auditor` holds propose and not decide, because
+	// independent oversight that can approve is not independent.
+	compile("GET", "/approval-policies", authz.PermissionApprovalsPropose, authz.PermissionApprovalsDecide),
+	compile("GET", "/approval-requests", authz.PermissionApprovalsPropose, authz.PermissionApprovalsDecide),
+	compile("GET", "/approval-requests/:requestId", authz.PermissionApprovalsPropose, authz.PermissionApprovalsDecide),
+	compile("POST", "/approval-requests", authz.PermissionApprovalsPropose),
+	compile("POST", "/approval-requests/:requestId/cancel", authz.PermissionApprovalsPropose),
+	compile("POST", "/approval-requests/:requestId/approve", authz.PermissionApprovalsDecide),
+	compile("POST", "/approval-requests/:requestId/reject", authz.PermissionApprovalsDecide),
+
+	// KYC (P5). A customer submits their own; a compliance officer reviews
+	// anyone's. The split between kyc:submit and kyc:review is what stops the
+	// two being the same person.
+	compile("GET", "/kyc/status", authz.PermissionKycSubmit),
+	compile("GET", "/kyc/cases", authz.PermissionKycSubmit, authz.PermissionKycReview),
+	compile("POST", "/kyc/cases", authz.PermissionKycSubmit),
+	compile("POST", "/kyc/cases/:caseId/documents", authz.PermissionKycSubmit),
+	compile("POST", "/kyc/cases/:caseId/documents/upload-url", authz.PermissionKycSubmit),
+	compile("POST", "/kyc/cases/:caseId/submit", authz.PermissionKycSubmit),
+	compile("GET", "/kyc/tiers", authz.PermissionKycSubmit, authz.PermissionKycReview),
+
+	compile("GET", "/kyc/queue", authz.PermissionKycReview),
+	compile("GET", "/kyc/cases/:caseId", authz.PermissionKycReview),
+	compile("POST", "/kyc/cases/:caseId/review", authz.PermissionKycReview),
+	compile("GET", "/kyc/parties/:partyId/tier", authz.PermissionKycReview, authz.PermissionComplianceCasesManage),
+
+	// Compliance (P5).
+	compile("GET", "/compliance/alerts", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/alerts/:alertId/dismiss", authz.PermissionComplianceCasesManage),
+	compile("GET", "/compliance/cases", authz.PermissionComplianceCasesManage),
+	compile("GET", "/compliance/cases/:caseId", authz.PermissionComplianceCasesManage),
+	compile("GET", "/compliance/cases/:caseId/sar", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/cases/:caseId/notes", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/cases/:caseId/assign", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/cases/:caseId/close", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/screenings", authz.PermissionComplianceCasesManage),
+
+	// Blacklisting and pausing. A separate permission from case management,
+	// because reading and investigating is a different act from freezing
+	// somebody's tokens — and both still go through maker-checker.
+	compile("GET", "/compliance/enforcement", authz.PermissionComplianceCasesManage),
+	compile("POST", "/compliance/enforcement", authz.PermissionComplianceBlacklistManage),
 }

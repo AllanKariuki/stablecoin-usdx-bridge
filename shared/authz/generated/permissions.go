@@ -28,6 +28,12 @@ const (
 const (
 	// Manage parties, organizations, memberships, and role assignments.
 	PermissionAdminUsersManage Permission = "admin:users:manage"
+	// Approve or reject a pending approval request.
+	PermissionApprovalsDecide Permission = "approvals:decide"
+	// Create and edit approval policies.
+	PermissionApprovalsPoliciesManage Permission = "approvals:policies:manage"
+	// Open an approval request against a policy.
+	PermissionApprovalsPropose Permission = "approvals:propose"
 	// Bridge USD-X between chains.
 	PermissionBridgeCreate Permission = "bridge:create"
 	// Blacklist/pause an address or contract on-chain via the signer service.
@@ -109,6 +115,8 @@ var RolePermissions = map[Role][]Permission{
 		PermissionKycSubmit,
 		PermissionNotificationsReadOwn,
 		PermissionNotificationsWebhooksManage,
+		PermissionApprovalsPropose,
+		PermissionApprovalsDecide,
 		PermissionReservesRead,
 		PermissionReportsRead,
 		PermissionAdminUsersManage,
@@ -117,6 +125,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionWalletsReadAny,
 		PermissionTransactionsReadAny,
 		PermissionLedgerRead,
+		PermissionApprovalsPropose,
 		PermissionReservesRead,
 		PermissionReportsRead,
 	},
@@ -144,6 +153,8 @@ var RolePermissions = map[Role][]Permission{
 		PermissionComplianceCasesManage,
 		PermissionComplianceBlacklistManage,
 		PermissionNotificationsReadOwn,
+		PermissionApprovalsPropose,
+		PermissionApprovalsDecide,
 		PermissionReservesRead,
 		PermissionReportsRead,
 	},
@@ -169,6 +180,8 @@ var RolePermissions = map[Role][]Permission{
 		PermissionLedgerRead,
 		PermissionLedgerAdmin,
 		PermissionNotificationsReadOwn,
+		PermissionApprovalsPropose,
+		PermissionApprovalsDecide,
 		PermissionReservesRead,
 		PermissionReservesManage,
 		PermissionReportsRead,

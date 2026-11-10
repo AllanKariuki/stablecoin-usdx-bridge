@@ -10,6 +10,9 @@ export type Role =
 
 export type Permission =
   "admin:users:manage" |
+  "approvals:decide" |
+  "approvals:policies:manage" |
+  "approvals:propose" |
   "bridge:create" |
   "compliance:blacklist:manage" |
   "compliance:cases:manage" |
@@ -60,6 +63,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "kyc:submit",
     "notifications:read:own",
     "notifications:webhooks:manage",
+    "approvals:propose",
+    "approvals:decide",
     "reserves:read",
     "reports:read",
     "admin:users:manage",
@@ -68,6 +73,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "wallets:read:any",
     "transactions:read:any",
     "ledger:read",
+    "approvals:propose",
     "reserves:read",
     "reports:read",
   ],
@@ -95,6 +101,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "compliance:cases:manage",
     "compliance:blacklist:manage",
     "notifications:read:own",
+    "approvals:propose",
+    "approvals:decide",
     "reserves:read",
     "reports:read",
   ],
@@ -120,6 +128,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "ledger:read",
     "ledger:admin",
     "notifications:read:own",
+    "approvals:propose",
+    "approvals:decide",
     "reserves:read",
     "reserves:manage",
     "reports:read",

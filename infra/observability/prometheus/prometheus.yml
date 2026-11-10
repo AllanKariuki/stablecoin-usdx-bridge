@@ -78,3 +78,18 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:3000"]
         labels: { service: notifications }
+
+  - job_name: workflow
+    static_configs:
+      - targets: ["host.docker.internal:3006"]
+        labels: { service: workflow }
+
+  - job_name: kyc
+    static_configs:
+      - targets: ["host.docker.internal:3007"]
+        labels: { service: kyc }
+
+  - job_name: compliance
+    static_configs:
+      - targets: ["host.docker.internal:3004"]
+        labels: { service: compliance }
