@@ -43,17 +43,29 @@ jobs:
           go-version-file: go.work
 
       - name: go vet
-        run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/...
+        run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/...
+
+      - name: Create signer's test database
+        # Service containers can't mount docker-entrypoint-initdb.d, so this is
+        # infra/postgres/init/05-p6-databases.sql run by hand.
+        run: |
+          PGPASSWORD=bridge psql -h localhost -p 55433 -U bridge -d bridge \
+            -c "CREATE ROLE signer WITH LOGIN PASSWORD 'signer';" \
+            -c "CREATE DATABASE signer_test OWNER signer;"
 
       - name: go test (unit + integration)
         env:
           LEDGER_TEST_DATABASE_URL: postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
+          # Its own database, not the ledger's: both migrate with goose's
+          # default version table, so sharing one makes signer skip its
+          # migrations (see the Makefile's SIGNER_TEST_DATABASE_URL).
+          SIGNER_TEST_DATABASE_URL: postgres://signer:signer@localhost:55433/signer_test?sslmode=disable
         run: |
           set -euo pipefail
           # -p 1: the core-ledger packages share this one database and assert
           # on shared GL account deltas, so parallel packages corrupt each
           # other's before/after windows (see the Makefile's test-integration).
-          go test -p 1 ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
+          go test -p 1 ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... -count=1 -race -v 2>&1 | tee /tmp/go-test.log
           # Any skip, not just TestIntegration*: P2 added database-backed
           # suites under other names (TestConcurrentClaim,
           # TestSagaResumesAfterCrash, TestIdempotent*), and every t.Skip in

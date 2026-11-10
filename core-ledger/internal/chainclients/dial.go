@@ -7,6 +7,7 @@
 package chainclients
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/chainclients/ethereum"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/chainclients/signerclient"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/chainclients/solana"
 )
 
@@ -26,6 +28,19 @@ type Params struct {
 	USDXProgramID            string
 	USDXMintAddress          string
 	SolanaRelayerKeypairPath string
+
+	// SignerURL turns both chain clients over to services/signer. When it is
+	// set, the two key fields above are ignored entirely — which is the point
+	// of P6: *"no private key material in any process env or on any disk."*
+	//
+	// The P2 Signer seam is what makes this an adapter swap rather than a
+	// rewrite. Neither bridge.ChainClient nor the saga changes.
+	SignerURL      string
+	SignerCertPath string
+	SignerKeyPath  string
+	SignerCAPath   string
+	SignerEthKeyID string
+	SignerSolKeyID string
 }
 
 type Clients struct {
@@ -35,8 +50,36 @@ type Clients struct {
 }
 
 func Dial(logger *slog.Logger, p Params) (*Clients, error) {
+	var signer *signerclient.Client
+	if p.SignerURL != "" {
+		var err error
+		signer, err = signerclient.New(p.SignerURL, p.SignerCertPath, p.SignerKeyPath, p.SignerCAPath)
+		if err != nil {
+			return nil, fmt.Errorf("connecting to the signer: %w", err)
+		}
+		if p.SignerCertPath == "" {
+			// Loud, because it is the difference between "the keys are in a
+			// vault" and "the keys are in a vault anyone on the network can
+			// ask". The signer refuses to start this way outside local
+			// development; this is the client side of the same warning.
+			logger.Warn("talking to the signer WITHOUT a client certificate — local development only",
+				slog.String("signer_url", p.SignerURL))
+		}
+		logger.Info("chain signing delegated to services/signer; no key material is held in this process",
+			slog.String("signer_url", p.SignerURL))
+	}
+
 	var eth *ethereum.Client
 	if err := retryDial(logger, "ethereum", func() (err error) {
+		if signer != nil {
+			var remote ethereum.Signer
+			remote, err = ethereum.NewRemoteSigner(context.Background(), signer, orDefault(p.SignerEthKeyID, "eth-relayer"))
+			if err != nil {
+				return err
+			}
+			eth, err = ethereum.NewClientWithSigner(p.EthRPCURL, p.USDXProxyAddress, remote)
+			return err
+		}
 		eth, err = ethereum.NewClient(p.EthRPCURL, p.USDXProxyAddress, p.EthRelayerPrivKey)
 		return err
 	}); err != nil {
@@ -46,6 +89,15 @@ func Dial(logger *slog.Logger, p Params) (*Clients, error) {
 
 	var sol *solana.Client
 	if err := retryDial(logger, "solana", func() (err error) {
+		if signer != nil {
+			var remote solana.Signer
+			remote, err = solana.NewRemoteSigner(context.Background(), signer, orDefault(p.SignerSolKeyID, "sol-relayer"))
+			if err != nil {
+				return err
+			}
+			sol, err = solana.NewClientWithSigner(p.SolanaRPCURL, p.USDXProgramID, p.USDXMintAddress, remote)
+			return err
+		}
 		sol, err = solana.NewClient(p.SolanaRPCURL, p.USDXProgramID, p.USDXMintAddress, p.SolanaRelayerKeypairPath)
 		return err
 	}); err != nil {
@@ -54,6 +106,13 @@ func Dial(logger *slog.Logger, p Params) (*Clients, error) {
 	logger.Info("connected to solana network")
 
 	return &Clients{Ethereum: eth, Solana: sol, Router: bridge.NewRouter(eth, sol)}, nil
+}
+
+func orDefault(v, fallback string) string {
+	if v == "" {
+		return fallback
+	}
+	return v
 }
 
 // CustodyAddress reports the platform's own on-chain address for a chain it

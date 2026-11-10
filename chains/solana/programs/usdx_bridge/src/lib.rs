@@ -45,6 +45,50 @@ pub mod usdx_bridge {
     pub fn approve_bridge_delegate(ctx: Context<ApproveBridgeDelegate>, amount: u64) -> Result<()> {
         handle_approve_bridge_delegate(ctx, amount)
     }
+
+    // ---- Configuration (P6) ------------------------------------------------
+    //
+    // These four exist so that the relayer is a value rather than a constant.
+    // Before them, rotating a key — the thing you do the moment one is
+    // suspected of leaking — meant rebuilding and redeploying the program,
+    // with a window in between during which the compromised key still worked.
+    // The risk register calls it R6 and gates rotation on exactly this.
+
+    pub fn initialize_config(ctx: Context<InitializeConfig>, admin: Pubkey) -> Result<()> {
+        handle_initialize_config(ctx, admin)
+    }
+
+    pub fn set_relayer(ctx: Context<AdminOnly>, new_relayer: Pubkey) -> Result<()> {
+        handle_set_relayer(ctx, new_relayer)
+    }
+
+    pub fn set_admin(ctx: Context<AdminOnly>, new_admin: Pubkey) -> Result<()> {
+        handle_set_admin(ctx, new_admin)
+    }
+
+    // Ethereum's USDX has had a pause since it was written. Solana had no
+    // equivalent, so the only answer to a compromise was revoking the mint
+    // authority — irreversible, and it takes the honest users with it.
+    pub fn set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
+        handle_set_paused(ctx, paused)
+    }
+}
+
+#[event]
+pub struct RelayerChanged {
+    pub previous: Pubkey,
+    pub current: Pubkey,
+}
+
+#[event]
+pub struct AdminChanged {
+    pub previous: Pubkey,
+    pub current: Pubkey,
+}
+
+#[event]
+pub struct PausedChanged {
+    pub paused: bool,
 }
 
 #[event]
