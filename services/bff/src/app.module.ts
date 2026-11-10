@@ -6,6 +6,7 @@ import { WalletsModule } from './wallets/wallets.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { MoneyMovementModule } from './money-movement/money-movement.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { UpstreamModule } from './upstream/upstream.module';
 
 /**
  * A factory function, not a plain `@Module`-decorated class — same reason
@@ -28,6 +29,7 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       TransactionsModule,
       MoneyMovementModule,
       DashboardModule,
+      UpstreamModule,
     ],
   };
 }

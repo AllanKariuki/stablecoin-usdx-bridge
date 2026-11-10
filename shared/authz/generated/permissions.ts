@@ -20,6 +20,8 @@ export type Permission =
   "kyc:submit" |
   "ledger:admin" |
   "ledger:read" |
+  "notifications:read:own" |
+  "notifications:webhooks:manage" |
   "payments:manage:any" |
   "payments:read:own" |
   "payments:write:own" |
@@ -56,6 +58,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "payments:write:own",
     "payments:manage:any",
     "kyc:submit",
+    "notifications:read:own",
+    "notifications:webhooks:manage",
     "reserves:read",
     "reports:read",
     "admin:users:manage",
@@ -80,6 +84,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "payments:write:own",
     "payments:manage:any",
     "kyc:submit",
+    "notifications:read:own",
+    "notifications:webhooks:manage",
   ],
   "compliance": [
     "wallets:read:any",
@@ -88,6 +94,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "kyc:review",
     "compliance:cases:manage",
     "compliance:blacklist:manage",
+    "notifications:read:own",
     "reserves:read",
     "reports:read",
   ],
@@ -103,6 +110,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "payments:read:own",
     "payments:write:own",
     "kyc:submit",
+    "notifications:read:own",
+    "notifications:webhooks:manage",
   ],
   "treasury": [
     "wallets:read:any",
@@ -110,6 +119,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "transactions:reverse",
     "ledger:read",
     "ledger:admin",
+    "notifications:read:own",
     "reserves:read",
     "reserves:manage",
     "reports:read",

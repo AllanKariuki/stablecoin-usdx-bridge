@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments
+  labels:
+    app: payments
+spec:
+  # Safe to scale. Every replica reads and writes the same Postgres, and the
+  # two places concurrency matters are both guarded by the database rather
+  # than by a process being careful: payment_intents.idempotency_key is
+  # UNIQUE, and markSettled's `WHERE ledger_tx_id = ''` predicate means the
+  # loser of a settlement race updates zero rows and posts no second journal
+  # transaction.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payments
+  template:
+    metadata:
+      labels:
+        app: payments
+    spec:
+      containers:
+        - name: payments
+          # TODO: point at the real registry once CI publishes an image.
+          image: <Image>
+          ports:
+            - containerPort: 3003
+          envFrom:
+            - secretRef:
+                name: payments-secrets   # MPESA_* credentials live here
+          env:
+            - name: PORT
+              value: "3003"
+            - name: DATABASE_URL
+              value: "postgres://payments:payments@postgres.default.svc.cluster.local:5432/payments?sslmode=disable"
+            - name: CORE_LEDGER_URL
+              value: "http://core-ledger.default.svc.cluster.local:8081"
+            - name: NOTIFICATIONS_URL
+              value: "http://notifications.default.svc.cluster.local:3000"
+          resources:
+            requests:
+              memory: "192Mi"
+              cpu: "100m"
+            limits:
+              memory: "384Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3003
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 3003
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments
+  labels:
+    app: payments
+spec:
+  selector:
+    app: payments
+  ports:
+    - name: http
+      protocol: TCP
+      port: 3003
+      targetPort: 3003
+---
+# payments accepts traffic from bff (the customer surface, forwarded) and from
+# the ingress controller — the latter only for POST /rails/:rail/callback,
+# which Safaricom posts to and which cannot go through the gateway because
+# Daraja does not hold a DAMP token.
+#
+# That callback path is the one genuinely externally-reachable endpoint in
+# this service, and it is safe to expose for a specific reason: it is matched
+# to an intent by a rail reference this platform issued and the rail echoed
+# back, nothing in the body decides how much money moves except an amount that
+# is re-checked, and an unmatched reference is logged and dropped.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: payments-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: payments
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: bff
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              name: observability
+      ports:
+        - protocol: TCP
+          port: 3003
