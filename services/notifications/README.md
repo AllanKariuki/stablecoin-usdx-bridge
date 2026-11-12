@@ -13,7 +13,7 @@ Two doors, on purpose.
 
 | | |
 |---|---|
-| `POST /internal/events` | The **immediate** path. payments calls it the moment a settlement lands, so the toast appears while the page is still open. Best-effort by design. |
+| `POST /internal/events` | payments' outbox relay posts here. The event row was written in the same transaction as the settlement, and the relay retries with backoff, so a notifications outage delays the email rather than losing it. `dedupeKey` is the outbox row id. |
 | `POST /internal/outbox` | The **durable** path. core-ledger's transactional outbox relay posts here, which means the event was written inside the same `SERIALIZABLE` transaction that moved the money — "the journal was posted" and "somebody was told" cannot diverge. |
 
 The second one is where a reconciliation break arrives. That is the last link
@@ -77,6 +77,24 @@ token travels as a query parameter and is verified in `src/ws/ws.auth.ts` —
 the one place in the platform that verifies a JWT outside auth-proxy. It
 establishes *who* is connecting and nothing else.
 
+**Fan-out across replicas.** A socket is held by exactly one replica, so with
+two of them a push produced on B used to miss a customer connected to A. With
+`NATS_URL` set, every in-app push is published on core NATS
+(`live.notifications.push.v1`) and every replica — the publisher included —
+delivers what it hears to its own sockets (`src/ws/live-fanout.ts`).
+
+- **Core pub/sub, not JetStream, and deliberately outside `damp.>`.** The
+  durable record is `deliveries`; the socket is a latency optimisation over
+  it. core-ledger's DAMP stream captures `damp.>` with 30-day retention, and
+  a push published there would be stored, body and all, for a month.
+- **No `NATS_URL` = in-process**, exactly as before. One replica — local
+  development — needs no broker.
+- **NATS down = in-process**, not an error, and not a readiness failure:
+  taking notifications out of rotation over a degraded toast would also stop
+  the email path. Missed pushes are recovered on reconnect from `deliveries`.
+- A fanned-out push records `recipients: null` in the delivery row: each
+  replica delivers to its own sockets and nobody counts the total.
+
 Sockets that stop answering pings are reaped every 30s. A laptop that went
 into a tunnel leaves a TCP connection that looks open for a long time, and
 every one of those is a party this service wrongly believes is online.
@@ -96,6 +114,17 @@ re-read from an API proves nothing, because anyone who can read it can forge
 the signature.
 
 Deliveries are queued and retried with exponential backoff (8 attempts, then
-DEAD). An endpoint that fails 20 times consecutively is deactivated — it is
+DEAD). Queuing dedupes on the producer's event id per endpoint, so an outbox
+replay does not send a subscriber the same event twice. An endpoint that fails 20 times consecutively is deactivated — it is
 gone, not busy, and draining against a URL nobody is listening at wastes the
 budget of the ones that are.
+
+## Tests
+
+`pnpm --filter @damp/notifications test`. Two suites need real backing
+services, never the dev ones:
+
+- `test/delivery-dedupe.e2e-spec.ts` — `notifications_test`
+  (`NOTIFICATIONS_TEST_DATABASE_URL`).
+- `test/live-fanout.e2e-spec.ts` — two replicas in one process sharing
+  compose's NATS on `:54222` (`NOTIFICATIONS_TEST_NATS_URL`).

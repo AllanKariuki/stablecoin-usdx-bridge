@@ -5,17 +5,16 @@ metadata:
   labels:
     app: notifications
 spec:
-  # Two replicas, with one caveat worth knowing: WebSocket fan-out is
-  # per-process. A notification is delivered to the sockets *this* replica
-  # holds, so with two replicas a customer connected to replica A misses a
-  # push produced on replica B.
+  # Two replicas. A socket is held by exactly one of them, so a push produced
+  # on replica B only reaches a customer connected to A because every replica
+  # publishes live pushes to NATS and delivers what it hears to its own
+  # sockets (NATS_URL below; see src/ws/live-fanout.ts).
   #
-  # It is tolerable rather than ignored, because the socket is not the durable
-  # path: every notification is written to `deliveries` first and the client
-  # re-fetches the list on every (re)connect, so a missed push costs latency,
-  # not information. Making it exact means a shared pub/sub — NATS is already
-  # in the cluster as of P3 — and is the right fix when a customer's socket
-  # count justifies it.
+  # If NATS is unreachable each replica degrades to its own sockets only.
+  # That is tolerable rather than an outage because the socket is not the
+  # durable path: every notification is written to `deliveries` first and the
+  # client re-fetches the list on every (re)connect, so a missed push costs
+  # latency, not information.
   replicas: 2
   selector:
     matchLabels:
@@ -43,6 +42,11 @@ spec:
               value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
             - name: IDENTITY_SERVICE_URL
               value: "http://identity.default.svc.cluster.local:3001"
+            # Core pub/sub only (no JetStream) on live.notifications.push.v1.
+            # Like Postgres and Keycloak, NATS is a backing service these
+            # manifests point at rather than deploy.
+            - name: NATS_URL
+              value: "nats://nats.default.svc.cluster.local:4222"
           resources:
             requests:
               memory: "192Mi"

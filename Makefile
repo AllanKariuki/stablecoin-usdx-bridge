@@ -146,9 +146,10 @@ test-sol:
 	cd chains/solana && anchor build --arch v1 --ignore-keys && cargo test -p usdx_bridge
 
 ## Node workspace tests (nest-platform, bff, identity, rms, payments,
-## notifications). identity's suite needs real Postgres (see
-## services/identity/test/fixtures/bootstrap.ts) — depends on `up` the same
-## way test-integration does. --if-present skips frontend, which has no
+## notifications). identity's, payments' and notifications' suites need real
+## Postgres (their *_test databases, never the dev ones) and notifications'
+## fan-out suite needs compose's NATS — depends on `up` the same way
+## test-integration does. --if-present skips frontend, which has no
 ## test script yet.
 test-node: up
 	pnpm --filter "./shared/node/**" run build

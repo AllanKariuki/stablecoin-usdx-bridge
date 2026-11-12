@@ -313,10 +313,16 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      nats:
+        condition: service_healthy
     env_file:
       - services/notifications/.env
     environment:
       DATABASE_URL: postgres://notifications:notifications@postgres:5432/notifications?sslmode=disable
+      # One replica here, so this isn't needed for correctness — it is set so
+      # the cross-replica path k8s depends on is the one compose exercises.
+      # Unset falls back to in-process pushes (see LiveFanout).
+      NATS_URL: nats://nats:4222
       # Mailpit lives in the obs profile, so this resolves only when both are
       # up. An unreachable SMTP host logs the email rather than failing the
       # notification — see EmailTransport.

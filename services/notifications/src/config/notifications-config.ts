@@ -78,4 +78,14 @@ export class NotificationsConfig {
   @IsInt()
   @Min(1)
   WEBHOOK_DRAIN_SECONDS = 10;
+
+  /**
+   * NATS, for fanning live WebSocket pushes out to every replica (see
+   * LiveFanout). Empty keeps pushes in-process, which is all one replica
+   * needs; with more than one, a socket on replica A only sees pushes produced
+   * on B when this is set.
+   */
+  @IsOptional()
+  @IsString()
+  NATS_URL = '';
 }

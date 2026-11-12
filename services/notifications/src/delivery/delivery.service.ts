@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { DbService } from '../db/db.service';
 import { render } from '../templates/render';
-import { WsGateway } from '../ws/ws.gateway';
+import { LiveFanout } from '../ws/live-fanout';
 import { WebhooksService } from '../webhooks/webhooks.service';
 import { EmailTransport } from './email.transport';
 
@@ -51,7 +51,7 @@ export class DeliveryService {
 
   constructor(
     private readonly db: DbService,
-    private readonly ws: WsGateway,
+    private readonly live: LiveFanout,
     private readonly email: EmailTransport,
     private readonly webhooks: WebhooksService,
   ) {}
@@ -93,7 +93,9 @@ export class DeliveryService {
       try {
         const count = await this.dispatch(req, template, subject, body);
         await this.markSent(id, count);
-        delivered += count > 0 ? 1 : 0;
+        // null is a push handed to the cross-replica fan-out: it went out,
+        // even though the socket count is not knowable from this replica.
+        delivered += count === null || count > 0 ? 1 : 0;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         await this.markFailed(id, reason);
@@ -105,7 +107,7 @@ export class DeliveryService {
     // endpoint must not hold up an in-app toast, and the retry schedule needs
     // to outlive this request anyway.
     if (req.partyId) {
-      await this.webhooks.enqueue(req.partyId, req.event, req.payload);
+      await this.webhooks.enqueue(req.partyId, req.event, req.payload, req.dedupeKey);
     }
 
     return { delivered, suppressed };
@@ -116,7 +118,7 @@ export class DeliveryService {
     template: TemplateRow,
     subject: string,
     body: string,
-  ): Promise<number> {
+  ): Promise<number | null> {
     switch (template.channel) {
       case 'IN_APP': {
         const message = {
@@ -127,10 +129,9 @@ export class DeliveryService {
           payload: req.payload,
         };
         // An empty partyId is an operator broadcast — a reconciliation break
-        // goes to everyone watching, not to a customer.
-        return req.partyId
-          ? this.ws.broadcast(req.partyId, 'notification', message)
-          : this.ws.broadcastAll('notification', message);
+        // goes to everyone watching, not to a customer. LiveFanout decides
+        // whether that reaches every replica's sockets or only this one's.
+        return this.live.push(req.partyId, 'notification', message);
       }
 
       case 'EMAIL':
@@ -206,10 +207,12 @@ export class DeliveryService {
     return rows[0]?.id ?? null;
   }
 
-  private async markSent(id: string, count: number): Promise<void> {
+  private async markSent(id: string, count: number | null): Promise<void> {
     // A count of zero is still SENT, not FAILED: "delivered to no open
     // sockets" means the customer was offline, and the stored row is exactly
-    // how they find it when they come back.
+    // how they find it when they come back. A null count (recipients: null in
+    // the payload) means the push was fanned out over NATS, where each
+    // replica delivers to its own sockets and nobody counts the total.
     await this.db.query(
       `UPDATE deliveries SET status = 'SENT', sent_at = now(),
               payload = payload || jsonb_build_object('recipients', $2::int)
