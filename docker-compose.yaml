@@ -345,9 +345,12 @@ services:
       - services/notifications/.env
     environment:
       DATABASE_URL: postgres://notifications:notifications@postgres:5432/notifications?sslmode=disable
-      # One replica here, so this isn't needed for correctness — it is set so
-      # the cross-replica path k8s depends on is the one compose exercises.
-      # Unset falls back to in-process pushes (see LiveFanout).
+      # Needed for correctness, not just fan-out: the worker above relays
+      # core-ledger's outbox to JetStream (its NATS_URL wins over
+      # OUTBOX_RELAY_URL), and this is how those events — reconciliation
+      # alerts included — reach notifications (see OutboxConsumer). It also
+      # makes compose exercise the cross-replica push path k8s depends on.
+      # Unset falls back to in-process pushes and the HTTP outbox door only.
       NATS_URL: nats://nats:4222
       # Mailpit lives in the obs profile, so this resolves only when both are
       # up. An unreachable SMTP host logs the email rather than failing the

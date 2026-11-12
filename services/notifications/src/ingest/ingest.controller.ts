@@ -1,6 +1,7 @@
 import { Body, Controller, Headers, HttpCode, Post } from '@nestjs/common';
 import { Logger } from '@nestjs/common';
 import { DeliveryService } from '../delivery/delivery.service';
+import { OutboxHandler } from './outbox-handler';
 
 /**
  * Where events arrive.
@@ -21,6 +22,10 @@ import { DeliveryService } from '../delivery/delivery.service';
  *    link in making R7's "the one control catching an unbacked mint is
  *    decorative" untrue.
  *
+ *    When core-ledger's relay has NATS_URL set it publishes to JetStream
+ *    instead, and OutboxConsumer picks the same events up from there. Both
+ *    land in OutboxHandler with the same dedupe key.
+ *
  * Both are unauthenticated and both are cluster-internal only (see the
  * NetworkPolicy). Neither can be reached through the gateway: there is no
  * rule for `/internal/*` in auth-proxy's route table, and its default is
@@ -30,7 +35,10 @@ import { DeliveryService } from '../delivery/delivery.service';
 export class IngestController {
   private readonly logger = new Logger(IngestController.name);
 
-  constructor(private readonly delivery: DeliveryService) {}
+  constructor(
+    private readonly delivery: DeliveryService,
+    private readonly outboxHandler: OutboxHandler,
+  ) {}
 
   @Post('events')
   @HttpCode(202)
@@ -72,41 +80,8 @@ export class IngestController {
       return { accepted: false };
     }
 
-    // Who this is about. Ledger events carry initiated_by; reserve events are
-    // platform-wide and go to every connected operator, which is what an
-    // empty party id means downstream.
-    const partyId =
-      typeof payload.initiated_by === 'string' && payload.initiated_by !== 'api' ? payload.initiated_by : '';
-
-    const result = await this.delivery.notify({
-      event: eventType,
-      partyId,
-      payload: flatten(payload),
-      dedupeKey: eventId ? `outbox:${eventId}` : undefined,
-    });
+    const result = await this.outboxHandler.handle(eventType, eventId ?? '', payload ?? {});
     return { accepted: true, ...result };
   }
 }
 
-/**
- * Lifts a payload's top-level scalars alongside the nested original.
- *
- * Templates address values by name (`{{leg}}`, `{{amount}}`), and the two
- * event families this service consumes nest differently — the ledger's
- * transaction_posted has its interesting fields at the top level, the
- * reserve events have theirs one level in. Flattening one level means a
- * template author writes `{{leg}}` rather than having to know which producer
- * shaped it.
- */
-function flatten(payload: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...payload };
-  for (const value of Object.values(payload)) {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        // Never shadows a top-level key: the producer's own naming wins.
-        if (!(k in out)) out[k] = v;
-      }
-    }
-  }
-  return out;
-}

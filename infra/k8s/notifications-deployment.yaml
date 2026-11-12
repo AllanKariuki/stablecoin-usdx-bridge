@@ -42,9 +42,13 @@ spec:
               value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
             - name: IDENTITY_SERVICE_URL
               value: "http://identity.default.svc.cluster.local:3001"
-            # Core pub/sub only (no JetStream) on live.notifications.push.v1.
-            # Like Postgres and Keycloak, NATS is a backing service these
-            # manifests point at rather than deploy.
+            # Two uses: core pub/sub on live.notifications.push.v1 for the
+            # cross-replica push, and a durable JetStream consumer
+            # (notifications-outbox) on core-ledger's DAMP stream, which both
+            # replicas share so each outbox event is handled once. Like
+            # Postgres and Keycloak, NATS is a backing service these manifests
+            # point at rather than deploy; DAMP is created by core-ledger's
+            # relay, not here.
             - name: NATS_URL
               value: "nats://nats.default.svc.cluster.local:4222"
           resources:
