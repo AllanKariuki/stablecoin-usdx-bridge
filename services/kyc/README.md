@@ -66,3 +66,14 @@ hostname and access model, and both change. The SHA-256 of each file is kept
 for two reasons — detecting the same document submitted under two identities,
 and proving years later that the file in storage is the file that was
 reviewed.
+
+URLs are signed with `@aws-sdk/s3-request-presigner`, path-style, with only
+`host` in the signed headers. The unit spec (`test/storage-presign.spec.ts`)
+pins the URL's shape against a fixed clock; only a real backend can say the
+signature is one it accepts, so `test/storage-minio.integration.spec.ts` PUTs
+and reads back through MinIO. It skips unless pointed at one:
+
+```sh
+docker compose --profile app up -d minio
+KYC_TEST_S3_ENDPOINT=http://localhost:59000 pnpm --filter @damp/kyc test
+```
