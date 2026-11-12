@@ -2,6 +2,9 @@
 package config
 
 import (
+	"fmt"
+
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/signer/internal/decode"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
 )
 
@@ -45,6 +48,14 @@ type Config struct {
 
 	// --- policy ---
 	PolicyPath string `env:"POLICY_PATH" default:"/app/policy.yaml"`
+
+	// --- deployment: which contracts are ours ---
+	//
+	// The same names and values core-ledger is configured with. Required
+	// outside local (see Deployment); a chain left unset signs nothing.
+	USDXProxyAddress string `env:"USDX_PROXY_ADDRESS" default:""`
+	USDXProgramID    string `env:"USDX_PROGRAM_ID" default:""`
+	USDXMintAddress  string `env:"USDX_MINT_ADDRESS" default:""`
 }
 
 func Load() (Config, error) {
@@ -53,6 +64,27 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// Deployment parses and validates the contract/program/mint the signer will
+// sign for.
+//
+// Outside ENV=local all three are required. Unset there would not fail at
+// boot — it would fail at the first mint on that chain, as a refusal inside a
+// saga that somebody then has to trace back to configuration. In local
+// development a chain may be left unset (it then signs nothing), but whatever
+// is set must still parse.
+func (c Config) Deployment() (decode.Deployment, error) {
+	dep, err := decode.ParseDeployment(c.USDXProxyAddress, c.USDXProgramID, c.USDXMintAddress)
+	if err != nil {
+		return dep, err
+	}
+	if c.Env != "local" {
+		if err := dep.RequireComplete(); err != nil {
+			return dep, fmt.Errorf("%w (required when ENV is not local)", err)
+		}
+	}
+	return dep, nil
 }
 
 // MTLSConfigured reports whether a certificate triple is present.

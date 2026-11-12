@@ -55,12 +55,29 @@ type Record struct {
 	Destination   string
 	CorrelationID string
 	Digest        string
+	// PayloadDigest is decode.Decoded.PayloadDigest: what was authorised,
+	// without nonce, gas or blockhash. Empty on rows from before 00002.
+	PayloadDigest string
 	Signature     string
 	Outcome       string
 	Reason        string
 	CreatedAt     time.Time
 	PrevHash      string
 	Hash          string
+}
+
+// columns is every column a Record is read from, in scan order.
+const columns = `id, chain, method, key_id, backend, caller, amount, destination,
+		       correlation_id, digest, payload_digest, signature, outcome, reason, created_at, prev_hash, hash`
+
+type scanner interface{ Scan(dest ...any) error }
+
+func scan(row scanner) (Record, error) {
+	var r Record
+	err := row.Scan(&r.ID, &r.Chain, &r.Method, &r.KeyID, &r.Backend, &r.Caller, &r.Amount,
+		&r.Destination, &r.CorrelationID, &r.Digest, &r.PayloadDigest, &r.Signature, &r.Outcome, &r.Reason,
+		&r.CreatedAt, &r.PrevHash, &r.Hash)
+	return r, err
 }
 
 type Log struct {
@@ -89,12 +106,19 @@ func Open(dsn string) (*Log, error) {
 func (l *Log) Ping(ctx context.Context) error { return l.db.PingContext(ctx) }
 func (l *Log) Close() error                   { return l.db.Close() }
 
-// ErrAlreadySigned means this (chain, method, correlation_id) has a signature
-// already. The caller replays it rather than producing a second.
+// ErrAlreadySigned means these exact bytes have been signed under this
+// (chain, method, correlation_id) already. The caller replays it rather than
+// producing a second.
 var ErrAlreadySigned = errors.New("already signed")
 
+// ErrPayloadMismatch means this (chain, method, correlation_id) was already
+// signed for a different payload. Checked again inside Append because two
+// replicas can both pass the handler's Existing check concurrently.
+var ErrPayloadMismatch = errors.New("correlation id already signed for a different payload")
+
 // Existing returns a previous ALLOWED signature for this correlation, if one
-// exists.
+// exists — the one over exactly digest if there is one, otherwise the
+// earliest.
 //
 // This is the plan's *"idempotent on (chain, method, correlation_id) — a
 // retried mint returns the original tx hash"*. Without it, a saga retry after
@@ -102,21 +126,16 @@ var ErrAlreadySigned = errors.New("already signed")
 // chain's replay guard stops the second transaction landing, but the platform
 // has authorised the same money twice and which signature is the real one is
 // unanswerable.
-func (l *Log) Existing(ctx context.Context, chain, method, correlationID string) (*Record, error) {
+func (l *Log) Existing(ctx context.Context, chain, method, correlationID, digest string) (*Record, error) {
 	if correlationID == "" {
 		return nil, nil
 	}
-	row := l.db.QueryRowContext(ctx, `
-		SELECT id, chain, method, key_id, backend, caller, amount, destination,
-		       correlation_id, digest, signature, outcome, reason, created_at, prev_hash, hash
+	r, err := scan(l.db.QueryRowContext(ctx, `
+		SELECT `+columns+`
 		  FROM signatures
 		 WHERE chain = $1 AND method = $2 AND correlation_id = $3 AND outcome = 'ALLOWED'
-		 LIMIT 1`, chain, method, correlationID)
-
-	var r Record
-	err := row.Scan(&r.ID, &r.Chain, &r.Method, &r.KeyID, &r.Backend, &r.Caller, &r.Amount,
-		&r.Destination, &r.CorrelationID, &r.Digest, &r.Signature, &r.Outcome, &r.Reason,
-		&r.CreatedAt, &r.PrevHash, &r.Hash)
+		 ORDER BY (digest = $4) DESC, seq
+		 LIMIT 1`, chain, method, correlationID, digest))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -147,6 +166,39 @@ func (l *Log) Append(ctx context.Context, r *Record) error {
 		return err
 	}
 
+	// One payload per correlation id. Not expressible as a unique index —
+	// re-signs of the same payload legitimately share the key — so it is
+	// checked here, where SERIALIZABLE makes the read and the insert one step
+	// against a concurrent Append on another replica.
+	if r.Outcome == OutcomeAllowed && r.CorrelationID != "" {
+		var bound string
+		err = tx.QueryRowContext(ctx, `
+			SELECT payload_digest FROM signatures
+			 WHERE chain = $1 AND method = $2 AND correlation_id = $3 AND outcome = 'ALLOWED'
+			 ORDER BY seq LIMIT 1`, r.Chain, r.Method, r.CorrelationID).Scan(&bound)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return err
+		case bound == "" || bound != r.PayloadDigest:
+			// An empty bound payload is a pre-00002 row: nothing records what
+			// it authorised beyond its bytes, so nothing but those exact bytes
+			// may follow it. Exact bytes are ErrAlreadySigned (a replay), not
+			// a mismatch, whichever way the payload compares.
+			var sameBytes bool
+			if err := tx.QueryRowContext(ctx, `
+				SELECT EXISTS (SELECT 1 FROM signatures
+				 WHERE chain = $1 AND method = $2 AND correlation_id = $3 AND outcome = 'ALLOWED'
+				   AND digest = $4)`, r.Chain, r.Method, r.CorrelationID, r.Digest).Scan(&sameBytes); err != nil {
+				return err
+			}
+			if sameBytes {
+				return ErrAlreadySigned
+			}
+			return ErrPayloadMismatch
+		}
+	}
+
 	if r.ID == "" {
 		r.ID = uuid.New().String()
 	}
@@ -157,10 +209,10 @@ func (l *Log) Append(ctx context.Context, r *Record) error {
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO signatures
 			(id, chain, method, key_id, backend, caller, amount, destination, correlation_id,
-			 digest, signature, outcome, reason, created_at, prev_hash, hash)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+			 digest, payload_digest, signature, outcome, reason, created_at, prev_hash, hash)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		r.ID, r.Chain, r.Method, r.KeyID, r.Backend, r.Caller, r.Amount, r.Destination,
-		r.CorrelationID, r.Digest, r.Signature, r.Outcome, r.Reason, r.CreatedAt, r.PrevHash, r.Hash)
+		r.CorrelationID, r.Digest, r.PayloadDigest, r.Signature, r.Outcome, r.Reason, r.CreatedAt, r.PrevHash, r.Hash)
 	if err != nil {
 		if strings.Contains(err.Error(), "uq_signatures_idempotent") {
 			return ErrAlreadySigned
@@ -177,12 +229,22 @@ func (l *Log) Append(ctx context.Context, r *Record) error {
 // twenty-four hours is harder to reason about during an incident ("how much
 // is left today" has no answer), and the whole point of the limit is that a
 // human can hold it in their head.
-func (l *Log) DailyTotal(ctx context.Context, chain, method string) (*big.Int, error) {
+//
+// Each correlation id counts once, however many times its payload was
+// re-signed: a retry authorises the same money, not more of it. exclude
+// leaves one correlation id out entirely, so a re-sign is checked as "the
+// others plus this one" rather than counting itself twice.
+func (l *Log) DailyTotal(ctx context.Context, chain, method, exclude string) (*big.Int, error) {
 	rows, err := l.db.QueryContext(ctx, `
-		SELECT amount FROM signatures
-		 WHERE chain = $1 AND method = $2 AND outcome = 'ALLOWED'
-		   AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
-		   AND amount <> ''`, chain, method)
+		SELECT amount FROM (
+			SELECT DISTINCT ON (CASE WHEN correlation_id = '' THEN id ELSE correlation_id END) amount
+			  FROM signatures
+			 WHERE chain = $1 AND method = $2 AND outcome = 'ALLOWED'
+			   AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
+			   AND amount <> ''
+			   AND ($3 = '' OR correlation_id <> $3)
+			 ORDER BY CASE WHEN correlation_id = '' THEN id ELSE correlation_id END, seq
+		) per_movement`, chain, method, exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -208,10 +270,7 @@ func (l *Log) DailyTotal(ctx context.Context, chain, method string) (*big.Int, e
 // rather than a spot check: a tamper that only breaks one link is exactly
 // what a spot check misses.
 func (l *Log) Verify(ctx context.Context) (ok bool, brokenAt string, checked int, err error) {
-	rows, err := l.db.QueryContext(ctx, `
-		SELECT id, chain, method, key_id, backend, caller, amount, destination,
-		       correlation_id, digest, signature, outcome, reason, created_at, prev_hash, hash
-		  FROM signatures ORDER BY seq`)
+	rows, err := l.db.QueryContext(ctx, `SELECT `+columns+` FROM signatures ORDER BY seq`)
 	if err != nil {
 		return false, "", 0, err
 	}
@@ -219,10 +278,8 @@ func (l *Log) Verify(ctx context.Context) (ok bool, brokenAt string, checked int
 
 	expectedPrev := GenesisHash
 	for rows.Next() {
-		var r Record
-		if err := rows.Scan(&r.ID, &r.Chain, &r.Method, &r.KeyID, &r.Backend, &r.Caller, &r.Amount,
-			&r.Destination, &r.CorrelationID, &r.Digest, &r.Signature, &r.Outcome, &r.Reason,
-			&r.CreatedAt, &r.PrevHash, &r.Hash); err != nil {
+		r, err := scan(rows)
+		if err != nil {
 			return false, "", checked, err
 		}
 		checked++
@@ -242,10 +299,7 @@ func (l *Log) Recent(ctx context.Context, limit int) ([]Record, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := l.db.QueryContext(ctx, `
-		SELECT id, chain, method, key_id, backend, caller, amount, destination,
-		       correlation_id, digest, signature, outcome, reason, created_at, prev_hash, hash
-		  FROM signatures ORDER BY seq DESC LIMIT $1`, limit)
+	rows, err := l.db.QueryContext(ctx, `SELECT `+columns+` FROM signatures ORDER BY seq DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -253,10 +307,8 @@ func (l *Log) Recent(ctx context.Context, limit int) ([]Record, error) {
 
 	var out []Record
 	for rows.Next() {
-		var r Record
-		if err := rows.Scan(&r.ID, &r.Chain, &r.Method, &r.KeyID, &r.Backend, &r.Caller, &r.Amount,
-			&r.Destination, &r.CorrelationID, &r.Digest, &r.Signature, &r.Outcome, &r.Reason,
-			&r.CreatedAt, &r.PrevHash, &r.Hash); err != nil {
+		r, err := scan(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -275,13 +327,21 @@ func (l *Log) Recent(ctx context.Context, limit int) ([]Record, error) {
 // two different field splits cannot produce the same input: without it,
 // {caller: "a", method: "bc"} and {caller: "ab", method: "c"} would hash
 // identically.
+//
+// payload_digest (00002) is appended only when set. Rows written before it
+// existed were hashed without it, and the append-only trigger means they can
+// never be rehashed — so an empty value must hash exactly as it did then.
 func hashOf(r *Record) string {
-	h := sha256.New()
-	for _, field := range []string{
+	fields := []string{
 		r.PrevHash, r.ID, r.Chain, r.Method, r.KeyID, r.Backend, r.Caller,
 		r.Amount, r.Destination, r.CorrelationID, r.Digest, r.Signature,
 		r.Outcome, r.Reason, r.CreatedAt.UTC().Format(time.RFC3339Nano),
-	} {
+	}
+	if r.PayloadDigest != "" {
+		fields = append(fields, r.PayloadDigest)
+	}
+	h := sha256.New()
+	for _, field := range fields {
 		h.Write([]byte(field))
 		h.Write([]byte{0x1f}) // unit separator
 	}

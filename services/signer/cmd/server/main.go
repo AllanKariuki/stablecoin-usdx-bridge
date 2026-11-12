@@ -60,6 +60,19 @@ func main() {
 		slog.Int("rules", len(signingPolicy.Rules)),
 		slog.Int("daily_limits", len(signingPolicy.DailyLimits)))
 
+	// Same reasoning as the policy: which contracts are ours is checked before
+	// anything can sign, so a deployment missing one fails here with the
+	// variable's name rather than at its first mint.
+	deployment, err := cfg.Deployment()
+	if err != nil {
+		logger.Error("loading the deployment configuration", slog.Any("error", err))
+		os.Exit(1)
+	}
+	logger.Info("deployment configuration loaded",
+		slog.String("usdx_proxy", deployment.EthContract.Hex()),
+		slog.String("usdx_program", deployment.SolProgram.String()),
+		slog.String("usdx_mint", deployment.SolMint.String()))
+
 	backend, err := keystore.Resolve(cfg.KeyBackend, cfg.Env, keystore.Config{
 		EthPrivateKeyHex:     cfg.EthPrivateKeyHex,
 		SolKeypairPath:       cfg.SolKeypairPath,
@@ -110,7 +123,7 @@ func main() {
 	app.Use(api.ClientIdentity())
 	health.Register(app)
 	app.Get("/metrics", metrics.Handler())
-	api.New(backend, signingPolicy, auditLog, logger).Register(app)
+	api.New(backend, signingPolicy, deployment, auditLog, logger).Register(app)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 
