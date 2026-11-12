@@ -92,9 +92,9 @@ func allPermissions() map[Permission]bool {
 		PermissionComplianceCasesManage: true, PermissionComplianceBlacklistManage: true,
 		PermissionNotificationsReadOwn: true, PermissionNotificationsWebhooksManage: true,
 		PermissionApprovalsPropose: true, PermissionApprovalsDecide: true,
-		PermissionAuditRead: true,
+		PermissionAuditRead:               true,
 		PermissionApprovalsPoliciesManage: true,
-		PermissionReservesRead: true, PermissionReservesManage: true,
+		PermissionReservesRead:            true, PermissionReservesManage: true,
 		PermissionReportsRead: true, PermissionAdminUsersManage: true,
 	}
 }
