@@ -213,6 +213,12 @@ services:
       # answers on its service name and its own port, not the published one.
       DATABASE_URL: postgres://bridge:bridge@postgres:5432/bridge?sslmode=disable
       SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
+      # .env.example's SIGNER_URL is host-side (https://localhost:8084), which
+      # inside a container is the container itself — and remote signing also
+      # needs the mTLS client cert/key/CA, which nothing here mounts yet. So
+      # compose signs with the env keys unless CORE_LEDGER_SIGNER_URL opts in
+      # (e.g. https://signer:8084, plus mounted SIGNER_*_PATH files).
+      SIGNER_URL: ${CORE_LEDGER_SIGNER_URL-}
       # Pinned for the same reason: a host-side PORT in .env (picked to dodge
       # something else on the host) would move the listener away from the
       # port the mapping and the healthcheck below both assume.
@@ -250,6 +256,12 @@ services:
       DATABASE_URL: postgres://bridge:bridge@postgres:5432/bridge?sslmode=disable
       SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
       WORKER_PORT: "8181"
+      SIGNER_URL: ${CORE_LEDGER_SIGNER_URL-}
+      # Same host-side problem as NATS_URL below. Off by default rather than
+      # pointed at indexer:8083: the indexer needs its own chain config to be
+      # useful, and with INDEXER_URL empty the saga polls the chain directly,
+      # which works anywhere. WORKER_INDEXER_URL=http://indexer:8083 opts in.
+      INDEXER_URL: ${WORKER_INDEXER_URL-}
       # Overrides .env's host-side nats://localhost:54222, which inside this
       # container is the container itself: the relay failed to connect and
       # every outbox event sat unpublished. The worker is the only process
@@ -331,6 +343,19 @@ services:
       # notification — see EmailTransport.
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
+      # The issuer stays the browser-facing localhost:8080 from .env — it is
+      # what tokens carry in `iss` — but the keys are fetched over the compose
+      # network, since localhost in here is this container. Before this every
+      # token failed verification and no socket ever authenticated.
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/damp/protocol/openid-connect/certs
+      # identity runs on the host, not in compose (see infra/traefik). From
+      # localhost the lookup failed silently and the raw Keycloak subject was
+      # used as the party id, so pushes went to an id no wallet carries.
+      IDENTITY_SERVICE_URL: http://host.docker.internal:3001
+    # host.docker.internal is built in on Docker Desktop; this makes it
+    # resolve on Linux engines too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # 3000 is fixed by frontend/public/runtime-config.js, which declares
     # VITE_APP_WEBSOCKET_URL = ws://localhost:3000/ws. That is also why
     # Grafana is on 53000.
@@ -520,6 +545,7 @@ services:
       DATABASE_URL: postgres://bridge:bridge@postgres:5432/bridge?sslmode=disable
       SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
       RECONCILE_PREFER_SNAPSHOTS: "true"
+      SIGNER_URL: ${CORE_LEDGER_SIGNER_URL-}
       PUSHGATEWAY_URL: http://pushgateway:9091
     volumes:
       - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro

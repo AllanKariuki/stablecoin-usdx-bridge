@@ -3,6 +3,27 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-12
+
+### Fixed — compose containers dialling their own `localhost`
+Each `.env.example` holds host-side addresses for `go run`/`pnpm start`; inside
+a container `localhost` is the container itself. Four of them broke silently:
+- **core-ledger worker `NATS_URL`** never connected, so outbox events
+  accumulated unpublished. Compose now sets `nats://nats:4222` and waits for
+  NATS (`WORKER_NATS_URL=` opts out).
+- **`SIGNER_URL`** (core-ledger, worker, reconcile) and **`INDEXER_URL`**
+  (worker) are opt-in features whose example values point at `localhost`.
+  Compose now leaves them off unless `CORE_LEDGER_SIGNER_URL` /
+  `WORKER_INDEXER_URL` say otherwise — remote signing additionally needs mTLS
+  certs that compose doesn't mount yet.
+- **notifications' WebSocket auth fetched Keycloak's keys from
+  `localhost:8080`**, so no socket ever authenticated. New
+  `KEYCLOAK_JWKS_URL` lets the keys come from `keycloak:8080` while `iss` is
+  still checked against the browser-facing issuer.
+- **notifications' identity lookup** fell back to the raw Keycloak subject,
+  pushing to a party id no wallet carries. Compose points it at
+  `host.docker.internal:3001`, where identity runs.
+
 ## 2026-11-09
 
 ### Fixed — CI, red on `main` in three of four jobs
