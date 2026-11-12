@@ -5,6 +5,23 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## 2026-11-12
 
+### Fixed — the frontend `build` script failed on `tsc -b`
+- **`tsc -b` is clean (76 errors → 0)** and `npm run build` succeeds.
+  `vite build` alone could fail too: `redux/store` imported `enableMapSet`
+  from `immer`, which isn't a direct dependency under pnpm's strict layout.
+  No Redux state holds a Map or Set, so the call is gone.
+- **Deleted unrouted, out-of-scope template pages**: trading, investments,
+  insurance, loans, budget/goals/savings/bills and the payments/online
+  merchant catalogue (none were in the sidebar menu that generates routes;
+  the UI PRD scopes them out), with their orphaned cards, slice and types.
+  Also removed `zod`-based validation modules and a `parseFloat` money helper
+  nothing imported, and an ambient `axios.d.ts` that shadowed axios's own types.
+- **conversionClient type-checks**: the `VITE_USE_MOCK_API` mocks reuse the
+  shared fixtures; the KYC error fallback reports zero limits; the WebSocket
+  fallback no longer hits a TDZ error when the socket constructor throws.
+- The send-money flow shares one `Recipient` type; ConvertHistory's loading
+  state is wired; ConvertWallets shows a real relative "updated" time.
+
 ### Security — workflow trusted approver roles from the request body
 - **Maker-checker decisions were authorised against `roles` the caller sent
   in the body**, so anyone holding `approvals:decide` could claim
