@@ -44,7 +44,8 @@ spec:
               value: "http://identity.default.svc.cluster.local:3001"
             # Core pub/sub only (no JetStream) on live.notifications.push.v1.
             # Like Postgres and Keycloak, NATS is a backing service these
-            # manifests point at rather than deploy.
+            # manifests point at rather than deploy. It has no auth, so who
+            # may publish here is decided by nats-networkpolicy.yaml.
             - name: NATS_URL
               value: "nats://nats.default.svc.cluster.local:4222"
           resources:
