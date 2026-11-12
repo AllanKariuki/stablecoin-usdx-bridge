@@ -1,3 +1,4 @@
+import { PlatformMetricsService } from '@damp/nest-platform';
 import { AddressInfo } from 'node:net';
 import { createServer, IncomingMessage, Server } from 'node:http';
 import { Pool } from 'pg';
@@ -294,5 +295,38 @@ describe('payments outbox (real Postgres)', () => {
 describe('backoffSeconds', () => {
   it('doubles from one second and caps at five minutes', () => {
     expect([1, 2, 3, 9, 10, 100].map(backoffSeconds)).toEqual([1, 2, 4, 256, 300, 300]);
+  });
+});
+
+describe('payments outbox metrics', () => {
+  it('exposes the backlog, deliveries and dead letters on the service registry', async () => {
+    const metrics = new PlatformMetricsService('payments');
+    const outbox = {
+      pendingCount: async () => 3,
+      claim: jest
+        .fn()
+        .mockResolvedValueOnce([
+          { id: 'evt_ok', event: 'payment.settled', party_id: 'p', payload: {}, attempts: 1 },
+          { id: 'evt_bad', event: 'invoice.issued', party_id: 'p', payload: {}, attempts: 1 },
+        ])
+        .mockResolvedValue([]),
+      markPublished: async () => undefined,
+      markFailed: async () => undefined,
+    };
+    const fetchSpy = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 422 }));
+    try {
+      const relay = new OutboxRelay(outbox as never, config({ NOTIFICATIONS_URL: 'http://notifications' }), metrics);
+      await relay.drain();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+
+    const text = await metrics.metricsText();
+    expect(text).toMatch(/payments_outbox_pending_events\{service="payments"\} 3/);
+    expect(text).toMatch(/payments_outbox_delivered_total\{event="payment.settled",service="payments"\} 1/);
+    expect(text).toMatch(/payments_outbox_dead_lettered_total\{event="invoice.issued",service="payments"\} 1/);
   });
 });
