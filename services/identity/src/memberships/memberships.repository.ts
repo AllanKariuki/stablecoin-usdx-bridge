@@ -1,18 +1,26 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { Queryable } from '@damp/nest-platform';
 import { DbService } from '../db/db.service';
 
 @Injectable()
 export class MembershipsRepository {
   constructor(private readonly db: DbService) {}
 
-  async ensure(partyId: string, orgId: string, role: string): Promise<void> {
-    await this.db.query(
+  /**
+   * Grants `role` in an org, or does nothing if the party already holds a
+   * membership there. Returns the new membership's id, or null when none was
+   * created — a role grant is privilege, so the caller audits only a real one.
+   */
+  async ensure(partyId: string, orgId: string, role: string, q: Queryable = this.db): Promise<string | null> {
+    const { rows } = await q.query(
       `INSERT INTO memberships (id, party_id, org_id, role)
        VALUES ($1, $2, $3, $4)
-       ON CONFLICT (party_id, org_id) DO NOTHING`,
+       ON CONFLICT (party_id, org_id) DO NOTHING
+       RETURNING id`,
       [`mem_${randomUUID()}`, partyId, orgId, role],
     );
+    return rows[0] ? String(rows[0].id) : null;
   }
 
   /**
