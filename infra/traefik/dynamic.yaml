@@ -35,7 +35,8 @@ http:
     cors:
       headers:
         accessControlAllowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-        accessControlAllowOriginList: ["http://localhost:5173"]
+        # 5173 is the Self-Service portal, 5174 the Ops Console.
+        accessControlAllowOriginList: ["http://localhost:5173", "http://localhost:5174"]
         # Idempotency-Key is required here or all 7 money-moving writes fail
         # preflight — see docs/building-plan.md's P1 note calling this out
         # as "the single most likely day-one bug".

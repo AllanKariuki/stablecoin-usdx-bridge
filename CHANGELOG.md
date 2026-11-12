@@ -5,6 +5,58 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## 2026-11-12
 
+### Added — frontend redesign, split into two apps and a shared package
+- **`frontend/` is now a workspace of three packages**, following
+  docs/frontend-ui-prd.md §3: `frontend/portal` (Self-Service, `customer` and
+  `company`, :5173), the new `frontend/ops-console` (admin, compliance,
+  treasury and auditor workspaces in one shell, :5174), and
+  `frontend/shared` (`@damp/web-shared`), which both build on.
+- **`@damp/web-shared`** contains:
+  - the design tokens;
+  - Keycloak auth-code + PKCE with refresh driven by the token's own expiry
+    (the old client assumed 30 minutes against a 300s token);
+  - role → permission expansion from `shared/authz` and the route and
+    control guards;
+  - the gateway client (one retry after refreshing on a 401, an
+    Idempotency-Key per confirm step, readable errors) and one API module per
+    domain;
+  - UI components, the `AppShell` layout (floating navy sidebar with
+    permission-filtered nav), and the 404/403/500 pages.
+- **Portal rebuilt** on the shared package:
+  - landing page, home, wallets and statements, deposit/withdraw/transfer
+    with a review step, USD-X issue/redeem with a saga stepper, transactions;
+  - payments, including the public `/pay/:token`;
+  - verification with document upload, live notifications, approvals, and
+    settings.
+  - The template code is deleted: 252 files, Redux, and 15 unused
+    dependencies. The FX UI is gone because bff has no FX route.
+- **Ops Console**:
+  - wallet and transaction lookup with freeze and a reversal preview;
+  - approvals;
+  - KYC review, alerts, cases and SAR, enforcement;
+  - reserves and reconciliation (legs A/B/C), custodians, attestations,
+    ledger;
+  - audit trail with Merkle proofs, and reports with CSV export.
+  - An auditor-only user gets no mutating control (covered by a test).
+- **bff proxies the operator routes** auth-proxy already authorizes: rms
+  (new `RMS_URL`) and core-ledger (`/accounts*`, `/ledger/*`, reconciliation
+  runs and breaks, reversal, break-glass redemption confirm).
+- **Keycloak login theme** `infra/keycloak/themes/damp`, extending `base`. It
+  has custom sign-in and register pages, styles every other login page through
+  `kc*Class` mappings, and is mounted by docker-compose.
+- **Realm**:
+  - self-registration is on, for retail customers only;
+  - password policy is `length(12)`, not username, not email;
+  - new public client `damp-ops` (PKCE only, adds the `damp-portal` audience
+    for auth-proxy);
+  - Traefik CORS allows :5174.
+
+### Fixed — realm default role
+- `make keycloak-realm` overwrote `roles.realm`, so the default role's
+  composites were lost on import. Keycloak reads them from that list, not the
+  `defaultRole` field. The generator now appends the default role and the
+  built-in roles it composes.
+
 ### Added — audit producers for every remaining service
 - **identity** (party, org and owner-membership creation), **payments**
   (intents created/cancelled/settled/failed, wrong-amount rail callbacks as

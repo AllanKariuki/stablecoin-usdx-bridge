@@ -77,5 +77,5 @@ core-ledger/bin/
 # shared/abi/README.md. Only chain-local build output stays ignored above
 # (chains/ethereum/out/, chains/ethereum/cache/).
 
-# Vite's on-disk dep cache (frontend/.vite), created by `vite build`.
-frontend/.vite/
+# Vite's on-disk dep cache (frontend/*/.vite), created by `vite build`.
+frontend/*/.vite/

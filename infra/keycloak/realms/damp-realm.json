@@ -2,8 +2,28 @@
   "realm": "damp",
   "enabled": true,
   "displayName": "DAMP",
+  "displayNameHtml": "<strong>DAMP</strong>",
   "sslRequired": "external",
-  "registrationAllowed": false,
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": true,
+  "rememberMe": true,
+  "verifyEmail": false,
+  "passwordPolicy": "length(12) and notUsername and notEmail",
+  "loginTheme": "damp",
+  "accountTheme": "keycloak.v3",
+  "defaultRole": {
+    "name": "default-roles-damp",
+    "description": "${role_default-roles}",
+    "composite": true,
+    "clientRole": false,
+    "composites": {
+      "realm": [
+        "offline_access",
+        "uma_authorization",
+        "customer"
+      ]
+    }
+  },
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
   "resetPasswordAllowed": true,
@@ -36,6 +56,25 @@
       {
         "name": "treasury",
         "description": "Financial/ledger administration, reserves, and fee schedules."
+      },
+      {
+        "name": "offline_access"
+      },
+      {
+        "name": "uma_authorization"
+      },
+      {
+        "name": "default-roles-damp",
+        "description": "${role_default-roles}",
+        "composite": true,
+        "clientRole": false,
+        "composites": {
+          "realm": [
+            "offline_access",
+            "uma_authorization",
+            "customer"
+          ]
+        }
       }
     ]
   },
@@ -57,7 +96,7 @@
   "clients": [
     {
       "clientId": "damp-portal",
-      "name": "DAMP Portal (frontend)",
+      "name": "DAMP Self-Service portal",
       "description": "Public SPA client — matches frontend/public/runtime-config.js. PKCE pre-configured; directAccessGrantsEnabled stays on until authUtils.ts migrates off password grant (see docs/building-plan.md P1).",
       "enabled": true,
       "publicClient": true,
@@ -76,6 +115,56 @@
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "http://localhost:5173/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-damp-portal",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "damp-portal",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "org-id-group-attribute",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "org_id",
+            "claim.name": "org_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "damp-ops",
+      "name": "DAMP Ops Console",
+      "description": "Public SPA client for frontend/ops-console (admin, compliance, treasury, auditor). PKCE S256 only, no password grant. Its aud mapper adds damp-portal so auth-proxy's single audience check accepts its tokens.",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:5174/auth/callback",
+        "http://localhost:5174/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5174"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5174/*"
       },
       "protocolMappers": [
         {

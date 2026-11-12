@@ -3,6 +3,7 @@ import { NotificationsProxyController } from './notifications.controller';
 import { PaymentsProxyController } from './payments.controller';
 import { ComplianceProxyController, KycProxyController, WorkflowProxyController } from './p5.controller';
 import { AuditTrailProxyController, ReportingProxyController } from './p7.controller';
+import { CoreLedgerOperationsProxyController, RmsProxyController } from './operations.controller';
 import { UpstreamProxy } from './upstream.proxy';
 
 @Module({
@@ -14,6 +15,8 @@ import { UpstreamProxy } from './upstream.proxy';
     ComplianceProxyController,
     ReportingProxyController,
     AuditTrailProxyController,
+    RmsProxyController,
+    CoreLedgerOperationsProxyController,
   ],
   providers: [UpstreamProxy],
 })
