@@ -3,6 +3,35 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-12
+
+### Added — P2's browser half: issue and redeem USD-X from the portal
+- **bff routes for the saga.** `POST /wallets/usdx` opens the caller's USD-X
+  wallet on a chain (idempotent; Solana still gets the platform custody
+  account), `POST /issuances` and `POST /redemptions` forward to core-ledger
+  and answer `202` with the journal entry plus a `correlationId`, and
+  `GET /transfers/:correlationId` reports the saga in camelCase with
+  `sourceTxUrl`/`destTxUrl` explorer links. Before this, no route between
+  the browser and core-ledger's saga existed, so the P2 DoD's "issue from the
+  browser, clickable Etherscan link" could not be performed.
+- **bff checks that both wallets are the caller's** on issuance and
+  redemption. core-ledger would post a perfectly balanced journal that debits
+  one user's USD and mints to another user's address; the gateway only knows
+  the caller holds `issuance:create`. A transfer belonging to someone else
+  answers 404 unless the caller holds `transactions:read:any`.
+- **core-ledger now sees who initiated it.** bff forwards the caller as
+  `X-User-Id` on these writes, so `initiated_by` is the person rather than
+  `api`.
+- **Explorer links are server config** (`ETHEREUM_EXPLORER_TX_URL`,
+  `SOLANA_EXPLORER_TX_URL`, defaulting to Sepolia Etherscan and Solana devnet),
+  because the network a hash lives on is a property of the deployment, not
+  something the browser should guess.
+- **Portal.** A USD-X card on the wallet page (open a wallet → issue/redeem →
+  poll the saga every 5s until terminal, showing retries and the linked hash),
+  backed by a new `issuance` slice. auth-proxy's route table gains
+  `POST /wallets/usdx`.
+- Still to do: performing the browser DoD live against Sepolia.
+
 ## 2026-11-09
 
 ### Fixed — CI, red on `main` in three of four jobs

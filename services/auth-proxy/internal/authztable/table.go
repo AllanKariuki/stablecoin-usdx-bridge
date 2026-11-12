@@ -95,6 +95,8 @@ var Default = Table{
 	compile("GET", "/wallets/:walletId", authz.PermissionWalletsReadOwn, authz.PermissionWalletsReadAny),
 	compile("GET", "/wallets/:walletId/statement", authz.PermissionWalletsReadOwn, authz.PermissionWalletsReadAny),
 	compile("POST", "/wallets/:walletId/status", authz.PermissionWalletsStatusManage),
+	// Opens the caller's own USD-X wallet (bff-only; always the caller's, so no :any variant).
+	compile("POST", "/wallets/usdx", authz.PermissionWalletsWriteOwn),
 
 	// Dashboard (bff-only aggregation, no core-ledger equivalent)
 	compile("GET", "/dashboard", authz.PermissionWalletsReadOwn, authz.PermissionWalletsReadAny),
