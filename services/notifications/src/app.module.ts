@@ -5,6 +5,7 @@ import { DbModule } from './db/db.module';
 import { DeliveryService } from './delivery/delivery.service';
 import { EmailTransport } from './delivery/email.transport';
 import { IngestController } from './ingest/ingest.controller';
+import { NatsService } from './nats/nats.service';
 import { NotificationsController } from './notifications.controller';
 import { WebhooksService } from './webhooks/webhooks.service';
 import { LiveFanout } from './ws/live-fanout';
@@ -19,7 +20,7 @@ import { WsGateway } from './ws/ws.gateway';
 @Global()
 @Module({
   controllers: [NotificationsController, IngestController],
-  providers: [WsGateway, LiveFanout, WsAuth, EmailTransport, WebhooksService, DeliveryService],
+  providers: [NatsService, WsGateway, LiveFanout, WsAuth, EmailTransport, WebhooksService, DeliveryService],
   exports: [WsGateway, LiveFanout, WsAuth, DeliveryService],
 })
 export class NotificationsModule {}

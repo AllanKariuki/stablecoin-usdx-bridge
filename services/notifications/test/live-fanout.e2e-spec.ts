@@ -1,6 +1,7 @@
 import { AddressInfo } from 'node:net';
 import { createServer, Server } from 'node:http';
 import { WebSocket } from 'ws';
+import { NatsService } from '../src/nats/nats.service';
 import { LiveFanout } from '../src/ws/live-fanout';
 import { WsGateway } from '../src/ws/ws.gateway';
 
@@ -19,6 +20,7 @@ const config = (values: Record<string, unknown>) => ({ get: (key: string) => val
 interface Replica {
   server: Server;
   gateway: WsGateway;
+  nats: NatsService;
   fanout: LiveFanout;
   url: string;
 }
@@ -32,13 +34,15 @@ async function replica(natsUrl: string): Promise<Replica> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   gateway.attach(server);
 
-  const fanout = new LiveFanout(config({ NATS_URL: natsUrl }), gateway);
+  const nats = new NatsService(config({ NATS_URL: natsUrl }));
+  nats.onModuleInit();
+  const fanout = new LiveFanout(nats, gateway);
   fanout.onModuleInit();
-  return { server, gateway, fanout, url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws` };
+  return { server, gateway, nats, fanout, url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws` };
 }
 
 async function stop(r: Replica): Promise<void> {
-  await r.fanout.onModuleDestroy();
+  await r.nats.close();
   r.gateway.onModuleDestroy();
   await new Promise((resolve) => r.server.close(resolve));
 }
