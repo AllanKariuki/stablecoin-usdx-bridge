@@ -49,6 +49,13 @@ type Config struct {
 	// --- policy ---
 	PolicyPath string `env:"POLICY_PATH" default:"/app/policy.yaml"`
 
+	// MaxResigns caps how many times one (chain, method, correlation_id) may
+	// be re-signed as rebuilt bytes after its first signature. Past it the
+	// signer answers 409 RESIGN_LIMIT_REACHED and core-ledger parks the saga
+	// for an operator. Keep in step with audit.DefaultMaxResigns, which says
+	// why five; 0 disables re-signing entirely.
+	MaxResigns int `env:"MAX_RESIGNS_PER_CORRELATION" default:"5"`
+
 	// --- deployment: which contracts are ours ---
 	//
 	// The same names and values core-ledger is configured with. Required
@@ -85,6 +92,16 @@ func (c Config) Deployment() (decode.Deployment, error) {
 		}
 	}
 	return dep, nil
+}
+
+// ResignCap validates MaxResigns. Negative is refused at boot rather than
+// read as "unlimited" or clamped to zero: either reading silently changes
+// how much relayer gas a bad retry storm can burn.
+func (c Config) ResignCap() (int, error) {
+	if c.MaxResigns < 0 {
+		return 0, fmt.Errorf("MAX_RESIGNS_PER_CORRELATION must be 0 or more, got %d", c.MaxResigns)
+	}
+	return c.MaxResigns, nil
 }
 
 // MTLSConfigured reports whether a certificate triple is present.

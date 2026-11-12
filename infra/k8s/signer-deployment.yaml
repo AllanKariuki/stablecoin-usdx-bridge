@@ -94,6 +94,11 @@ spec:
               value: /tls/ca.crt
             - name: POLICY_PATH
               value: /policy/policy.yaml
+            # Re-signs of one movement as rebuilt bytes, after the first
+            # signature. Enforced in the shared database under SERIALIZABLE,
+            # so the cap holds across replicas, not per pod.
+            - name: MAX_RESIGNS_PER_CORRELATION
+              value: "5"
             # Which contracts are ours: the USD-X proxy, the usdx_bridge
             # program, the USD-X mint — the same values core-ledger is given
             # as USDX_PROXY_ADDRESS / USDX_PROGRAM_ID / USDX_MINT_ADDRESS.

@@ -39,6 +39,7 @@ import (
 // tested in internal/audit against a real one.
 type AuditLog interface {
 	Existing(ctx context.Context, chain, method, correlationID, digest string) (*audit.Record, error)
+	ResignAllowed(ctx context.Context, chain, method, correlationID string) (bool, error)
 	DailyTotal(ctx context.Context, chain, method, exclude string) (*big.Int, error)
 	Append(ctx context.Context, r *audit.Record) error
 	Recent(ctx context.Context, limit int) ([]audit.Record, error)
@@ -193,6 +194,20 @@ func (h *Handlers) sign(c *fiber.Ctx) error {
 		// blockhash). Signed again, through policy as usual: the on-chain id
 		// in the payload is this correlation id, so the chain's replay guard
 		// lets at most one of the two land.
+		//
+		// "At most one lands" is not "the rest are free": on Ethereum each
+		// rebuilt transaction carries its own nonce, and every one mined
+		// behind the winner reverts on the replay guard at the relayer's
+		// expense. So re-signs are capped, and checked here — before the key
+		// backend is asked — so a capped request costs no signature.
+		allowed, err := h.log.ResignAllowed(c.Context(), req.Chain, req.Method, req.CorrelationID)
+		if err != nil {
+			return platform.WriteError(c, fiber.StatusInternalServerError, "AUDIT_UNAVAILABLE",
+				"could not count this correlation's signatures; refusing to sign without it")
+		}
+		if !allowed {
+			return h.resignLimitReached(c, req, caller, digest, payload)
+		}
 		h.logger.Info("re-signing a rebuilt transaction for an existing correlation",
 			slog.String("correlation_id", req.CorrelationID), slog.String("caller", caller))
 	}
@@ -252,6 +267,10 @@ func (h *Handlers) sign(c *fiber.Ctx) error {
 		// between our Existing check and this append. The signature is
 		// withheld, exactly as if the check had caught it.
 		return h.correlationReused(c, req, caller, digest, payload)
+	}
+	if errors.Is(err, audit.ErrResignLimit) {
+		// Another replica's re-sign took the last slot after our pre-check.
+		return h.resignLimitReached(c, req, caller, digest, payload)
 	}
 	if record == nil {
 		// The signature exists and could not be recorded. Returning it anyway
@@ -316,6 +335,20 @@ func (h *Handlers) correlationReused(c *fiber.Ctx, req signRequest, caller strin
 	h.logger.Warn("refused to sign", slog.String("caller", caller),
 		slog.String("correlation_id", req.CorrelationID), slog.String("reason", reason))
 	return platform.WriteError(c, fiber.StatusConflict, "CORRELATION_REUSED", reason)
+}
+
+// resignLimitReached refuses a rebuilt transaction for a movement already
+// re-signed as often as the cap allows. Its own code rather than
+// CORRELATION_REUSED, because the caller's right response differs: this
+// payload is the one bound, so a human checks which of its signatures landed
+// rather than looking for a second movement under the same id.
+func (h *Handlers) resignLimitReached(c *fiber.Ctx, req signRequest, caller string, digest []byte, payload string) error {
+	const reason = "this correlation id has been re-signed as many times as the signer allows; " +
+		"one of the existing signatures may still land"
+	h.record(c, req, caller, digest, payload, "", audit.OutcomeDenied, reason)
+	h.logger.Warn("refused to sign", slog.String("caller", caller),
+		slog.String("correlation_id", req.CorrelationID), slog.String("reason", reason))
+	return platform.WriteError(c, fiber.StatusConflict, "RESIGN_LIMIT_REACHED", reason)
 }
 
 func (h *Handlers) decodeRequest(req signRequest, digest []byte) (*decode.Decoded, error) {
