@@ -49,6 +49,22 @@ a container `localhost` is the container itself. Four of them broke silently:
 - **notifications' identity lookup** fell back to the raw Keycloak subject,
   pushing to a party id no wallet carries. Compose points it at
   `host.docker.internal:3001`, where identity runs.
+### Changed — services/kyc presigns with the AWS SDK
+- **The hand-rolled SigV4 is gone.** Upload and download URLs are signed by
+  `@aws-sdk/s3-request-presigner` 3.1166.0, pinned exactly. Behaviour is
+  unchanged: path-style addressing (MinIO has no per-bucket DNS), the
+  configured endpoint, region, bucket and expiry, and only `host` signed —
+  the content type is still returned for the browser to send, not bound in.
+- **The SDK's default would have broken uploads to S3.** It adds a CRC32 of
+  an empty body to every presigned PUT; MinIO ignores it, S3 rejects every
+  non-empty file against it. The client sets
+  `requestChecksumCalculation: 'WHEN_REQUIRED'`, and the unit spec asserts no
+  checksum parameter reaches the URL.
+- **Storage is tested against a real backend for the first time.** A MinIO
+  integration spec PUTs on a presigned URL, reads the bytes back on a
+  presigned GET, and checks a wrong secret gets a 403. It skips unless
+  `KYC_TEST_S3_ENDPOINT` is set, the same opt-in core-ledger's
+  `LEDGER_TEST_DATABASE_URL` uses.
 
 ## 2026-11-09
 
