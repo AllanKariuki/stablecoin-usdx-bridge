@@ -242,12 +242,21 @@ services:
         # The API runs the migrations and seeds the chart of accounts; the
         # worker only posts against it.
         condition: service_started
+      nats:
+        condition: service_healthy
     env_file:
       - core-ledger/.env
     environment:
       DATABASE_URL: postgres://bridge:bridge@postgres:5432/bridge?sslmode=disable
       SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
       WORKER_PORT: "8181"
+      # Overrides .env's host-side nats://localhost:54222, which inside this
+      # container is the container itself: the relay failed to connect and
+      # every outbox event sat unpublished. The worker is the only process
+      # that relays the outbox. WORKER_NATS_URL= (set but empty) opts back out
+      # of NATS, e.g. to relay over OUTBOX_RELAY_URL instead, which NATS would
+      # otherwise win over.
+      NATS_URL: ${WORKER_NATS_URL-nats://nats:4222}
     volumes:
       - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro
     ports:
