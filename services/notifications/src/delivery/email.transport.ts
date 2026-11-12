@@ -40,6 +40,13 @@ export class EmailTransport {
             pass: config.get<string>('SMTP_PASSWORD', { infer: true }),
           }
         : undefined,
+      // Bounded well inside PENDING_STALE_SECONDS (120s by default).
+      // nodemailer's own defaults allow a send to hang for ten minutes, and a
+      // send still running when its delivery row's lease lapses is one the
+      // sweeper may start a second time.
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 30_000,
     });
   }
 

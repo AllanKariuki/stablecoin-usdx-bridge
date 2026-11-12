@@ -91,12 +91,62 @@ export class NotificationsConfig {
   WEBHOOK_DRAIN_SECONDS = 10;
 
   /**
-   * NATS, for fanning live WebSocket pushes out to every replica (see
-   * LiveFanout). Empty keeps pushes in-process, which is all one replica
-   * needs; with more than one, a socket on replica A only sees pushes produced
-   * on B when this is set.
+   * NATS, for two things on one connection (see NatsService): fanning live
+   * WebSocket pushes out to every replica (LiveFanout), and consuming
+   * core-ledger's outbox from JetStream (OutboxConsumer). Empty keeps pushes
+   * in-process and leaves /internal/outbox as the only way ledger events
+   * arrive — which is right only while core-ledger's worker relays over HTTP
+   * too. If its NATS_URL is set, this must be as well, or every ledger event
+   * and reconciliation alert lands in the stream and stops there.
    */
   @IsOptional()
   @IsString()
   NATS_URL = '';
+
+  /** core-ledger's stream (its NATS_STREAM). core-ledger creates it; this side only reads it. */
+  @IsString()
+  NATS_STREAM = 'DAMP';
+
+  /**
+   * The durable consumer's name. Every replica must use the same one — that
+   * is what makes them share the work rather than each receive everything.
+   */
+  @IsString()
+  OUTBOX_CONSUMER_DURABLE = 'notifications-outbox';
+
+  /**
+   * Where a *newly created* durable starts: `all` (the stream's whole
+   * retention, deduped against anything the HTTP door already delivered) or
+   * `new`. Ignored once the durable exists — its cursor is the server's.
+   */
+  @IsString()
+  @IsIn(['all', 'new'])
+  OUTBOX_CONSUMER_DELIVER_POLICY = 'all';
+
+  /** Deliveries before a message that keeps failing is terminated and counted. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  OUTBOX_CONSUMER_MAX_DELIVERIES = 10;
+
+  /**
+   * How old a PENDING delivery's lease must be before a replay or the sweeper
+   * may re-send it. Must exceed the longest a send can take (EmailTransport
+   * bounds SMTP to well under a minute), or a slow send gets a twin.
+   */
+  @Type(() => Number)
+  @IsInt()
+  @Min(10)
+  PENDING_STALE_SECONDS = 120;
+
+  /** Times a stranded delivery is re-tried before it is marked FAILED. */
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  PENDING_MAX_ATTEMPTS = 5;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  PENDING_SWEEP_SECONDS = 30;
 }

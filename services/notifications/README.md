@@ -24,6 +24,38 @@ untrue: P3 gave `alert()` a metric and an outbox event instead of a
 Both are cluster-internal and neither is in the gateway's route table (whose
 default is deny).
 
+### core-ledger's outbox over JetStream
+
+core-ledger's relay drains to **one** destination, chosen at boot: JetStream
+when its `NATS_URL` is set, otherwise `POST /internal/outbox` — and NATS wins
+when both are. docker-compose sets the worker's `NATS_URL`, so there the
+outbox lands in the `DAMP` stream, and `/internal/outbox` never hears about
+it. `OutboxConsumer` (`src/ingest/outbox-consumer.ts`) is the door on that
+side:
+
+- **One durable pull consumer, `notifications-outbox`, shared by every
+  replica** on `damp.ledger.>` and `damp.reserves.>`. Replicas pull from the
+  same server-side cursor, so each event is handled by one of them.
+- **Same handling path, same dedupe key.** Each message goes through
+  `OutboxHandler`, exactly as an HTTP POST does, keyed `outbox:<row id>` —
+  the id half of core-ledger's `Nats-Msg-Id: <event_type>:<id>`. Switching a
+  deployment between transports cannot double-notify.
+- **Ack only after handling.** Unacked messages come back after `ack_wait`;
+  `working()` keeps a slow send from racing it. A database error naks with
+  exponential backoff; after `OUTBOX_CONSUMER_MAX_DELIVERIES`, or at once for
+  a message that cannot be parsed or has no outbox id, the message is
+  terminated, logged at error with its stream sequence, and counted in
+  `notifications_outbox_messages_total{outcome="terminated"}`.
+- **The stream is core-ledger's.** Its relay creates `DAMP` idempotently;
+  this service only creates its own durable on it, and waits — rather than
+  failing — when it boots before the stream exists.
+- **A new durable starts from the stream's retention** (`all`), so events
+  relayed before this consumer existed are delivered once, not lost; set
+  `OUTBOX_CONSUMER_DELIVER_POLICY=new` where that backlog is noise.
+
+No `NATS_URL` and none of this runs: `/internal/outbox` is the only door, as
+before.
+
 ## Delivery
 
 ```
@@ -35,9 +67,23 @@ one nobody can prove happened; one recorded but not sent is visibly PENDING
 and recoverable. In a dispute, *"did they know"* is a different question from
 *"did it happen"*, and this table is the only answer to the first.
 
-Nothing in the delivery path throws at its caller. Every producer calls this
-service best-effort, because a notification that fails to send must never fail
-a settlement that already happened.
+A failed send never throws at the caller — it is recorded as `FAILED`. Every
+producer calls this service best-effort, because a notification that fails to
+send must never fail a settlement that already happened. Only an unreachable
+database throws, because then nothing was recorded and the producer's retry is
+the only copy left.
+
+**"Recoverable" means somebody recovers it.** A crash between writing the row
+and sending leaves it `PENDING`. Each `PENDING` row holds a lease
+(`claimed_at`); once that is older than `PENDING_STALE_SECONDS` (120s, well
+past the SMTP timeouts), the row is taken again — by a replay of its event,
+in the same statement that would otherwise have been a duplicate no-op, or by
+a sweeper every `PENDING_SWEEP_SECONDS` that needs no replay at all. Taking the
+lease is one conditional `UPDATE`, so two replicas never both re-send a row.
+After `PENDING_MAX_ATTEMPTS`, or 24h, the row is marked `FAILED` instead. A
+re-send is at-least-once on the channel: a crash after the transport accepted
+the message but before the row was updated means it is sent twice — the right
+side to err on when the message is a reconciliation alert.
 
 Other decisions worth knowing:
 
