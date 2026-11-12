@@ -5,6 +5,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## 2026-11-12
 
+### Security — workflow trusted approver roles from the request body
+- **Maker-checker decisions were authorised against `roles` the caller sent
+  in the body**, so anyone holding `approvals:decide` could claim
+  `treasury`/`compliance`/`admin` and satisfy any policy, payouts and closures
+  included. Decider identity and roles now come only from the gateway's
+  `X-User-Id`/`X-Roles` (set by auth-proxy, forwarded unchanged by bff).
+- A body still carrying `roles` on propose/approve/reject is refused with
+  `400 ROLES_NOT_ACCEPTED` rather than silently ignored: a client sending it
+  believes the claim matters. Nothing on the platform sends it.
+- Proposal and decision audit events (DENIED included) record the gateway
+  roles the policy check actually used as `actor_roles`, beside the policy's
+  `approverRoles`.
+- kyc and compliance propose directly with a forwarded `X-User-Id`; that path
+  relies on network isolation, which the README now says plainly.
+
 ### Added — P2's browser half: issue and redeem USD-X from the portal
 - **bff routes for the saga.** `POST /wallets/usdx` opens the caller's USD-X
   wallet on a chain (idempotent; Solana still gets the platform custody
