@@ -5,6 +5,30 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## 2026-11-12
 
+### Fixed — signer refusals were retried until the saga dead-lettered
+- **core-ledger read every signer refusal as transient.** `signerclient` now
+  returns typed errors for all three: `PolicyDeniedError` (403),
+  `CorrelationReusedError` (409 `CORRELATION_REUSED`) and `ResignLimitError`
+  (409 `RESIGN_LIMIT_REACHED`). `bridge.Classify` matches them with
+  `errors.As`, before the string rules, as `ClassRefused`, because a refusal
+  reason is free text that could contain "already minted".
+- **A refused saga is parked, never unwound**, at any stage: dead-lettered
+  with its status untouched, no ledger reversal, no compensating mint. A
+  refusal arrives before a tx hash is recorded, which is the one window where
+  an earlier attempt's signature may still land; unwinding there could put
+  value on two chains. Resolving the dead letter re-arms the saga. A
+  first-time over-ceiling MINT is therefore no longer refunded automatically;
+  an operator decides.
+
+### Added — a cap on re-signs per correlation id
+- The signer re-signs rebuilt bytes for an already-signed payload at most
+  `MAX_RESIGNS_PER_CORRELATION` times (default 5; 0 disables; negative fails
+  boot), then answers `409 RESIGN_LIMIT_REACHED` with a DENIED audit row and
+  never touches the key backend. Only one re-sign can land, but each other one
+  mined on Ethereum reverts at the relayer's expense. The count is taken in
+  the audit log's SERIALIZABLE append, so the cap holds across replicas;
+  byte-identical replays are unaffected.
+
 ### Fixed — the frontend `build` script failed on `tsc -b`
 - **`tsc -b` is clean (76 errors → 0)** and `npm run build` succeeds.
   `vite build` alone could fail too: `redux/store` imported `enableMapSet`
