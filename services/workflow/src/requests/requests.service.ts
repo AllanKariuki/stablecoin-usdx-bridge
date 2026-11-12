@@ -127,6 +127,7 @@ export class RequestsService {
           client,
           {
             actor: input.requestedBy,
+            actorRoles: input.requestedByRoles,
             action: AUDIT.proposed,
             service: SERVICE,
             subjectType: 'APPROVAL_REQUEST',
@@ -166,6 +167,11 @@ export class RequestsService {
    * A refused decision — self-approval, a missing role — is audited too, as
    * DENIED: somebody trying to approve their own request is exactly what the
    * trail exists to show, and it is the only write such an attempt makes.
+   *
+   * `decidedBy` and `decidedByRoles` must be the identity the gateway
+   * resolved (X-User-Id, X-Roles) — never anything the caller asserted. The
+   * policy check below is only as trustworthy as where they came from, and
+   * the controller is the one place that guarantees it.
    */
   async decide(input: {
     requestId: string;
@@ -206,12 +212,15 @@ export class RequestsService {
           client,
           {
             actor: input.decidedBy,
+            // The roles the refusal was judged against, so the trail shows
+            // what the person held next to what the policy asked for.
+            actorRoles: input.decidedByRoles,
             action: input.decision === 'APPROVE' ? AUDIT.approved : AUDIT.rejected,
             service: SERVICE,
             outcome: 'DENIED',
             subjectType: 'APPROVAL_REQUEST',
             subjectId: request.id,
-            metadata: { reason: why, claimedRoles: input.decidedByRoles, policy: policy.id },
+            metadata: { reason: why, policy: policy.id, approverRoles: policy.approverRoles },
           },
           input.audit,
         );
@@ -287,6 +296,11 @@ export class RequestsService {
         client,
         {
           actor: input.decidedBy,
+          // Explicitly the roles the policy check above was made against —
+          // the gateway's X-Roles — rather than left to default from the
+          // request, so actor_roles is the authority for this decision by
+          // construction, not by the two happening to agree.
+          actorRoles: input.decidedByRoles,
           action: input.decision === 'APPROVE' ? AUDIT.approved : AUDIT.rejected,
           service: SERVICE,
           subjectType: 'APPROVAL_REQUEST',
@@ -301,11 +315,7 @@ export class RequestsService {
             payloadDigest: request.payload_digest,
             requestedBy: request.requested_by,
             comment: input.comment ?? '',
-            // What the caller claimed in the body, beside the gateway's
-            // X-Roles in actor_roles. The policy check above is made against
-            // the claimed roles; recording both makes a gap between them
-            // visible rather than silent.
-            claimedRoles: input.decidedByRoles,
+            approverRoles: policy.approverRoles,
           },
         },
         input.audit,
