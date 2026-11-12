@@ -123,13 +123,6 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
-      # notifications' fan-out suite publishes on one simulated replica and
-      # asserts the socket on another receives it — which needs a real broker.
-      # Core pub/sub only, so the image's default config is enough.
-      nats:
-        image: nats:2.10-alpine
-        ports:
-          - 54222:4222
     steps:
       - uses: actions/checkout@v4
 
@@ -183,6 +176,23 @@ jobs:
             -c "CREATE ROLE reporting WITH LOGIN PASSWORD 'reporting';" \
             -c "CREATE DATABASE reporting OWNER reporting;" \
             -c "CREATE DATABASE reporting_test OWNER reporting;"
+
+      - name: Start NATS with JetStream
+        # A step rather than a `services:` entry, for the same reason as MinIO
+        # below: the image's default command has JetStream off, and a service
+        # container can't add `-js`. notifications' fan-out suite needs core
+        # pub/sub; its outbox-consumer suite needs JetStream (core-ledger's
+        # stream), and without it every JetStream request answers 503.
+        run: |
+          docker run -d --name nats -p 54222:4222 -p 58222:8222 \
+            nats:2.10-alpine -js -m 8222
+          for _ in $(seq 30); do
+            curl -fsS 'http://localhost:58222/healthz?js-enabled-only=true' >/dev/null && exit 0
+            sleep 1
+          done
+          docker logs nats
+          echo "::error::NATS with JetStream did not become healthy"
+          exit 1
 
       - name: Start MinIO for kyc's storage spec
         # A step rather than a `services:` entry: service containers can't
