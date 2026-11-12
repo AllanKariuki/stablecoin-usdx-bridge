@@ -1,7 +1,25 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { AuditRequest, enqueueAuditEvent, Queryable } from '@damp/nest-platform';
 import { randomUUID } from 'node:crypto';
 import { DbService } from '../db/db.service';
 import { payloadDigest } from './digest';
+
+/**
+ * Audit actions workflow emits. A maker-checker decision is the evidence an
+ * auditor asks for first — who proposed, who approved, and that they were
+ * different people — so each is written in the same transaction as the
+ * decision itself (see enqueueAuditEvent).
+ */
+export const AUDIT = {
+  proposed: 'workflow.request.proposed',
+  approved: 'workflow.request.approved',
+  rejected: 'workflow.request.rejected',
+  cancelled: 'workflow.request.cancelled',
+  expired: 'workflow.request.expired',
+} as const;
+
+const SERVICE = 'workflow';
+const SYSTEM_ACTOR = 'system:workflow';
 
 export type RequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | 'CANCELLED';
 
@@ -59,6 +77,7 @@ export class RequestsService {
     requestedByRoles: string[];
     reason?: string;
     callbackUrl?: string;
+    audit?: AuditRequest;
   }): Promise<ApprovalRequest> {
     const policy = await this.policyFor(input.action);
     if (!policy) {
@@ -74,14 +93,15 @@ export class RequestsService {
     const digest = payloadDigest(input.payload);
     const expiresAt = new Date(Date.now() + policy.expiresAfterHours * 3_600_000);
 
-    const { rows } = await this.db.query<Record<string, any>>(
-      `INSERT INTO approval_requests
-         (id, action, policy_id, subject_type, subject_id, payload_digest, summary,
-          requested_by, requested_by_roles, reason, callback_url, callback_status, expires_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-       ON CONFLICT (subject_type, subject_id, payload_digest) DO UPDATE SET updated_at = approval_requests.updated_at
-       RETURNING *`,
-      [
+    const row = await this.db.transaction(async (client) => {
+      const { rows } = await client.query<Record<string, any>>(
+        `INSERT INTO approval_requests
+           (id, action, policy_id, subject_type, subject_id, payload_digest, summary,
+            requested_by, requested_by_roles, reason, callback_url, callback_status, expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         ON CONFLICT (subject_type, subject_id, payload_digest) DO UPDATE SET updated_at = approval_requests.updated_at
+         RETURNING *, (xmax = 0) AS inserted`,
+        [
         `req_${randomUUID()}`,
         input.action,
         policy.id,
@@ -96,12 +116,39 @@ export class RequestsService {
         input.callbackUrl ? 'PENDING' : 'NOT_REQUIRED',
         expiresAt,
       ],
-    );
+      );
+
+      // Only a request that was actually opened is audited. xmax = 0 is
+      // Postgres's tell for "this row was inserted, not updated by ON
+      // CONFLICT": a double-submit returns the open request and is not a
+      // second proposal.
+      if (rows[0].inserted) {
+        await enqueueAuditEvent(
+          client,
+          {
+            actor: input.requestedBy,
+            action: AUDIT.proposed,
+            service: SERVICE,
+            subjectType: 'APPROVAL_REQUEST',
+            subjectId: rows[0].id,
+            afterState: { status: 'PENDING', policy: policy.id, approvalsRequired: policy.approvalsRequired },
+            metadata: {
+              action: input.action,
+              target: { type: input.subjectType, id: input.subjectId },
+              payloadDigest: digest,
+              reason: input.reason ?? '',
+            },
+          },
+          input.audit,
+        );
+      }
+      return rows[0];
+    });
 
     // The ON CONFLICT above makes re-proposing the *same payload for the same
     // subject* idempotent: a double-submit returns the open request rather
     // than creating a second one two approvers could each approve.
-    return this.hydrate(rows[0]);
+    return this.hydrate(row);
   }
 
   // --- Deciding ------------------------------------------------------------
@@ -110,10 +157,15 @@ export class RequestsService {
    * Records one person's decision.
    *
    * Every check here is enforced against the request as it stands in the
-   * database at this moment, inside one transaction, because each of them is
-   * a race if it is not: two approvers deciding simultaneously on a
-   * one-of-one policy, an approver deciding as a request expires, the same
-   * person clicking twice.
+   * database at this moment, inside one transaction holding the request's row
+   * lock, because each of them is a race if it is not: two approvers deciding
+   * simultaneously on a one-of-one policy, an approver deciding as a request
+   * expires, the same person clicking twice. The audit event is written in
+   * that same transaction, so a decision and its evidence are one fact.
+   *
+   * A refused decision — self-approval, a missing role — is audited too, as
+   * DENIED: somebody trying to approve their own request is exactly what the
+   * trail exists to show, and it is the only write such an attempt makes.
    */
   async decide(input: {
     requestId: string;
@@ -121,74 +173,151 @@ export class RequestsService {
     decidedBy: string;
     decidedByRoles: string[];
     comment?: string;
+    audit?: AuditRequest;
   }): Promise<ApprovalRequest> {
-    const request = await this.find(input.requestId);
-    if (!request) throw new NotFoundException('no such approval request');
-
-    const policy = await this.policyById(request.policyId);
-    if (!policy) throw new NotFoundException('the policy this request was opened under no longer exists');
-
-    if (request.status !== 'PENDING') {
-      throw new ConflictException(`this request is already ${request.status.toLowerCase()}`);
-    }
-    if (request.expiresAt.getTime() <= Date.now()) {
-      await this.settle(request.id, 'EXPIRED');
-      throw new ConflictException(
-        'this request has expired; an approval granted against stale context is not an approval — propose it again',
+    const refusal = await this.db.transaction(async (client): Promise<Error | null> => {
+      const { rows } = await client.query<Record<string, any>>(
+        'SELECT * FROM approval_requests WHERE id = $1 FOR UPDATE',
+        [input.requestId],
       );
-    }
+      const request = rows[0];
+      if (!request) return new NotFoundException('no such approval request');
 
-    // Segregation of duties. Non-negotiable for everything in the seeded
-    // policy set, and the single most common way maker-checker is defeated in
-    // practice: the maker approves their own work because the UI let them.
-    if (policy.excludeInitiator && request.requestedBy === input.decidedBy) {
-      throw new ForbiddenException(
-        'you proposed this request and cannot also approve it — this policy requires a second person',
-      );
-    }
+      const { rows: policies } = await client.query<Record<string, any>>('SELECT * FROM policies WHERE id = $1', [
+        request.policy_id,
+      ]);
+      if (!policies[0]) return new NotFoundException('the policy this request was opened under no longer exists');
+      const policy = toPolicy(policies[0]);
 
-    if (policy.approverRoles.length > 0) {
-      const permitted = input.decidedByRoles.some((role) => policy.approverRoles.includes(role));
-      if (!permitted) {
-        throw new ForbiddenException(
-          `this action requires one of: ${policy.approverRoles.join(', ')}`,
+      if (request.status !== 'PENDING') {
+        return new ConflictException(`this request is already ${String(request.status).toLowerCase()}`);
+      }
+      if (new Date(request.expires_at).getTime() <= Date.now()) {
+        // Settled and audited here, committed, and only then refused: the
+        // expiry is a real state change even though this decision is not.
+        await this.settleOn(client, request.id, 'EXPIRED', SYSTEM_ACTOR, 'PENDING', input.audit);
+        return new ConflictException(
+          'this request has expired; an approval granted against stale context is not an approval — propose it again',
         );
       }
-    }
 
-    try {
-      await this.db.query(
-        `INSERT INTO approvals (id, request_id, decision, decided_by, decided_by_roles, comment)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [`apr_${randomUUID()}`, request.id, input.decision, input.decidedBy, input.decidedByRoles, input.comment ?? ''],
-      );
-    } catch (err) {
-      // UNIQUE (request_id, decided_by). A two-of-two policy that one person
-      // could satisfy by clicking twice is a one-of-one policy with extra
-      // steps, so this is enforced by the database rather than by the UI
-      // being careful.
-      if ((err as { code?: string }).code === '23505') {
-        throw new ConflictException('you have already decided on this request');
+      const deny = async (why: string, error: Error): Promise<Error> => {
+        await enqueueAuditEvent(
+          client,
+          {
+            actor: input.decidedBy,
+            action: input.decision === 'APPROVE' ? AUDIT.approved : AUDIT.rejected,
+            service: SERVICE,
+            outcome: 'DENIED',
+            subjectType: 'APPROVAL_REQUEST',
+            subjectId: request.id,
+            metadata: { reason: why, claimedRoles: input.decidedByRoles, policy: policy.id },
+          },
+          input.audit,
+        );
+        return error;
+      };
+
+      // Segregation of duties. Non-negotiable for everything in the seeded
+      // policy set, and the single most common way maker-checker is defeated
+      // in practice: the maker approves their own work because the UI let
+      // them.
+      if (policy.excludeInitiator && request.requested_by === input.decidedBy) {
+        return deny(
+          'proposer may not decide their own request',
+          new ForbiddenException('you proposed this request and cannot also approve it — this policy requires a second person'),
+        );
       }
-      throw err;
-    }
 
-    // A single rejection is terminal. Requiring N rejections to match N
-    // approvals would mean a request could sit half-rejected, which is not a
-    // state anybody has a use for.
-    if (input.decision === 'REJECT') {
-      await this.settle(request.id, 'REJECTED');
-      return (await this.find(request.id))!;
-    }
+      if (policy.approverRoles.length > 0) {
+        const permitted = input.decidedByRoles.some((role) => policy.approverRoles.includes(role));
+        if (!permitted) {
+          return deny(
+            'missing approver role',
+            new ForbiddenException(`this action requires one of: ${policy.approverRoles.join(', ')}`),
+          );
+        }
+      }
 
-    const approvals = await this.countApprovals(request.id);
-    if (approvals >= policy.approvalsRequired) {
-      await this.settle(request.id, 'APPROVED');
-    }
-    return (await this.find(request.id))!;
+      try {
+        // A savepoint, so a duplicate decision can be refused without
+        // aborting the transaction the refusal is reported from.
+        await client.query('SAVEPOINT decide');
+        await client.query(
+          `INSERT INTO approvals (id, request_id, decision, decided_by, decided_by_roles, comment)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [`apr_${randomUUID()}`, request.id, input.decision, input.decidedBy, input.decidedByRoles, input.comment ?? ''],
+        );
+      } catch (err) {
+        // UNIQUE (request_id, decided_by). A two-of-two policy that one
+        // person could satisfy by clicking twice is a one-of-one policy with
+        // extra steps, so this is enforced by the database rather than by
+        // the UI being careful.
+        if ((err as { code?: string }).code === '23505') {
+          await client.query('ROLLBACK TO SAVEPOINT decide');
+          return new ConflictException('you have already decided on this request');
+        }
+        throw err;
+      }
+
+      // A single rejection is terminal. Requiring N rejections to match N
+      // approvals would mean a request could sit half-rejected, which is not
+      // a state anybody has a use for.
+      let status: RequestStatus = 'PENDING';
+      let approvals = 0;
+      if (input.decision === 'REJECT') {
+        status = 'REJECTED';
+      } else {
+        const { rows: counted } = await client.query<{ count: string }>(
+          `SELECT count(*) FROM approvals WHERE request_id = $1 AND decision = 'APPROVE'`,
+          [request.id],
+        );
+        approvals = Number(counted[0].count);
+        if (approvals >= policy.approvalsRequired) status = 'APPROVED';
+      }
+      if (status !== 'PENDING') {
+        await client.query(
+          `UPDATE approval_requests SET status = $2, decided_at = now(), updated_at = now()
+            WHERE id = $1 AND status = 'PENDING'`,
+          [request.id, status],
+        );
+      }
+
+      await enqueueAuditEvent(
+        client,
+        {
+          actor: input.decidedBy,
+          action: input.decision === 'APPROVE' ? AUDIT.approved : AUDIT.rejected,
+          service: SERVICE,
+          subjectType: 'APPROVAL_REQUEST',
+          subjectId: request.id,
+          beforeState: { status: 'PENDING' },
+          // status stays PENDING when this approval is one of several the
+          // policy needs; the trail records each approver, not just the last.
+          afterState: { status, approvals, approvalsRequired: policy.approvalsRequired },
+          metadata: {
+            action: request.action,
+            target: { type: request.subject_type, id: request.subject_id },
+            payloadDigest: request.payload_digest,
+            requestedBy: request.requested_by,
+            comment: input.comment ?? '',
+            // What the caller claimed in the body, beside the gateway's
+            // X-Roles in actor_roles. The policy check above is made against
+            // the claimed roles; recording both makes a gap between them
+            // visible rather than silent.
+            claimedRoles: input.decidedByRoles,
+          },
+        },
+        input.audit,
+      );
+      return null;
+    });
+
+    if (refusal) throw refusal;
+    return (await this.find(input.requestId))!;
   }
 
-  async cancel(requestId: string, by: string): Promise<ApprovalRequest> {
+  async cancel(requestId: string, by: string, audit?: AuditRequest): Promise<ApprovalRequest> {
     const request = await this.find(requestId);
     if (!request) throw new NotFoundException('no such approval request');
     // Only the proposer withdraws their own proposal. An approver who
@@ -200,7 +329,7 @@ export class RequestsService {
     if (request.status !== 'PENDING') {
       throw new ConflictException(`this request is already ${request.status.toLowerCase()}`);
     }
-    await this.settle(requestId, 'CANCELLED');
+    await this.db.transaction((client) => this.settleOn(client, requestId, 'CANCELLED', by, 'PENDING', audit));
     return (await this.find(requestId))!;
   }
 
@@ -212,11 +341,27 @@ export class RequestsService {
    * requests nobody can act on is a queue nobody reads.
    */
   async expireLapsed(): Promise<number> {
-    const { rows } = await this.db.query<{ id: string }>(
-      `UPDATE approval_requests SET status = 'EXPIRED', decided_at = now(), updated_at = now()
-        WHERE status = 'PENDING' AND expires_at <= now()
-        RETURNING id`,
-    );
+    const rows = await this.db.transaction(async (client) => {
+      const { rows: expired } = await client.query<{ id: string }>(
+        `UPDATE approval_requests SET status = 'EXPIRED', decided_at = now(), updated_at = now()
+          WHERE status = 'PENDING' AND expires_at <= now()
+          RETURNING id`,
+      );
+      // Nobody decided these, and the trail says so: the actor is the
+      // service, and the outcome is that the window closed.
+      for (const { id } of expired) {
+        await enqueueAuditEvent(client, {
+          actor: SYSTEM_ACTOR,
+          action: AUDIT.expired,
+          service: SERVICE,
+          subjectType: 'APPROVAL_REQUEST',
+          subjectId: id,
+          beforeState: { status: 'PENDING' },
+          afterState: { status: 'EXPIRED' },
+        });
+      }
+      return expired;
+    });
     if (rows.length > 0) {
       this.logger.log(`expired ${rows.length} approval request(s) nobody acted on`);
     }
@@ -259,11 +404,6 @@ export class RequestsService {
     return rows[0] ? toPolicy(rows[0]) : null;
   }
 
-  private async policyById(id: string): Promise<Policy | null> {
-    const { rows } = await this.db.query<Record<string, any>>('SELECT * FROM policies WHERE id = $1', [id]);
-    return rows[0] ? toPolicy(rows[0]) : null;
-  }
-
   /** Requests whose decision still has to be delivered to the caller. */
   async undeliveredCallbacks(limit = 50): Promise<ApprovalRequest[]> {
     const { rows } = await this.db.query<Record<string, any>>(
@@ -294,20 +434,34 @@ export class RequestsService {
     );
   }
 
-  private async settle(id: string, status: RequestStatus): Promise<void> {
-    await this.db.query(
+  /** Settles a pending request and audits it, on the caller's transaction. */
+  private async settleOn(
+    client: Queryable,
+    id: string,
+    status: 'EXPIRED' | 'CANCELLED',
+    actor: string,
+    from: RequestStatus,
+    audit?: AuditRequest,
+  ): Promise<void> {
+    const { rows } = await client.query(
       `UPDATE approval_requests SET status = $2, decided_at = now(), updated_at = now()
-        WHERE id = $1 AND status = 'PENDING'`,
+        WHERE id = $1 AND status = 'PENDING' RETURNING id`,
       [id, status],
     );
-  }
-
-  private async countApprovals(requestId: string): Promise<number> {
-    const { rows } = await this.db.query<{ count: string }>(
-      `SELECT count(*) FROM approvals WHERE request_id = $1 AND decision = 'APPROVE'`,
-      [requestId],
+    if (rows.length === 0) return;
+    await enqueueAuditEvent(
+      client,
+      {
+        actor,
+        action: status === 'EXPIRED' ? AUDIT.expired : AUDIT.cancelled,
+        service: SERVICE,
+        subjectType: 'APPROVAL_REQUEST',
+        subjectId: id,
+        beforeState: { status: from },
+        afterState: { status },
+      },
+      audit,
     );
-    return Number(rows[0].count);
   }
 
   private async hydrate(row: Record<string, any>): Promise<ApprovalRequest> {

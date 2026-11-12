@@ -1,5 +1,6 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { AuditRelayService } from './audit/audit-relay.service';
 import { WorkflowConfig } from './config/workflow-config';
 import { DbModule } from './db/db.module';
 import { CallbacksService } from './requests/callbacks.service';
@@ -22,6 +23,10 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       DbModule,
       RequestsModule,
     ],
+    // In the root module because that is where PlatformModule's exports
+    // (the metrics registry the relay's backlog gauge registers on) are
+    // visible.
+    providers: [AuditRelayService],
   };
 }
 

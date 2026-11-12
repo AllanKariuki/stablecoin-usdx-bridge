@@ -1,4 +1,5 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { AuditContext, AuditRequest } from '@damp/nest-platform';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { payloadDigest } from './digest';
 import { ApprovalRequest, RequestsService } from './requests.service';
@@ -37,6 +38,7 @@ export class RequestsController {
   @Post('approval-requests')
   async propose(
     @CurrentUser() userId: string,
+    @AuditContext() audit: AuditRequest,
     @Body()
     body: {
       action: string;
@@ -59,6 +61,7 @@ export class RequestsController {
       requestedByRoles: body.roles ?? [],
       reason: body.reason,
       callbackUrl: body.callbackUrl,
+      audit,
     });
     return render(request);
   }
@@ -67,6 +70,7 @@ export class RequestsController {
   @HttpCode(200)
   async approve(
     @CurrentUser() userId: string,
+    @AuditContext() audit: AuditRequest,
     @Param('id') id: string,
     @Body() body: { comment?: string; roles?: string[] },
   ) {
@@ -76,6 +80,7 @@ export class RequestsController {
       decidedBy: userId,
       decidedByRoles: body?.roles ?? [],
       comment: body?.comment,
+      audit,
     });
     return render(request);
   }
@@ -84,6 +89,7 @@ export class RequestsController {
   @HttpCode(200)
   async reject(
     @CurrentUser() userId: string,
+    @AuditContext() audit: AuditRequest,
     @Param('id') id: string,
     @Body() body: { comment?: string; roles?: string[] },
   ) {
@@ -93,14 +99,15 @@ export class RequestsController {
       decidedBy: userId,
       decidedByRoles: body?.roles ?? [],
       comment: body?.comment,
+      audit,
     });
     return render(request);
   }
 
   @Post('approval-requests/:id/cancel')
   @HttpCode(200)
-  async cancel(@CurrentUser() userId: string, @Param('id') id: string) {
-    return render(await this.requests.cancel(id, userId));
+  async cancel(@CurrentUser() userId: string, @AuditContext() audit: AuditRequest, @Param('id') id: string) {
+    return render(await this.requests.cancel(id, userId, audit));
   }
 
   /**
