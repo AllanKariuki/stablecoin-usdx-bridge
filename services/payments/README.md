@@ -50,6 +50,50 @@ Two failure distinctions the code makes deliberately:
 Marking an intent FAILED on a don't-know would be a lie about money that has
 already left somebody's bank.
 
+## Telling the customer: the outbox
+
+```
+BEGIN  →  mark intent SETTLED/FAILED (+ invoice PAID)  →  INSERT outbox  →  COMMIT  →  relay → notifications
+```
+
+The event that drives the email and the in-app toast is a row in `outbox`,
+written **in the same transaction** as the status change it announces. It
+used to be a best-effort POST made after the fact, so notifications being down
+at the moment of settlement meant the customer was simply never told. Now the
+intent cannot say SETTLED without its `payment.settled` event existing, and an
+outage delays the email rather than dropping it.
+
+`OutboxRelay` delivers rows to notifications' `POST /internal/events`:
+
+- **Kicked after every commit** that wrote an event, so the toast still
+  arrives while the page is open, and **swept on a timer**
+  (`OUTBOX_RELAY_SECONDS`), so a row nobody kicked is still found.
+- **Backoff** of 1s doubling to a 5-minute cap; `OUTBOX_MAX_ATTEMPTS` (100,
+  roughly eight hours) before a row is marked `DEAD`. A 4xx other than
+  408/429 is DEAD at once — notifications saying an event is malformed will
+  say so forever.
+- **At-least-once.** The row id travels as `dedupeKey`; notifications'
+  delivery log and webhook queue are UNIQUE on it, so a replay tells nobody
+  twice.
+- **Safe on every replica**: rows are claimed `FOR UPDATE SKIP LOCKED`, with
+  the claim pushing `next_attempt_at` out as a lease, so a relay that dies
+  mid-delivery leaves its rows due again rather than stuck.
+
+An empty `NOTIFICATIONS_URL` is allowed: events queue and are delivered once
+it is set.
+
+```sql
+-- What's owed, and what was given up on.
+SELECT status, count(*) FROM outbox GROUP BY status;
+SELECT id, event, party_id, attempts, last_error FROM outbox WHERE status = 'DEAD';
+-- Retry a DEAD row once the cause is fixed.
+UPDATE outbox SET status = 'PENDING', attempts = 0, next_attempt_at = now() WHERE id = '<id>';
+```
+
+Tests: `pnpm --filter @damp/payments test` runs `test/outbox.e2e-spec.ts`
+against `payments_test` (override with `PAYMENTS_TEST_DATABASE_URL`) — never
+the dev database.
+
 ## Rails
 
 `RailProvider` is three methods: `collect`, `disburse`, `parseCallback`. Its

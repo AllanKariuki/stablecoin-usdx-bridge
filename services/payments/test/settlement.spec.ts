@@ -11,7 +11,9 @@ import { RailCallback } from '../src/rails/rail-provider';
  *   2. an intent marked SETTLED with nothing behind it in the ledger;
  *   3. an intent marked FAILED when the ledger's answer was "I don't know",
  *      after the rail has already moved the money;
- *   4. settling the amount that was *requested* when the rail moved another.
+ *   4. settling the amount that was *requested* when the rail moved another;
+ *   5. a settlement or failure that commits without the outbox event telling
+ *      the customer about it (or with two of them).
  *
  * Every real rail delivers callbacks at-least-once, so (1) is routine rather
  * than exceptional.
@@ -59,6 +61,7 @@ function harness(over: { current?: PaymentIntent; settleWins?: boolean } = {}) {
     }),
     markFailed: jest.fn(async (_id: string, reason: string) => {
       calls.markFailed.push(reason);
+      return true;
     }),
   };
 
@@ -80,20 +83,26 @@ function harness(over: { current?: PaymentIntent; settleWins?: boolean } = {}) {
 
   const banks = { findBeneficiary: jest.fn(async () => null) };
   const invoices = { markPaid: jest.fn(async () => undefined) };
-  const notifications = {
-    paymentSettled: jest.fn(async () => undefined),
-    paymentFailed: jest.fn(async () => undefined),
-  };
+  // A transaction that runs its callback against a marker executor, so the
+  // tests can assert that every write which must commit together was handed
+  // the same one. The real rollback behaviour is covered against Postgres in
+  // outbox.e2e-spec.ts.
+  const tx = { query: jest.fn() };
+  const db = { transaction: jest.fn(async (fn: (q: unknown) => Promise<unknown>) => fn(tx)) };
+  const outbox = { enqueue: jest.fn(async () => 'evt_1') };
+  const relay = { kick: jest.fn() };
 
   const service = new SettlementService(
     intents as never,
     banks as never,
     invoices as never,
     ledger as never,
-    notifications as never,
+    db as never,
+    outbox as never,
+    relay as never,
   );
 
-  return { service, intents, ledger, banks, invoices, notifications, calls, current };
+  return { service, intents, ledger, banks, invoices, db, tx, outbox, relay, calls, current };
 }
 
 const callback = (over: Partial<RailCallback> = {}): RailCallback => ({
@@ -109,8 +118,26 @@ describe('SettlementService', () => {
     await h.service.onRailCallback('stub', callback());
 
     expect(h.calls.deposits).toBe(1);
-    expect(h.intents.markSettled).toHaveBeenCalledWith('pi_1', 'tx_1');
-    expect(h.notifications.paymentSettled).toHaveBeenCalled();
+    expect(h.intents.markSettled).toHaveBeenCalledWith('pi_1', 'tx_1', h.tx);
+  });
+
+  it('writes the payment.settled event in the same transaction as the status change', async () => {
+    // Before the outbox this was a POST after the fact, and a notifications
+    // outage at that moment meant the customer was never told.
+    const h = harness();
+    await h.service.onRailCallback('stub', callback());
+
+    expect(h.db.transaction).toHaveBeenCalledTimes(1);
+    expect(h.outbox.enqueue).toHaveBeenCalledWith(
+      h.tx,
+      expect.objectContaining({
+        event: 'payment.settled',
+        partyId: 'party_1',
+        payload: expect.objectContaining({ intentId: 'pi_1', amount: '250.00', ledgerTxId: 'tx_1' }),
+      }),
+    );
+    // Kicked only after the transaction resolved, so the relay can see the row.
+    expect(h.relay.kick).toHaveBeenCalledTimes(1);
   });
 
   it('does nothing for a callback on an intent that is already settled', async () => {
@@ -132,7 +159,7 @@ describe('SettlementService', () => {
     await h.service.settle(h.current, '250.00');
 
     expect(h.calls.markSettled).toBe(2);
-    expect(h.notifications.paymentSettled).toHaveBeenCalledTimes(1);
+    expect(h.outbox.enqueue).toHaveBeenCalledTimes(1);
   });
 
   it('does not book an amount the callback chose, leaving the intent for review', async () => {
@@ -186,6 +213,7 @@ describe('SettlementService', () => {
     await expect(h.service.onRailCallback('stub', callback())).rejects.toThrow();
     expect(h.calls.markFailed).toHaveLength(0);
     expect(h.intents.markSettled).not.toHaveBeenCalled();
+    expect(h.outbox.enqueue).not.toHaveBeenCalled();
   });
 
   it('marks an intent failed when the rail reports failure', async () => {
@@ -194,7 +222,22 @@ describe('SettlementService', () => {
 
     expect(h.calls.deposits).toBe(0);
     expect(h.calls.markFailed[0]).toBe('insufficient funds at bank');
-    expect(h.notifications.paymentFailed).toHaveBeenCalled();
+    expect(h.outbox.enqueue).toHaveBeenCalledWith(
+      h.tx,
+      expect.objectContaining({ event: 'payment.failed', payload: expect.objectContaining({ reason: 'insufficient funds at bank' }) }),
+    );
+  });
+
+  it('does not emit payment.failed when the intent was already terminal', async () => {
+    // A late failure callback for money that already landed, or a rail
+    // repeating its failure: the status guard updates nothing, and the
+    // customer must not be told their payment failed (again, or wrongly).
+    const h = harness();
+    h.intents.markFailed.mockResolvedValueOnce(false);
+    await h.service.onRailCallback('stub', callback({ status: 'FAILED', failureReason: 'late' }));
+
+    expect(h.outbox.enqueue).not.toHaveBeenCalled();
+    expect(h.relay.kick).not.toHaveBeenCalled();
   });
 
   it('waits rather than acting on a non-terminal rail status', async () => {
@@ -220,6 +263,6 @@ describe('SettlementService', () => {
     const h = harness({ current: intent({ direction: 'WITHDRAWAL', invoiceId: 'inv_1' }) });
     await h.service.onRailCallback('stub', callback());
 
-    expect(h.invoices.markPaid).toHaveBeenCalledWith('inv_1', 'pi_1');
+    expect(h.invoices.markPaid).toHaveBeenCalledWith('inv_1', 'pi_1', h.tx);
   });
 });

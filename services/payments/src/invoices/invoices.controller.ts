@@ -1,8 +1,10 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Query } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CurrentUser, IdempotencyKey } from '../auth/current-user.decorator';
+import { DbService } from '../db/db.service';
 import { toMoney } from '../money/money';
-import { NotificationsClient } from '../notifications/notifications.client';
+import { OutboxRelay } from '../outbox/outbox.relay';
+import { OutboxRepository } from '../outbox/outbox.repository';
 import { render as renderIntent } from '../intents/intents.controller';
 import { IntentsRepository } from '../intents/intents.repository';
 import { IntentsService } from '../intents/intents.service';
@@ -16,7 +18,9 @@ export class InvoicesController {
     private readonly intents: IntentsService,
     private readonly intentsRepo: IntentsRepository,
     private readonly settlement: SettlementService,
-    private readonly notifications: NotificationsClient,
+    private readonly db: DbService,
+    private readonly outbox: OutboxRepository,
+    private readonly relay: OutboxRelay,
     private readonly config: ConfigService,
   ) {}
 
@@ -53,19 +57,29 @@ export class InvoicesController {
       lineItems?: unknown[];
     },
   ) {
-    const invoice = await this.repo.create({ ...body, issuerPartyId: partyId });
-
-    await this.notifications.invoiceIssued({
+    // The invoice and the event announcing it commit together, so an invoice
+    // can't exist that its payer was never going to be told about.
+    const invoice = await this.db.transaction(async (q) => {
+      const created = await this.repo.create({ ...body, issuerPartyId: partyId }, q);
       // Addressed to the payer when there is one. An invoice issued to an
       // email address that isn't a party yet has nobody to notify in-app —
       // the payment link is the notification.
-      partyId: invoice.payerPartyId || partyId,
-      invoiceId: invoice.id,
-      number: invoice.number,
-      amount: invoice.amount,
-      currency: invoice.currency,
-      payLink: this.payLink(invoice),
+      const notify = created.payerPartyId || partyId;
+      await this.outbox.enqueue(q, {
+        event: 'invoice.issued',
+        partyId: notify,
+        payload: {
+          partyId: notify,
+          invoiceId: created.id,
+          number: created.number,
+          amount: created.amount,
+          currency: created.currency,
+          payLink: this.payLink(created),
+        },
+      });
+      return created;
     });
+    this.relay.kick();
 
     return this.render(invoice, partyId);
   }

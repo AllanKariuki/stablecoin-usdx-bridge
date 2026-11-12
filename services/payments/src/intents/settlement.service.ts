@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { CoreLedgerClient, LedgerError } from '../core-ledger/core-ledger.client';
-import { NotificationsClient } from '../notifications/notifications.client';
+import { DbService } from '../db/db.service';
+import { OutboxRelay } from '../outbox/outbox.relay';
+import { OutboxRepository } from '../outbox/outbox.repository';
 import { RailCallback } from '../rails/rail-provider';
 import { BanksRepository } from '../banks/banks.repository';
 import { InvoicesRepository } from '../invoices/invoices.repository';
@@ -20,6 +22,12 @@ import { IntentsRepository, PaymentIntent } from './intents.repository';
  *
  * Nothing here is a distributed transaction and nothing needs to be. There is
  * exactly one write that moves value, and it is idempotent.
+ *
+ * Telling the customer is not a separate step that can be lost. The event
+ * announcing a settlement or failure is written to the outbox in the same
+ * local transaction as the intent's status change, and the relay delivers it
+ * to notifications whenever notifications is up — so a notifications outage
+ * at the moment of settlement delays the email rather than dropping it.
  */
 @Injectable()
 export class SettlementService {
@@ -30,7 +38,9 @@ export class SettlementService {
     private readonly banks: BanksRepository,
     private readonly invoices: InvoicesRepository,
     private readonly ledger: CoreLedgerClient,
-    private readonly notifications: NotificationsClient,
+    private readonly db: DbService,
+    private readonly outbox: OutboxRepository,
+    private readonly relay: OutboxRelay,
   ) {}
 
   /**
@@ -161,41 +171,66 @@ export class SettlementService {
       throw err;
     }
 
-    const first = await this.intents.markSettled(intent.id, tx.id);
+    // Intent, invoice and event commit together. Before the outbox, the
+    // event was a POST made after this point, and a notifications outage
+    // here meant the customer was never told; an invoice marked in a separate
+    // statement could also stay OPEN after the intent that paid it settled.
+    const ledgerTxId = tx.id;
+    const first = await this.db.transaction(async (q) => {
+      if (!(await this.intents.markSettled(intent.id, ledgerTxId, q))) return false;
+      if (intent.invoiceId) {
+        await this.invoices.markPaid(intent.invoiceId, intent.id, q);
+      }
+      await this.outbox.enqueue(q, {
+        event: 'payment.settled',
+        partyId: intent.partyId,
+        payload: {
+          partyId: intent.partyId,
+          intentId: intent.id,
+          direction: intent.direction,
+          amount,
+          currency: intent.currency,
+          ledgerTxId,
+        },
+      });
+      return true;
+    });
     if (!first) {
       // A concurrent callback won. Both posted the same idempotency key, so
       // core-ledger returned the same transaction to both; nothing moved
-      // twice.
+      // twice, and only the winner wrote an event.
       this.logger.log(`intent ${intent.id} was settled concurrently; no second journal entry was created`);
       return;
     }
 
     this.logger.log(`settled ${intent.id}: ${intent.direction} ${amount} ${intent.currency} → ${tx.id}`);
-
-    if (intent.invoiceId) {
-      await this.invoices.markPaid(intent.invoiceId, intent.id);
-    }
-
-    await this.notifications.paymentSettled({
-      partyId: intent.partyId,
-      intentId: intent.id,
-      direction: intent.direction,
-      amount,
-      currency: intent.currency,
-      ledgerTxId: tx.id,
-    });
+    this.relay.kick();
   }
 
   private async fail(intent: PaymentIntent, reason: string): Promise<void> {
-    await this.intents.markFailed(intent.id, reason);
-    this.logger.warn(`intent ${intent.id} failed: ${reason}`);
-    await this.notifications.paymentFailed({
-      partyId: intent.partyId,
-      intentId: intent.id,
-      direction: intent.direction,
-      amount: intent.amount,
-      currency: intent.currency,
-      reason,
+    const transitioned = await this.db.transaction(async (q) => {
+      if (!(await this.intents.markFailed(intent.id, reason, q))) return false;
+      await this.outbox.enqueue(q, {
+        event: 'payment.failed',
+        partyId: intent.partyId,
+        payload: {
+          partyId: intent.partyId,
+          intentId: intent.id,
+          direction: intent.direction,
+          amount: intent.amount,
+          currency: intent.currency,
+          reason,
+        },
+      });
+      return true;
     });
+    if (!transitioned) {
+      // Already settled, cancelled or failed. A late or repeated failure
+      // callback must not tell a customer whose money landed that it didn't.
+      this.logger.log(`intent ${intent.id} not marked failed (already terminal): ${reason}`);
+      return;
+    }
+    this.logger.warn(`intent ${intent.id} failed: ${reason}`);
+    this.relay.kick();
   }
 }
