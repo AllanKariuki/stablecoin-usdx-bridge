@@ -1,5 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { AuditRequest, enqueueAuditEvent, Queryable } from '@damp/nest-platform';
 import { randomUUID } from 'node:crypto';
+import { AUDIT, SERVICE, WORKFLOW_ACTOR } from '../audit/audit-actions';
 import { DbService } from '../db/db.service';
 import { CoreLedgerClient } from '../core-ledger/core-ledger.client';
 import { StubKycProvider } from '../providers/kyc-provider';
@@ -181,7 +183,13 @@ export class CasesService {
   }
 
   /** A compliance officer's decision. It proposes; it does not grant. */
-  async review(caseId: string, reviewedBy: string, decision: 'APPROVE' | 'REJECT', notes: string) {
+  async review(
+    caseId: string,
+    reviewedBy: string,
+    decision: 'APPROVE' | 'REJECT',
+    notes: string,
+    audit?: AuditRequest,
+  ) {
     const kycCase = await this.find(caseId);
     if (!kycCase) throw new NotFoundException('no such case');
     if (kycCase.status !== 'PENDING_REVIEW') {
@@ -189,15 +197,33 @@ export class CasesService {
     }
 
     if (decision === 'REJECT') {
-      await this.reject(caseId, reviewedBy, notes);
+      await this.reject(caseId, reviewedBy, notes, audit);
       return this.find(caseId);
     }
 
-    await this.db.query(
-      `UPDATE kyc_cases SET reviewed_by = $2, review_notes = $3, status = 'PENDING_APPROVAL', updated_at = now()
-        WHERE id = $1`,
-      [caseId, reviewedBy, notes],
-    );
+    await this.db.transaction(async (client) => {
+      await client.query(
+        `UPDATE kyc_cases SET reviewed_by = $2, review_notes = $3, status = 'PENDING_APPROVAL', updated_at = now()
+          WHERE id = $1`,
+        [caseId, reviewedBy, notes],
+      );
+      // The reviewer's recommendation, which is not yet a grant: the tier
+      // moves only when the maker-checker request comes back approved.
+      await enqueueAuditEvent(
+        client,
+        {
+          actor: reviewedBy,
+          action: AUDIT.reviewed,
+          service: SERVICE,
+          subjectType: 'KYC_CASE',
+          subjectId: caseId,
+          beforeState: { status: 'PENDING_REVIEW' },
+          afterState: { status: 'PENDING_APPROVAL', recommendation: 'APPROVE' },
+          metadata: { partyId: kycCase.partyId, tier: kycCase.requestedTier, riskScore: kycCase.riskScore, notes },
+        },
+        audit,
+      );
+    });
     await this.requestApproval(caseId, reviewedBy, notes);
     return this.find(caseId);
   }
@@ -276,6 +302,7 @@ export class CasesService {
     // some other request, or a case with no request recorded, is not ours.
     if (!kycCase.approvalRequestId || kycCase.approvalRequestId !== input.requestId) {
       this.logger.error(`REFUSING an approval for ${kycCase.id}: request ${input.requestId} is not the one it opened`);
+      await this.auditRefusal(kycCase.id, input, 'approval request id mismatch');
       return { applied: false, reason: 'approval request id mismatch' };
     }
 
@@ -292,22 +319,46 @@ export class CasesService {
         `REFUSING an approval for ${kycCase.id}: the approved payload does not match this case. ` +
           `Either the case changed after approval, or the decision is not for what it claims.`,
       );
+      await this.auditRefusal(kycCase.id, input, 'payload digest mismatch');
       return { applied: false, reason: 'payload digest mismatch' };
     }
 
     if (input.status !== 'APPROVED') {
-      await this.reject(kycCase.id, 'workflow', `Approval ${input.status.toLowerCase()}`);
+      await this.reject(kycCase.id, 'workflow', `Approval ${input.status.toLowerCase()}`, undefined, input.requestId);
       return { applied: true };
     }
 
-    await this.tiers.grant({
-      partyId: kycCase.partyId,
-      tier: kycCase.requestedTier,
-      grantedBy: kycCase.reviewedBy || 'system',
-      caseId: kycCase.id,
-      reason: `KYC case ${kycCase.id} approved`,
+    // The grant, the case status and the audit event are one transaction:
+    // a tier that moved with no record of the approval behind it is exactly
+    // the gap a KYC audit looks for.
+    await this.db.transaction(async (client) => {
+      const { fromTier } = await this.tiers.grant(
+        {
+          partyId: kycCase.partyId,
+          tier: kycCase.requestedTier,
+          grantedBy: kycCase.reviewedBy || 'system',
+          caseId: kycCase.id,
+          reason: `KYC case ${kycCase.id} approved`,
+        },
+        client,
+      );
+      await this.setStatus(kycCase.id, 'APPROVED', { decided_at: new Date() }, client);
+      await enqueueAuditEvent(client, {
+        actor: WORKFLOW_ACTOR,
+        action: AUDIT.approved,
+        service: SERVICE,
+        subjectType: 'KYC_CASE',
+        subjectId: kycCase.id,
+        beforeState: { status: 'PENDING_APPROVAL', tier: fromTier },
+        afterState: { status: 'APPROVED', tier: kycCase.requestedTier },
+        metadata: {
+          partyId: kycCase.partyId,
+          reviewedBy: kycCase.reviewedBy,
+          approvalRequestId: input.requestId,
+          payloadDigest: input.payloadDigest,
+        },
+      });
     });
-    await this.setStatus(kycCase.id, 'APPROVED', { decided_at: new Date() });
 
     // Unfreeze. The wallet was frozen at TIER_0 (or never created), and
     // core-ledger's existing status route is the mechanism — no second
@@ -319,12 +370,63 @@ export class CasesService {
     return { applied: true };
   }
 
-  async reject(caseId: string, by: string, reason: string): Promise<void> {
-    await this.db.query(
-      `UPDATE kyc_cases SET status = 'REJECTED', rejection_reason = $2, reviewed_by = $3,
-              decided_at = now(), updated_at = now()
-        WHERE id = $1 AND status NOT IN ('APPROVED', 'REJECTED')`,
-      [caseId, reason, by],
+  async reject(
+    caseId: string,
+    by: string,
+    reason: string,
+    audit?: AuditRequest,
+    approvalRequestId?: string,
+  ): Promise<void> {
+    await this.db.transaction(async (client) => {
+      const { rows } = await client.query(
+        `UPDATE kyc_cases k SET status = 'REJECTED', rejection_reason = $2, reviewed_by = $3,
+                decided_at = now(), updated_at = now()
+           FROM (SELECT id, status FROM kyc_cases WHERE id = $1 FOR UPDATE) prev
+          WHERE k.id = prev.id AND k.status NOT IN ('APPROVED', 'REJECTED')
+          RETURNING prev.status AS before, k.party_id`,
+        [caseId, reason, by],
+      );
+      if (rows.length === 0) return;
+      await enqueueAuditEvent(
+        client,
+        {
+          // "workflow" is how onApprovalDecision names a rejection delivered
+          // by the approval service; the trail uses the same service actor
+          // as every other workflow-delivered decision.
+          actor: by === 'workflow' ? WORKFLOW_ACTOR : by,
+          action: AUDIT.rejected,
+          service: SERVICE,
+          subjectType: 'KYC_CASE',
+          subjectId: caseId,
+          beforeState: { status: rows[0].before },
+          afterState: { status: 'REJECTED' },
+          metadata: { partyId: rows[0].party_id, reason, approvalRequestId: approvalRequestId ?? null },
+        },
+        audit,
+      );
+    });
+  }
+
+  /**
+   * A decision this service refused to act on — the request id or the digest
+   * did not match the case. Evidence of a forged or misdirected approval, and
+   * the only write the refusal makes.
+   */
+  private async auditRefusal(
+    caseId: string,
+    input: { requestId: string; payloadDigest: string; status: string },
+    reason: string,
+  ): Promise<void> {
+    await this.db.transaction((client) =>
+      enqueueAuditEvent(client, {
+        actor: WORKFLOW_ACTOR,
+        action: AUDIT.approvalRefused,
+        service: SERVICE,
+        outcome: 'DENIED',
+        subjectType: 'KYC_CASE',
+        subjectId: caseId,
+        metadata: { reason, approvalRequestId: input.requestId, payloadDigest: input.payloadDigest, status: input.status },
+      }),
     );
   }
 
@@ -374,14 +476,19 @@ export class CasesService {
     }));
   }
 
-  private async setStatus(id: string, status: CaseStatus, extra: Record<string, unknown> = {}): Promise<void> {
+  private async setStatus(
+    id: string,
+    status: CaseStatus,
+    extra: Record<string, unknown> = {},
+    client: Queryable = this.db,
+  ): Promise<void> {
     const sets = ['status = $2', 'updated_at = now()'];
     const params: unknown[] = [id, status];
     for (const [key, value] of Object.entries(extra)) {
       params.push(value);
       sets.push(`${key} = $${params.length}`);
     }
-    await this.db.query(`UPDATE kyc_cases SET ${sets.join(', ')} WHERE id = $1`, params);
+    await client.query(`UPDATE kyc_cases SET ${sets.join(', ')} WHERE id = $1`, params);
   }
 }
 

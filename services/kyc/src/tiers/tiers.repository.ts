@@ -1,3 +1,4 @@
+import { Queryable } from '@damp/nest-platform';
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { DbService } from '../db/db.service';
@@ -63,12 +64,12 @@ export class TiersRepository {
     caseId?: string;
     reason: string;
     expiresAt?: Date | null;
-  }): Promise<void> {
-    const current = await this.db.query<{ tier: string }>('SELECT tier FROM party_tiers WHERE party_id = $1', [
-      input.partyId,
-    ]);
+  }, client: Queryable = this.db): Promise<{ fromTier: string }> {
+    // `client` lets a caller run the grant inside its own transaction, so a
+    // tier change and the audit event that explains it are one commit.
+    const current = await client.query('SELECT tier FROM party_tiers WHERE party_id = $1', [input.partyId]);
 
-    await this.db.query(
+    await client.query(
       `INSERT INTO party_tiers (party_id, tier, granted_by, case_id, expires_at)
        VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (party_id) DO UPDATE SET
@@ -78,19 +79,20 @@ export class TiersRepository {
       [input.partyId, input.tier, input.grantedBy, input.caseId ?? null, input.expiresAt ?? null],
     );
 
-    await this.db.query(
+    await client.query(
       `INSERT INTO tier_history (id, party_id, from_tier, to_tier, reason, changed_by, case_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
       [
         `th_${randomUUID()}`,
         input.partyId,
-        current.rows[0]?.tier ?? '',
+        String(current.rows[0]?.tier ?? ''),
         input.tier,
         input.reason,
         input.grantedBy,
         input.caseId ?? null,
       ],
     );
+    return { fromTier: String(current.rows[0]?.tier ?? '') };
   }
 
   async history(partyId: string) {

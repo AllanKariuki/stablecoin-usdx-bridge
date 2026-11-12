@@ -3,6 +3,7 @@ import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
 import { ApprovalsController } from './cases/approvals.controller';
 import { CasesController } from './cases/cases.controller';
 import { CasesService } from './cases/cases.service';
+import { AuditRelayService } from './audit/audit-relay.service';
 import { KycConfig } from './config/kyc-config';
 import { CoreLedgerClient } from './core-ledger/core-ledger.client';
 import { DbModule } from './db/db.module';
@@ -26,6 +27,10 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       DbModule,
       KycModule,
     ],
+    // In the root module because that is where PlatformModule's exports
+    // (the metrics registry the relay's backlog gauge registers on) are
+    // visible.
+    providers: [AuditRelayService],
   };
 }
 
