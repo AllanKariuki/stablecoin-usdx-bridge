@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
-import { AuditContext, AuditRequest } from '@damp/nest-platform';
-import { CurrentUser } from '../auth/current-user.decorator';
+import { AuditContext, AuditRequest, PlatformException } from '@damp/nest-platform';
+import { Actor, CurrentActor } from '../auth/current-user.decorator';
 import { payloadDigest } from './digest';
 import { ApprovalRequest, RequestsService } from './requests.service';
 
@@ -8,8 +8,15 @@ import { ApprovalRequest, RequestsService } from './requests.service';
  * Maker-checker's HTTP surface.
  *
  * Two audiences: services proposing actions (`POST /approval-requests`), and
- * humans deciding on them. Both go through the gateway, so the roles this
- * service checks against a policy are the ones auth-proxy resolved.
+ * humans deciding on them.
+ *
+ * Humans arrive through the gateway (Traefik → auth-proxy → bff), so their
+ * X-User-Id and X-Roles are auth-proxy's, and the roles a policy is checked
+ * against are those — never anything in the body. Services (kyc, compliance)
+ * call `POST /approval-requests` directly on the internal network, forwarding
+ * as X-User-Id the gateway identity of the officer whose action they are
+ * proposing; they never decide, and the roles a proposer holds are recorded
+ * but authorize nothing.
  */
 @Controller()
 export class RequestsController {
@@ -37,7 +44,7 @@ export class RequestsController {
 
   @Post('approval-requests')
   async propose(
-    @CurrentUser() userId: string,
+    @CurrentActor() actor: Actor,
     @AuditContext() audit: AuditRequest,
     @Body()
     body: {
@@ -48,17 +55,17 @@ export class RequestsController {
       summary?: Record<string, unknown>;
       reason?: string;
       callbackUrl?: string;
-      roles?: string[];
     },
   ) {
+    refuseClaimedRoles(body);
     const request = await this.requests.propose({
       action: body.action,
       subjectType: body.subjectType,
       subjectId: body.subjectId,
       payload: body.payload,
       summary: body.summary,
-      requestedBy: userId,
-      requestedByRoles: body.roles ?? [],
+      requestedBy: actor.userId,
+      requestedByRoles: actor.roles,
       reason: body.reason,
       callbackUrl: body.callbackUrl,
       audit,
@@ -69,16 +76,17 @@ export class RequestsController {
   @Post('approval-requests/:id/approve')
   @HttpCode(200)
   async approve(
-    @CurrentUser() userId: string,
+    @CurrentActor() actor: Actor,
     @AuditContext() audit: AuditRequest,
     @Param('id') id: string,
-    @Body() body: { comment?: string; roles?: string[] },
+    @Body() body: { comment?: string },
   ) {
+    refuseClaimedRoles(body);
     const request = await this.requests.decide({
       requestId: id,
       decision: 'APPROVE',
-      decidedBy: userId,
-      decidedByRoles: body?.roles ?? [],
+      decidedBy: actor.userId,
+      decidedByRoles: actor.roles,
       comment: body?.comment,
       audit,
     });
@@ -88,16 +96,17 @@ export class RequestsController {
   @Post('approval-requests/:id/reject')
   @HttpCode(200)
   async reject(
-    @CurrentUser() userId: string,
+    @CurrentActor() actor: Actor,
     @AuditContext() audit: AuditRequest,
     @Param('id') id: string,
-    @Body() body: { comment?: string; roles?: string[] },
+    @Body() body: { comment?: string },
   ) {
+    refuseClaimedRoles(body);
     const request = await this.requests.decide({
       requestId: id,
       decision: 'REJECT',
-      decidedBy: userId,
-      decidedByRoles: body?.roles ?? [],
+      decidedBy: actor.userId,
+      decidedByRoles: actor.roles,
       comment: body?.comment,
       audit,
     });
@@ -106,8 +115,8 @@ export class RequestsController {
 
   @Post('approval-requests/:id/cancel')
   @HttpCode(200)
-  async cancel(@CurrentUser() userId: string, @AuditContext() audit: AuditRequest, @Param('id') id: string) {
-    return render(await this.requests.cancel(id, userId, audit));
+  async cancel(@CurrentActor() actor: Actor, @AuditContext() audit: AuditRequest, @Param('id') id: string) {
+    return render(await this.requests.cancel(id, actor.userId, audit));
   }
 
   /**
@@ -122,6 +131,27 @@ export class RequestsController {
   @HttpCode(200)
   digest(@Body() body: { payload: unknown }) {
     return { digest: payloadDigest(body?.payload) };
+  }
+}
+
+/**
+ * Refuses a body that carries `roles`, rather than ignoring it.
+ *
+ * This endpoint used to authorize decisions against roles taken from the
+ * body, so anyone the gateway let through could approve anything by claiming
+ * `treasury`. Roles now come only from X-Roles. A body that still sends them
+ * is either a client written against the old contract — which believes its
+ * claim matters and should find out loudly — or somebody probing for the old
+ * behaviour; silently dropping the field would hide both. Nothing on the
+ * platform sends it today, so refusing costs nothing legitimate.
+ */
+function refuseClaimedRoles(body: unknown): void {
+  if (body !== null && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'roles')) {
+    throw new PlatformException(
+      400,
+      'ROLES_NOT_ACCEPTED',
+      'roles are not accepted in the request body; they are taken from the identity the gateway resolved',
+    );
   }
 }
 
