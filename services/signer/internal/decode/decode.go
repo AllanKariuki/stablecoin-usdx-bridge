@@ -15,6 +15,8 @@ package decode
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -35,6 +37,15 @@ type Decoded struct {
 	Destination string
 	// Target is the contract (Ethereum) or program (Solana) being called.
 	Target string
+	// Mint is the SPL mint the Solana instruction acts on. Empty on Ethereum,
+	// where the token is the contract itself.
+	Mint string
+	// OnChainID is the 32-byte correlation id the bridge call carries — the
+	// bytes32 on Ethereum, the [u8; 32] (and processed-marker PDA seed) on
+	// Solana. It is what the chain's replay guard is keyed on, which is why
+	// the caller's correlation id has to be bound to it. Nil for methods that
+	// carry none (pause, blacklist).
+	OnChainID []byte
 }
 
 var (
@@ -51,13 +62,13 @@ func selector(sig string) [4]byte {
 	return out
 }
 
-// Ethereum decodes an unsigned transaction and proves it is the thing the
-// digest commits to.
+// Ethereum decodes an unsigned transaction, proves it is the thing the digest
+// commits to, and refuses it unless it calls dep's USD-X contract.
 //
 // The digest check is the load-bearing line: without it a caller could send a
 // harmless 1-unit mint as `rawTx` and the hash of a 10-million-unit one as the
 // digest.
-func Ethereum(rawTx, digest []byte) (*Decoded, error) {
+func Ethereum(rawTx, digest []byte, dep Deployment) (*Decoded, error) {
 	if len(rawTx) == 0 {
 		return nil, errors.New("ethereum requests must carry the unsigned transaction so the signer can verify what it signs")
 	}
@@ -76,6 +87,12 @@ func Ethereum(rawTx, digest []byte) (*Decoded, error) {
 	}
 	if tx.To() == nil {
 		return nil, errors.New("contract creation is never signed by this service")
+	}
+	if dep.EthContract == (common.Address{}) {
+		return nil, errors.New("no USD-X contract is configured for Ethereum; refusing to sign")
+	}
+	if *tx.To() != dep.EthContract {
+		return nil, fmt.Errorf("the transaction calls %s, which is not the configured USD-X contract", tx.To().Hex())
 	}
 	if tx.Value().Sign() != 0 {
 		return nil, errors.New("the transaction transfers ETH; the bridge methods never should")
@@ -104,6 +121,7 @@ func Ethereum(rawTx, digest []byte) (*Decoded, error) {
 			d.Method = "bridgeBurn"
 		}
 		d.Amount = new(big.Int).SetBytes(args[32:64])
+		d.OnChainID = bytes.Clone(args[64:96])
 	case selBlacklist:
 		if len(args) != 32 {
 			return nil, fmt.Errorf("blacklist has %d argument bytes, want 32", len(args))
@@ -154,4 +172,64 @@ func Reconcile(d *Decoded, claimedMethod, claimedAmount, claimedDestination stri
 		return fmt.Errorf("caller claimed destination %q but the transaction acts on %q", claimedDestination, d.Destination)
 	}
 	return nil
+}
+
+// CorrelationIDHash is how core-ledger turns a saga's correlation id into the
+// 32 bytes both chains carry (core-ledger/internal/bridge.CorrelationIDHash).
+// Duplicated rather than imported: the signer must not depend on the caller
+// it is checking, and if the two ever diverge every bridge call is refused,
+// which is the direction this service should fail in.
+func CorrelationIDHash(correlationID string) [32]byte {
+	return sha256.Sum256([]byte(correlationID))
+}
+
+// BindCorrelation proves the caller's correlation id is the one the bytes
+// carry.
+//
+// Idempotency is keyed on the caller's correlation id; the chain's replay
+// guard is keyed on the id inside the transaction. Unbound, a caller can
+// present an already-signed transaction under a fresh correlation id — the
+// idempotency check finds nothing and signs it again — or reuse a correlation
+// id whose on-chain id is a different, unspent one, getting a second mint
+// past both guards.
+func BindCorrelation(d *Decoded, correlationID string) error {
+	if d.OnChainID == nil {
+		return nil
+	}
+	if correlationID == "" {
+		// With no key to look up, idempotency is skipped entirely — the one
+		// check a call that moves money must never skip.
+		return fmt.Errorf("%s must carry a correlation id", d.Method)
+	}
+	want := CorrelationIDHash(correlationID)
+	if !bytes.Equal(d.OnChainID, want[:]) {
+		return fmt.Errorf("correlation id %q does not match the on-chain id 0x%x the transaction carries",
+			correlationID, d.OnChainID)
+	}
+	return nil
+}
+
+// PayloadDigest hashes what the transaction authorises, independent of nonce,
+// gas and recent blockhash.
+//
+// It is what a retry under the same correlation id is compared against. The
+// raw digest cannot be: a saga retry rebuilds the transaction, and on Solana a
+// fresh blockhash alone changes the bytes, so "same bytes or refuse" turned
+// every retry after a signed-but-never-landed attempt into a dead letter.
+// Same payload is the right equivalence because the on-chain id is part of
+// it, and the chain's replay guard on that id is what lets at most one of the
+// two transactions land.
+func (d *Decoded) PayloadDigest(chain string) string {
+	amount := ""
+	if d.Amount != nil {
+		amount = d.Amount.String()
+	}
+	h := sha256.New()
+	for _, field := range []string{
+		strings.ToUpper(chain), d.Method, d.Target, d.Mint, amount, d.Destination, hex.EncodeToString(d.OnChainID),
+	} {
+		h.Write([]byte(field))
+		h.Write([]byte{0x1f}) // unit separator, so field boundaries cannot shift
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

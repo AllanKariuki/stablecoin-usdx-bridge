@@ -65,6 +65,57 @@ a container `localhost` is the container itself. Four of them broke silently:
   presigned GET, and checks a wrong secret gets a 403. It skips unless
   `KYC_TEST_S3_ENDPOINT` is set, the same opt-in core-ledger's
   `LEDGER_TEST_DATABASE_URL` uses.
+### Fixed — P6 signer: what the bytes are bound to
+Branch `fix/p6-signer-binding`. The three items left open after the signer
+started decoding what it signs.
+- **The correlation id was not bound to the signed bytes.** Idempotency is
+  keyed on the caller's correlation id; the chain's replay guard on the id
+  *inside* the transaction. Unbound, an already-signed transaction presented
+  under a fresh correlation id found no record and was signed again. Both
+  chains carry `sha256(correlation_id)` (the `bytes32` on Ethereum, the
+  `[u8; 32]` and processed-marker seed on Solana); the signer now requires the
+  caller's id to hash to it, and refuses a bridge call that carries none.
+- **A retry could never be re-signed.** Same correlation id with different
+  bytes was refused outright — but a saga retry rebuilds its transaction, and
+  on Solana a fresh blockhash alone changes the bytes, so a signed attempt
+  that never landed dead-lettered its saga. Each correlation id is now bound to
+  one **payload** (chain, method, contract/program, mint, amount, destination,
+  on-chain id — no nonce, gas or blockhash): the same bytes replay the
+  original signature, rebuilt bytes for the same payload are signed again, a
+  different payload is `409 CORRELATION_REUSED`. Safe because the on-chain id
+  is in the payload and now verified, so the chain's replay guard lets at most
+  one land. Re-signs count once towards the daily limit. Migration `00002`
+  adds `payload_digest`, widens the unique index to include the digest, and
+  checks one-payload-per-correlation inside the SERIALIZABLE append so two
+  replicas cannot both bind; rows from before it still verify and still accept
+  only their exact bytes.
+- **The Solana mint was not allowlisted.** `usdx_bridge` does not pin its
+  mint, and anyone can create a mint whose authority is the program's PDA — a
+  `bridge_mint` against one would spend the correlation id's processed marker
+  on worthless tokens and block the real mint. The signer now refuses any mint
+  but the configured one, and refuses an ATA create for any account but the
+  one the bridge instruction touches (the relayer pays its rent).
+- **Which contracts are ours moved from the policy file to deployment
+  configuration**: `USDX_PROXY_ADDRESS`, `USDX_PROGRAM_ID`,
+  `USDX_MINT_ADDRESS` — the names and values core-ledger already uses.
+  Required and validated at boot outside `ENV=local` (the zero address the
+  example policy shipped with is refused); a policy file still carrying
+  `targets:` is refused at load rather than silently ignored. Documented in
+  `services/signer/.env.example`; `infra/k8s/signer-deployment.yaml` reads
+  them from a new `usdx-deployment` ConfigMap, left empty so an unfilled one
+  stops the signer at boot.
+
+### Notes
+- **Not verified live.** Signer suite under `-race` against a real Postgres
+  (`signer_test`), plus the audit suite run over a database first populated by
+  `main`'s signer, to check the `00002` upgrade keeps old rows verifying.
+- core-ledger is unchanged: it already derives both on-chain ids from the
+  correlation id it passes, compensation (`<id>-compensation`) included. It
+  still treats the signer's `409` as retryable, so a genuine payload conflict
+  dead-letters after the attempt budget rather than compensating.
+- Local development now needs `USDX_PROGRAM_ID`/`USDX_MINT_ADDRESS` (and
+  `USDX_PROXY_ADDRESS` for Ethereum) in `services/signer/.env` for the signer
+  to sign anything on that chain.
 
 ## 2026-11-09
 

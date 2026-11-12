@@ -14,14 +14,11 @@
 # with no rule is REFUSED — forgetting to write one is not the same as
 # deciding a method is unrestricted.
 
-# Contracts (Ethereum) and programs (Solana) the signer will sign calls to. The
-# decoder proves what a transaction says; only this list says whether the
-# contract it calls is ours. A chain with no entry signs nothing.
-targets:
-  ETHEREUM:
-    - "0x0000000000000000000000000000000000000000"   # USDX proxy — replace per deployment
-  SOLANA:
-    - "9GFGtYxGtZg8Smk4yyya7zAT6V3WcLDsB9XWWQbxMS8"   # usdx_bridge program id
+# Which contracts are ours — the USD-X proxy, the usdx_bridge program and the
+# USD-X mint — is NOT in this file. It is deployment configuration
+# (USDX_PROXY_ADDRESS, USDX_PROGRAM_ID, USDX_MINT_ADDRESS), the same values
+# core-ledger is given, and required at boot outside ENV=local. A `targets:`
+# section here is refused at load rather than silently ignored.
 
 rules:
   # ---- Ethereum ---------------------------------------------------------

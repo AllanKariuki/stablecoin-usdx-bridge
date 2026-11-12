@@ -30,13 +30,14 @@ func anchorDisc(name string) [8]byte {
 
 // Solana decodes a serialised legacy message — which is exactly what is
 // signed — and checks it contains nothing but the bridge instruction (and the
-// idempotent ATA creation that accompanies a mint) for an allowed program.
+// idempotent ATA creation that accompanies a mint) for dep's bridge program,
+// acting on dep's USD-X mint.
 //
 // claimedWallet is the wallet the caller says the instruction acts on. The
 // message only carries the associated token account, so the claim is verified
 // by deriving ATA(claimedWallet, mint) and requiring it to be the account the
 // instruction actually touches.
-func Solana(message []byte, programs []string, claimedWallet string) (*Decoded, error) {
+func Solana(message []byte, dep Deployment, claimedWallet string) (*Decoded, error) {
 	if len(message) == 0 {
 		return nil, errors.New("empty message")
 	}
@@ -55,19 +56,12 @@ func Solana(message []byte, programs []string, claimedWallet string) (*Decoded, 
 		return nil, errors.New("the message is not in canonical form")
 	}
 
-	allowed := map[solanago.PublicKey]bool{}
-	for _, p := range programs {
-		pk, err := solanago.PublicKeyFromBase58(p)
-		if err != nil {
-			return nil, fmt.Errorf("configured program %q is not a pubkey", p)
-		}
-		allowed[pk] = true
-	}
-	if len(allowed) == 0 {
-		return nil, errors.New("no allowed Solana program is configured; refusing to sign")
+	if dep.SolProgram.IsZero() || dep.SolMint.IsZero() {
+		return nil, errors.New("the Solana bridge program and USD-X mint are not configured; refusing to sign")
 	}
 
 	var bridge *solanago.CompiledInstruction
+	var ataCreates []*solanago.CompiledInstruction
 	for i := range msg.Instructions {
 		ix := &msg.Instructions[i]
 		if int(ix.ProgramIDIndex) >= len(msg.AccountKeys) {
@@ -75,7 +69,7 @@ func Solana(message []byte, programs []string, claimedWallet string) (*Decoded, 
 		}
 		prog := msg.AccountKeys[ix.ProgramIDIndex]
 		switch {
-		case allowed[prog]:
+		case prog == dep.SolProgram:
 			if bridge != nil {
 				return nil, errors.New("more than one bridge instruction in one message")
 			}
@@ -85,6 +79,7 @@ func Solana(message []byte, programs []string, claimedWallet string) (*Decoded, 
 			if !bytes.Equal(ix.Data, []byte{1}) {
 				return nil, errors.New("only the idempotent associated-token-account create is allowed")
 			}
+			ataCreates = append(ataCreates, ix)
 		default:
 			return nil, fmt.Errorf("the message calls program %s, which is not allowed", prog)
 		}
@@ -108,6 +103,7 @@ func Solana(message []byte, programs []string, claimedWallet string) (*Decoded, 
 		return nil, errors.New("unknown instruction; only bridge_mint and bridge_burn are signed")
 	}
 	d.Amount = new(big.Int).SetUint64(binary.LittleEndian.Uint64(bridge.Data[8:16]))
+	d.OnChainID = bytes.Clone(bridge.Data[16:48])
 
 	if len(bridge.Accounts) < minAccounts {
 		return nil, fmt.Errorf("bridge instruction has %d accounts, want at least %d (is BridgeConfig missing?)",
@@ -124,6 +120,17 @@ func Solana(message []byte, programs []string, claimedWallet string) (*Decoded, 
 	if err != nil {
 		return nil, err
 	}
+	// usdx_bridge does not pin its mint: it ties the token account to
+	// *whatever* mint is passed, and anyone can initialise a mint whose
+	// authority is the program's mint-authority PDA. A bridge_mint against
+	// such a mint would spend this correlation id's processed marker on
+	// worthless tokens, and the real mint would then be refused as already
+	// processed. So the program id alone does not make this USD-X; this check
+	// does, as the proxy address does on Ethereum.
+	if mint != dep.SolMint {
+		return nil, fmt.Errorf("the instruction acts on mint %s, which is not the configured USD-X mint", mint)
+	}
+	d.Mint = mint.String()
 	token, err := key(acctToken)
 	if err != nil {
 		return nil, err
@@ -146,6 +153,27 @@ func Solana(message []byte, programs []string, claimedWallet string) (*Decoded, 
 	}
 	if derived != token {
 		return nil, fmt.Errorf("the instruction acts on token account %s, which is not %s's account for this mint", token, wallet)
+	}
+
+	// The accompanying ATA create must be for the same account. Otherwise the
+	// relayer pays rent for token accounts of any wallet and any mint the
+	// caller names — small sums, but paid by a key whose balance is what
+	// keeps mints landing.
+	for _, ix := range ataCreates {
+		if len(ix.Accounts) < 4 {
+			return nil, errors.New("associated-token-account create has too few accounts")
+		}
+		var keys [4]solanago.PublicKey
+		for i := range keys {
+			if int(ix.Accounts[i]) >= len(msg.AccountKeys) {
+				return nil, errors.New("account index out of range")
+			}
+			keys[i] = msg.AccountKeys[ix.Accounts[i]]
+		}
+		// payer, associated token account, wallet, mint
+		if keys[0] != relayer || keys[1] != token || keys[2] != wallet || keys[3] != mint {
+			return nil, errors.New("the associated-token-account create is not for the account the bridge instruction touches")
+		}
 	}
 	d.Destination = wallet.String()
 	return d, nil

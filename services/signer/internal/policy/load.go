@@ -27,9 +27,11 @@ type fileRule struct {
 }
 
 type file struct {
-	Rules       []fileRule          `yaml:"rules"`
-	DailyLimits map[string]string   `yaml:"daily_limits"`
-	Targets     map[string][]string `yaml:"targets"`
+	Rules       []fileRule        `yaml:"rules"`
+	DailyLimits map[string]string `yaml:"daily_limits"`
+	// Targets is no longer read — see Load. Parsed only so its presence can
+	// be refused rather than silently ignored.
+	Targets map[string][]string `yaml:"targets"`
 }
 
 // Load reads a policy file. A missing or unparseable file is an error, never
@@ -50,10 +52,17 @@ func Load(path string) (Policy, error) {
 		return Policy{}, fmt.Errorf("the signing policy at %s has no rules; a signer with no rules signs nothing", path)
 	}
 
-	p := Policy{DailyLimits: map[string]*big.Int{}, Targets: map[string][]string{}}
-	for chain, list := range parsed.Targets {
-		p.Targets[strings.ToUpper(chain)] = list
+	if parsed.Targets != nil {
+		// The contract/program allowlist moved to USDX_PROXY_ADDRESS,
+		// USDX_PROGRAM_ID and USDX_MINT_ADDRESS. A policy file still carrying
+		// `targets:` is refused rather than ignored: an operator who edits it
+		// expecting the change to take effect would otherwise be wrong about
+		// which contract the signer will sign for.
+		return Policy{}, fmt.Errorf("the signing policy at %s has a `targets:` section, which is no longer read; "+
+			"set USDX_PROXY_ADDRESS, USDX_PROGRAM_ID and USDX_MINT_ADDRESS instead and remove it", path)
 	}
+
+	p := Policy{DailyLimits: map[string]*big.Int{}}
 	for i, r := range parsed.Rules {
 		if r.Method == "" {
 			return Policy{}, fmt.Errorf("policy rule %d has no method", i+1)
