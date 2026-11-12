@@ -1,7 +1,6 @@
 import { configureStore } from '@reduxjs/toolkit';
 import { getConfig } from '../../Config';
 import { getToken } from '../../utils/authUtils';
-import { enableMapSet } from 'immer';
 import websocketReducer from '../slices/oauth-web-sockets/websocketSlice';
 import { createWebSocketMiddleWare } from '../../services/websocketMiddleware';
 import authReducer from '../slices/oauth-web-sockets/authSlice';
@@ -21,9 +20,6 @@ import issuanceReducer from '../slices/issuance/issuanceSlice';
 import dashboardReducer from '../slices/dashboard/dashboardSlice';
 import conversionReducer from '../slices/conversion/conversionSlice';
 import bankAccountsReducer from '../slices/bankAccountsSlice';
-
-// Enable Map and Set support in Immer for Redux state
-enableMapSet();
 
 // Websocket configuration.
 //
