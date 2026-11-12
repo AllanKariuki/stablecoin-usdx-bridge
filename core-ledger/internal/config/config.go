@@ -119,6 +119,16 @@ type Config struct {
 	// metric-based paging this phase is built around would silently never
 	// fire. Empty is fine for `--watch` and for local runs.
 	PushgatewayURL string `env:"PUSHGATEWAY_URL" default:""`
+
+	// AuditTrailURL is services/audit-trail's base URL. The worker's audit
+	// relay drains audit_outbox to its POST /internal/events. Empty is
+	// supported — the API still writes every audit event in the same
+	// transaction as its action, and they wait — but nothing reaches the
+	// trail until it is set.
+	AuditTrailURL string `env:"AUDIT_TRAIL_URL" default:""`
+
+	// AuditTrailToken is the bearer token audit-trail's INGEST_TOKEN expects.
+	AuditTrailToken string `env:"AUDIT_TRAIL_TOKEN" default:""`
 }
 
 func Load() (Config, error) {

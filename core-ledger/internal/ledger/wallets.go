@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gagliardetto/solana-go"
 	"github.com/google/uuid"
@@ -130,7 +132,11 @@ func (r *Repository) WalletsOf(ctx context.Context, userID string) ([]Wallet, er
 // through to its account so the posting engine enforces it. Doing it in one
 // database transaction is what stops a wallet from reading FROZEN to the
 // customer while its account still accepts postings.
-func (r *Repository) SetWalletStatus(ctx context.Context, walletID string, status WalletStatus) error {
+//
+// by is the actor, recorded in the audit trail in the same transaction: a
+// freeze is a compliance decision, and one nobody can attribute is not one
+// anybody can defend.
+func (r *Repository) SetWalletStatus(ctx context.Context, walletID string, status WalletStatus, by string) error {
 	w, err := r.Wallet(ctx, walletID)
 	if err != nil {
 		return err
@@ -164,6 +170,21 @@ func (r *Repository) SetWalletStatus(ctx context.Context, walletID string, statu
 		if err := tx.Model(&Wallet{}).Where("id = ?", walletID).Update("status", status).Error; err != nil {
 			return err
 		}
-		return tx.Model(&Account{}).Where("id = ?", w.AccountID).Update("status", acctStatus).Error
+		if err := tx.Model(&Account{}).Where("id = ?", w.AccountID).Update("status", acctStatus).Error; err != nil {
+			return err
+		}
+		return enqueueAudit(ctx, tx, audit.Event{
+			Actor:       by,
+			Action:      AuditWalletStatusChanged,
+			SubjectType: auditSubjectWallet,
+			SubjectID:   walletID,
+			// w was read before the transaction; a concurrent change between
+			// the two would make this "before" stale, which is a reason to
+			// read it again rather than a reason to leave it out — an
+			// auditor's first question is what it was.
+			BeforeState: map[string]any{"status": string(w.Status)},
+			AfterState:  map[string]any{"status": string(status)},
+			Metadata:    map[string]any{"user_id": w.UserID, "currency": w.Currency, "account_id": w.AccountID},
+		})
 	})
 }

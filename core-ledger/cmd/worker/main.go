@@ -21,6 +21,7 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/outbox"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/worker"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -127,6 +128,26 @@ func main() {
 		go relay.Run(ctx)
 	}
 
+	// The audit relay, beside the event relay and for the same reason: the
+	// worker is the process that already drains durable queues, and the API
+	// stays a thing that only writes. Unconfigured is the same supported
+	// state as for the event outbox — every audit event is committed with
+	// its action and waits — but it is logged as a warning, because until it
+	// drains, audit-trail cannot answer for anything core-ledger did.
+	auditMetrics := audit.NewMetrics()
+	if cfg.AuditTrailURL != "" {
+		auditStore, aerr := repo.AuditStore()
+		if aerr != nil {
+			logger.Error("opening the audit outbox", slog.Any("error", aerr))
+			os.Exit(1)
+		}
+		auditRelay := audit.NewRelay(auditStore, audit.NewHTTPPublisher(cfg.AuditTrailURL, cfg.AuditTrailToken), logger).
+			WithMetrics(auditMetrics)
+		go auditRelay.Run(ctx)
+	} else {
+		logger.Warn("AUDIT_TRAIL_URL is not set; audit events accumulate in audit_outbox until it is")
+	}
+
 	// The worker serves no business traffic, but it still needs probes: a
 	// replica whose database connection has gone should stop being counted as
 	// a live consumer of the queue.
@@ -134,7 +155,7 @@ func main() {
 	health.AddCheck("database", repo.Ping)
 
 	metrics := platform.NewMetrics(serviceName)
-	if err := metrics.Register(outboxMetrics.Collectors()...); err != nil {
+	if err := metrics.Register(append(outboxMetrics.Collectors(), auditMetrics.Collectors()...)...); err != nil {
 		logger.Error("registering outbox metrics", slog.Any("error", err))
 		os.Exit(1)
 	}
