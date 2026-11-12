@@ -17,6 +17,7 @@ import unifiedNotificationsReducer from '../slices/navigation/unifiedNotificatio
 import paymentsReducer from '../slices/payments/paymentsSlice';
 import transactionsReducer from '../slices/transactions/transactionsSlice';
 import walletReducer from '../slices/wallet/walletSlice';
+import issuanceReducer from '../slices/issuance/issuanceSlice';
 import dashboardReducer from '../slices/dashboard/dashboardSlice';
 import conversionReducer from '../slices/conversion/conversionSlice';
 import bankAccountsReducer from '../slices/bankAccountsSlice';
@@ -62,6 +63,7 @@ export const store = configureStore({
         payments: paymentsReducer,
         transactions: transactionsReducer,
         wallet: walletReducer,
+        issuance: issuanceReducer,
         dashboard: dashboardReducer,
         conversion: conversionReducer,
         bankAccounts: bankAccountsReducer,

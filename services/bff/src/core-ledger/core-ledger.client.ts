@@ -13,6 +13,10 @@ interface CoreLedgerError {
 
 export interface RequestOptions {
   idempotencyKey?: string;
+  /** Forwarded as X-User-Id so core-ledger's actor() stamps the person who
+   * moved the money as initiated_by, rather than the generic "api" it falls
+   * back to for a call carrying no identity. */
+  actor?: string;
   query?: Record<string, string | undefined>;
 }
 
@@ -55,6 +59,9 @@ export class CoreLedgerClient {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (options?.idempotencyKey) {
       headers['Idempotency-Key'] = options.idempotencyKey;
+    }
+    if (options?.actor) {
+      headers['X-User-Id'] = options.actor;
     }
 
     let response: Response;
