@@ -5,6 +5,36 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## 2026-11-12
 
+### Fixed — infrastructure gaps
+- **audit-trail and reporting had no k8s manifests**, although the P7 entry
+  above claims one, so every producer's relay pointed at a Service that did not
+  exist. `infra/k8s/p7-services.yaml` adds both. audit-trail runs one replica
+  with `Recreate`: its anchoring loop has no leader election, and two replicas
+  could close overlapping windows that both pass `UNIQUE (from_seq, to_seq)`.
+  Ingress is the four producers, bff, reporting and observability; egress is
+  Postgres and DNS. core-ledger's NetworkPolicy now admits reporting, which
+  reads every figure from it.
+- **NATS is reachable only by its two clients.** It has no auth, and
+  notifications pushes whatever arrives on `live.notifications.push.v1` to
+  customer sockets. `infra/k8s/nats-networkpolicy.yaml` limits :4222 to
+  core-ledger-worker and notifications (assumes pods labelled `app: nats`).
+- **kyc's presigned PUT signs Content-Type.** A slot issued for one type
+  accepted anything. Setting ContentType on the command was not enough — the
+  presigner signs `host` alone unless told otherwise (`signableHeaders`), which
+  the MinIO spec's new negative case caught.
+- **MinIO's pinned image could not be pulled**: upstream no longer publishes
+  community images. Compose and CI use
+  `pgsty/minio:RELEASE.2026-08-04T00-00-00Z`, pinned by digest — a maintained
+  rebuild with the same CLI and `mc`. MinIO left the `app` profile so tests can
+  start it alone.
+- **kyc's MinIO spec now runs in `make test-node` and CI**; it had skipped
+  everywhere since it was written.
+- **`make db-backfill`** creates every `infra/postgres/init/*.sql` role and
+  database an existing volume lacks, one guarded statement at a time.
+  test-node only back-filled P5, so a pre-P4 volume never got payments or
+  notifications.
+- Manifests are YAML-parsed and structure-checked only, never applied.
+
 ### Fixed — core-ledger events sent to JetStream never reached notifications
 - core-ledger's relay has one destination and NATS wins over
   `OUTBOX_RELAY_URL`; with compose now setting the worker's `NATS_URL`, every
