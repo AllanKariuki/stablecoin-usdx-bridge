@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/chainclients/signerclient"
 )
 
 // The classification decides between "try again" and "give the money back",
@@ -49,6 +51,31 @@ func TestClassify(t *testing.T) {
 			errors.New("bridgeBurn tx: execution reverted: already burned"), ClassAlreadyProcessed},
 		{"anchor init on an existing marker",
 			errors.New("Allocate: account Address { .. } already in use"), ClassAlreadyProcessed},
+
+		// Refused: services/signer declined, wrapped exactly as each chain
+		// client wraps it on the way back to the saga. Before these were
+		// typed, every one read as transient and was retried to a dead letter.
+		{"policy denial through the ethereum client",
+			fmt.Errorf("bridgeMint tx: %w", &signerclient.PolicyDeniedError{Reason: "amount exceeds the ceiling"}), ClassRefused},
+		{"policy denial through the solana client",
+			fmt.Errorf("signing transaction: %w", &signerclient.PolicyDeniedError{Reason: "caller not allowed"}), ClassRefused},
+		{"correlation reused",
+			fmt.Errorf("bridgeBurn tx: %w", &signerclient.CorrelationReusedError{Reason: "different payload"}), ClassRefused},
+		{"re-sign limit",
+			fmt.Errorf("signing transaction: %w", &signerclient.ResignLimitError{Reason: "5 re-signs"}), ClassRefused},
+
+		// The type wins over the text. A refusal's reason is free text, and
+		// one that happened to say "already minted" must not be read as proof
+		// the mint landed — that path credits the ledger.
+		{"refusal whose reason reads like a replay guard",
+			fmt.Errorf("bridgeMint tx: %w", &signerclient.PolicyDeniedError{Reason: "execution reverted: already minted"}), ClassRefused},
+		{"refusal whose reason reads like a revert",
+			&signerclient.ResignLimitError{Reason: "account is blacklisted"}, ClassRefused},
+
+		// The same words without the type are just a message: nothing
+		// recognised, so transient.
+		{"untyped text that merely mentions the signer",
+			errors.New("the signer refused: something"), ClassTransient},
 	}
 
 	for _, tc := range cases {

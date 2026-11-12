@@ -106,10 +106,11 @@ type SignResult struct {
 
 // Sign asks for a signature.
 //
-// A refusal (403) is returned as PolicyDeniedError, which the saga's error
-// classifier treats as terminal: a policy denial will deny identically on
-// every retry, and burning an attempt budget on it only delays the moment
-// somebody looks at the dead letter.
+// The signer's three refusals come back typed — PolicyDeniedError (403),
+// CorrelationReusedError and ResignLimitError (both 409) — so the saga can
+// recognise them with errors.As rather than by reading messages. Each will
+// refuse identically on every retry, and burning an attempt budget on one
+// only delays the moment somebody looks at the dead letter.
 func (c *Client) Sign(ctx context.Context, req SignRequest) (*SignResult, error) {
 	amount := ""
 	if req.Amount != nil {
@@ -147,13 +148,8 @@ func (c *Client) Sign(ctx context.Context, req SignRequest) (*SignResult, error)
 		return nil, err
 	}
 
-	if resp.StatusCode == http.StatusForbidden {
-		var envelope struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
-		}
-		_ = json.Unmarshal(payload, &envelope)
-		return nil, &PolicyDeniedError{Reason: envelope.Error}
+	if refusal := refusalFrom(resp.StatusCode, payload); refusal != nil {
+		return nil, refusal
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("the signer returned %s: %s", resp.Status, strings.TrimSpace(string(payload)))
@@ -215,16 +211,83 @@ func (c *Client) Keys(ctx context.Context) (map[string]string, error) {
 	return keys, nil
 }
 
+// The codes services/signer puts in a 409's envelope. A wire contract: a code
+// renamed on the signer without this side following would quietly turn a
+// refusal back into a retried failure.
+const (
+	CodeCorrelationReused  = "CORRELATION_REUSED"
+	CodeResignLimitReached = "RESIGN_LIMIT_REACHED"
+)
+
+// refusalFrom maps a response onto a typed refusal, or nil when it is not
+// one.
+//
+// A 409 carrying a code this client does not know is deliberately not a
+// refusal: it falls through to an ordinary error, which the saga retries.
+// Guessing "terminal" for a code nobody here has reasoned about is the
+// expensive direction to guess wrong in.
+func refusalFrom(status int, payload []byte) error {
+	if status != http.StatusForbidden && status != http.StatusConflict {
+		return nil
+	}
+	var envelope struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	_ = json.Unmarshal(payload, &envelope)
+
+	switch {
+	case status == http.StatusForbidden:
+		return &PolicyDeniedError{Reason: envelope.Error}
+	case envelope.Code == CodeCorrelationReused:
+		return &CorrelationReusedError{Reason: envelope.Error}
+	case envelope.Code == CodeResignLimitReached:
+		return &ResignLimitError{Reason: envelope.Error}
+	default:
+		return nil
+	}
+}
+
 // PolicyDeniedError is a refusal, not a failure.
 //
 // The distinction matters to the saga: a denial is deterministic and will
-// deny identically on every retry, so it is classified terminal. Retrying it
-// eleven times before dead-lettering only delays the moment an operator sees
-// the reason.
+// deny identically on every retry, so it is never retried. Retrying it eleven
+// times before dead-lettering only delays the moment an operator sees the
+// reason.
 type PolicyDeniedError struct {
 	Reason string
 }
 
 func (e *PolicyDeniedError) Error() string {
 	return "the signer refused: " + e.Reason
+}
+
+// CorrelationReusedError means the signer has already signed something else
+// under this correlation id — a different amount, destination, contract or
+// on-chain id.
+//
+// Retrying cannot change that, and unwinding is not safe either: the other
+// payload's signature exists and may have landed. The only correct response
+// is a human comparing the two against the chain.
+type CorrelationReusedError struct {
+	Reason string
+}
+
+func (e *CorrelationReusedError) Error() string {
+	return "the signer refused, correlation id already bound to a different payload: " + e.Reason
+}
+
+// ResignLimitError means this movement has been re-signed, as rebuilt
+// transactions, as many times as the signer allows.
+//
+// Every one of those signatures may still be in a mempool. Only one can land,
+// but on Ethereum each of the others is a revert the relayer pays gas for —
+// which is why the signer stops, and why the saga must stop asking rather
+// than retry into the same refusal.
+type ResignLimitError struct {
+	Reason string
+}
+
+func (e *ResignLimitError) Error() string {
+	return "the signer refused, re-sign limit reached: " + e.Reason
 }
