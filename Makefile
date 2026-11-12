@@ -21,6 +21,9 @@ TEST_DATABASE_URL ?= postgres://bridge:bridge@localhost:55433/bridge_test?sslmod
 # a shared database goose sees core-ledger's version 6, skips signer's 00001,
 # and the signatures table never exists.
 SIGNER_TEST_DATABASE_URL ?= postgres://signer:signer@localhost:55433/signer_test?sslmode=disable
+# audit-trail's own test database (infra/postgres/init/06-p7-databases.sql),
+# for the same goose-version-table reason as signer's.
+AUDIT_TRAIL_TEST_DATABASE_URL ?= postgres://audit_trail:audit_trail@localhost:55433/audit_trail_test?sslmode=disable
 
 .DEFAULT_GOAL := help
 
@@ -96,15 +99,27 @@ test-unit:
 # services/signer's audit tests need their own database (the append-only
 # trigger and the hash chain are database properties, so a fake would confirm
 # the Go code and none of them). It gets signer_test, never a database another
-# service migrates — see SIGNER_TEST_DATABASE_URL above.
+# service migrates — see SIGNER_TEST_DATABASE_URL above. audit-trail likewise
+# gets audit_trail_test; shared/go/platform/audit runs in a throwaway schema
+# inside bridge_test.
+#
+# The init scripts only run on a fresh volume, so a volume older than P7 has
+# no audit_trail role or database; they are created here if missing.
 test-integration: up
 	@docker exec usdx-postgres psql -U bridge -d postgres -tAc \
 		"SELECT 1 FROM pg_database WHERE datname = 'bridge_test'" | grep -q 1 \
 		|| docker exec usdx-postgres createdb -U bridge -O bridge bridge_test
+	@docker exec usdx-postgres psql -U bridge -d postgres -tAc \
+		"SELECT 1 FROM pg_roles WHERE rolname = 'audit_trail'" | grep -q 1 \
+		|| docker exec usdx-postgres psql -U bridge -d postgres -c "CREATE ROLE audit_trail WITH LOGIN PASSWORD 'audit_trail'"
+	@docker exec usdx-postgres psql -U bridge -d postgres -tAc \
+		"SELECT 1 FROM pg_database WHERE datname = 'audit_trail_test'" | grep -q 1 \
+		|| docker exec usdx-postgres createdb -U bridge -O audit_trail audit_trail_test
 	@set -euo pipefail; \
 	LEDGER_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" \
 	SIGNER_TEST_DATABASE_URL="$(SIGNER_TEST_DATABASE_URL)" \
-		go test -p 1 ./core-ledger/... ./services/signer/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
+	AUDIT_TRAIL_TEST_DATABASE_URL="$(AUDIT_TRAIL_TEST_DATABASE_URL)" \
+		go test -p 1 ./core-ledger/... ./services/signer/... ./services/audit-trail/... ./shared/go/platform/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
 	if grep -q '^--- SKIP:' /tmp/usdx-go-test.log; then \
 		echo "a test was skipped — LEDGER_TEST_DATABASE_URL must be set and reachable"; \
 		grep '^--- SKIP:' /tmp/usdx-go-test.log; \
@@ -150,7 +165,14 @@ test-sol:
 ## services/identity/test/fixtures/bootstrap.ts) — depends on `up` the same
 ## way test-integration does. --if-present skips frontend, which has no
 ## test script yet.
+#
+# workflow, kyc and compliance's audit-outbox specs run against their own
+# *_test databases too. A volume older than P5 never ran
+# 04-p5-databases.sql, so it is applied here if the roles are missing.
 test-node: up
+	@docker exec usdx-postgres psql -U bridge -d postgres -tAc \
+		"SELECT 1 FROM pg_roles WHERE rolname = 'workflow'" | grep -q 1 \
+		|| docker exec -i usdx-postgres psql -U bridge -d postgres -v ON_ERROR_STOP=1 < infra/postgres/init/04-p5-databases.sql
 	pnpm --filter "./shared/node/**" run build
 	pnpm -r --if-present run test
 
