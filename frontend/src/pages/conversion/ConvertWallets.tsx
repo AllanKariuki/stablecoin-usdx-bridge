@@ -4,8 +4,15 @@
  */
 
 import { useState } from 'react';
+import { formatDistanceToNow, isValid } from 'date-fns';
 import { Plus, Eye, EyeOff, TrendingUp, Lock } from 'lucide-react';
 import { useConversion } from '../../hooks/useConversion';
+
+/** "5 minutes ago", or "recently" when the timestamp is missing or unparseable. */
+function formatUpdatedAt(lastUpdated: string): string {
+  const date = new Date(lastUpdated);
+  return isValid(date) ? formatDistanceToNow(date, { addSuffix: true }) : 'recently';
+}
 
 /**
  * ConvertWallets - View and manage wallets for currency conversion
@@ -129,7 +136,7 @@ export default function ConvertWallets() {
                   </p>
                 </div>
                 <div className="text-xs text-gray-500">
-                  Updated {new Date(wallet.lastUpdated).toRelativeTime?.() || 'recently'}
+                  Updated {formatUpdatedAt(wallet.lastUpdated)}
                 </div>
               </div>
 

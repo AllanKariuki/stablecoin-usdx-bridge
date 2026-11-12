@@ -17,6 +17,21 @@ export interface Payment {
   notes?: string;
 }
 
+/**
+ * A payee in the send-money flow. Shared by SendMoney and the four step
+ * components it renders (RecipientSelection, PaymentDetails, PaymentReview,
+ * PaymentSuccess), which previously each declared their own drifting copy.
+ */
+export interface Recipient {
+  id: string;
+  name: string;
+  type: 'individual' | 'business' | 'account' | 'crypto-wallet';
+  account: string;
+  avatar?: string;
+  walletType?: 'fiat' | 'crypto' | 'stablecoin';
+  currency?: string;
+}
+
 export interface BillPayment {
   id: string;
   billId: string;

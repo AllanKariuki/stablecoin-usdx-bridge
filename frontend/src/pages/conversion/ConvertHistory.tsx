@@ -14,7 +14,7 @@ import { useConversion } from '../../hooks/useConversion';
  */
 export default function ConvertHistory() {
   const navigate = useNavigate();
-  const { transactionHistory, isLoading, refetchHistory } = useConversion();
+  const { transactionHistory, isLoadingHistory, refetchHistory } = useConversion();
   const [filter, setFilter] = useState<'all' | 'sent' | 'received'>('all');
 
   const filteredHistory =
@@ -94,7 +94,7 @@ export default function ConvertHistory() {
         {/* History Table */}
         <HistoryTable
           transactions={filteredHistory}
-          isLoading={isLoading}
+          isLoading={isLoadingHistory}
           onRowClick={(tx) => navigate(`/convert/confirm/${tx.transactionId}`)}
           pagination={{
             limit: 20,

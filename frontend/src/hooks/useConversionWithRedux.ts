@@ -114,7 +114,6 @@ export function useConversion() {
         // Setup new subscription
         unsubscribeRef.current = setupTransactionWebSocket(
           transactionId,
-          dispatch,
           (update) => dispatch(handleWebSocketTransactionUpdate(update))
         );
       }
@@ -139,7 +138,6 @@ export function useConversion() {
       // Setup new subscription
       unsubscribeRef.current = setupTransactionWebSocket(
         transactionId,
-        dispatch,
         (update) => dispatch(handleWebSocketTransactionUpdate(update))
       );
       return unsubscribeRef.current;
@@ -314,7 +312,6 @@ export function useTransactionMonitor(transactionId: string | null) {
       // Setup new subscription
       unsubscribeRef.current = setupTransactionWebSocket(
         transactionId,
-        dispatch,
         (update) => dispatch(handleWebSocketTransactionUpdate(update))
       );
       return unsubscribeRef.current;
