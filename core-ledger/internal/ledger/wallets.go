@@ -21,7 +21,10 @@ import (
 // on-chain currencies), creating it and its LIABILITY account on first use.
 // It is idempotent: two concurrent first-time requests both end up with the
 // same wallet rather than two.
-func (r *Repository) EnsureWallet(ctx context.Context, userID, currency, chain, address, label string) (*Wallet, error) {
+//
+// by is the actor, recorded in the audit trail with the creation — only with
+// a creation; returning an existing wallet changes nothing.
+func (r *Repository) EnsureWallet(ctx context.Context, userID, currency, chain, address, label, by string) (*Wallet, error) {
 	if userID == "" {
 		return nil, postErr("MISSING_USER", "a wallet needs an owner")
 	}
@@ -70,14 +73,42 @@ func (r *Repository) EnsureWallet(ctx context.Context, userID, currency, chain, 
 		// DoNothing rather than an error: if another request created this
 		// user's wallet for this currency a millisecond ago, the unique index
 		// on (user_id, currency, chain) catches it and we return theirs.
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(w).Error
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(w)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			// Lost the race. Roll back: the account above belongs to a wallet
+			// id that will never exist, and committing it would leave the
+			// orphan in the trial balance this function's header promises
+			// never to leave — and an audit event for a wallet nobody made.
+			return errLostWalletRace
+		}
+		return enqueueAudit(ctx, tx, audit.Event{
+			Actor:       by,
+			Action:      AuditWalletCreated,
+			SubjectType: auditSubjectWallet,
+			SubjectID:   w.ID,
+			AfterState: map[string]any{
+				"user_id":    w.UserID,
+				"currency":   w.Currency,
+				"chain":      w.Chain,
+				"address":    w.Address,
+				"status":     string(w.Status),
+				"account_id": w.AccountID,
+			},
+			Metadata: map[string]any{"label": w.Label},
+		})
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errLostWalletRace) {
 		return nil, err
 	}
 
 	return r.WalletFor(ctx, userID, currency, chain)
 }
+
+// errLostWalletRace rolls back a wallet creation another request beat.
+var errLostWalletRace = errors.New("wallet created concurrently")
 
 // validateAddress rejects an on-chain wallet the saga could never settle.
 //

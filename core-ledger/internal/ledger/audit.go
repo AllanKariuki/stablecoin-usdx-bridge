@@ -24,11 +24,16 @@ const (
 	AuditWalletStatusChanged = "ledger.wallet.status_changed"
 	AuditPeriodClosed        = "ledger.period.closed"
 	AuditDeadLetterResolved  = "ledger.saga.dead_letter_resolved"
+	AuditWalletCreated       = "ledger.wallet.created"
+	AuditChainSupplyRecorded = "ledger.reserve.chain_supply_recorded"
+	AuditCustodianRecorded   = "ledger.reserve.custodian_snapshot_recorded"
 	auditSystemActorFallback = "system:core-ledger"
 	auditSubjectTransaction  = "TRANSACTION"
 	auditSubjectWallet       = "WALLET"
 	auditSubjectClosure      = "LEDGER_CLOSURE"
 	auditSubjectSaga         = "BRIDGE_SAGA"
+	auditSubjectChainSupply  = "CHAIN_SUPPLY_SNAPSHOT"
+	auditSubjectCustodian    = "CUSTODIAN_SNAPSHOT"
 )
 
 // enqueueAudit writes an audit event on the GORM transaction tx.

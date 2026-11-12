@@ -100,7 +100,7 @@ func (h *Handlers) createWallet(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return badRequest(c, "invalid request body")
 	}
-	w, err := h.repo.EnsureWallet(c.Context(), req.UserID, req.Currency, req.Chain, h.addressFor(req.Chain, req.Address), req.Label)
+	w, err := h.repo.EnsureWallet(c.Context(), req.UserID, req.Currency, req.Chain, h.addressFor(req.Chain, req.Address), req.Label, actor(c))
 	if err != nil {
 		return fail(c, err)
 	}
