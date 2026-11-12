@@ -1,4 +1,8 @@
-import { Body, Controller, Get, Put } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Put } from '@nestjs/common';
+import { AuditContext, AuditRequest, enqueueAuditEvent } from '@damp/nest-platform';
+import { AUDIT, SERVICE } from '../audit/audit-actions';
+import { Actor } from '../auth/actor.decorator';
+import { DbService } from '../db/db.service';
 import { CoreLedgerClient } from '../core-ledger/core-ledger.client';
 import { compareDecimal, decimalsFor, toMoney, toScaled, fromScaled } from '../money/money';
 import { ReserveTargetsRepository } from './reserve-targets.repository';
@@ -16,6 +20,7 @@ export class ReservesController {
   constructor(
     private readonly ledger: CoreLedgerClient,
     private readonly targets: ReserveTargetsRepository,
+    private readonly db: DbService,
   ) {}
 
   @Get('status')
@@ -78,13 +83,40 @@ export class ReservesController {
     return { targets: await this.targets.list() };
   }
 
+  /**
+   * Sets the mandate for a currency. The path names the currency; a body
+   * that names a different one is refused rather than silently writing a
+   * target nobody addressed (the route used to read only the body's).
+   */
   @Put('targets/:currency')
-  async upsert(@Body() body: { currency: string; minRatioBps: number; bufferAmount?: string; note?: string }) {
-    return this.targets.upsert({
-      currency: body.currency,
-      minRatioBps: body.minRatioBps,
-      bufferAmount: body.bufferAmount ?? '0',
-      note: body.note ?? '',
+  async upsert(
+    @Actor() actor: string,
+    @AuditContext() audit: AuditRequest,
+    @Param('currency') currency: string,
+    @Body() body: { currency?: string; minRatioBps: number; bufferAmount?: string; note?: string },
+  ) {
+    if (body?.currency && body.currency !== currency) {
+      throw new BadRequestException(`body names ${body.currency} but the path names ${currency}`);
+    }
+    return this.db.transaction(async (q) => {
+      const { target, previous } = await this.targets.upsert(
+        { currency, minRatioBps: body.minRatioBps, bufferAmount: body.bufferAmount ?? '0', note: body.note ?? '' },
+        q,
+      );
+      await enqueueAuditEvent(
+        q,
+        {
+          actor,
+          action: AUDIT.reserveTargetSet,
+          subjectType: 'RESERVE_TARGET',
+          subjectId: currency,
+          service: SERVICE,
+          beforeState: previous ? { ...previous } : undefined,
+          afterState: { ...target },
+        },
+        audit,
+      );
+      return target;
     });
   }
 }

@@ -1,4 +1,8 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post } from '@nestjs/common';
+import { AuditContext, AuditRequest, enqueueAuditEvent } from '@damp/nest-platform';
+import { AUDIT, SERVICE } from '../audit/audit-actions';
+import { Actor } from '../auth/actor.decorator';
+import { DbService } from '../db/db.service';
 import { toMoney } from '../money/money';
 import { CustodiansRepository } from './custodians.repository';
 import { CustodiansService } from './custodians.service';
@@ -8,6 +12,7 @@ export class CustodiansController {
   constructor(
     private readonly repo: CustodiansRepository,
     private readonly service: CustodiansService,
+    private readonly db: DbService,
   ) {}
 
   @Get()
@@ -79,13 +84,39 @@ export class CustodiansController {
    */
   @Post(':id/drift')
   @HttpCode(200)
-  async setDrift(@Param('id') id: string, @Body() body: { drift?: string }) {
+  async setDrift(
+    @Actor() actor: string,
+    @AuditContext() audit: AuditRequest,
+    @Param('id') id: string,
+    @Body() body: { drift?: string },
+  ) {
     const drift = (body?.drift ?? '0').trim();
     if (!/^-?\d+(\.\d+)?$/.test(drift)) {
       throw new NotFoundException(`drift must be a signed decimal amount, got "${drift}"`);
     }
-    const custodian = await this.repo.setDrift(id, drift);
-    if (!custodian) throw new NotFoundException(`no custodian ${id}`);
+    // Arming a drift deliberately moves a reconciliation input, which is
+    // the most important thing in this service to be able to attribute: a
+    // shortfall nobody can trace to a demo looks exactly like a real one.
+    const changed = await this.db.transaction(async (q) => {
+      const result = await this.repo.setDrift(id, drift, q);
+      if (!result) return null;
+      await enqueueAuditEvent(
+        q,
+        {
+          actor,
+          action: AUDIT.custodianDriftSet,
+          subjectType: 'CUSTODIAN',
+          subjectId: id,
+          service: SERVICE,
+          beforeState: { drift: result.previousDrift },
+          afterState: { drift },
+          metadata: { provider: result.custodian.provider, currency: result.custodian.currency },
+        },
+        audit,
+      );
+      return result;
+    });
+    if (!changed) throw new NotFoundException(`no custodian ${id}`);
 
     // Report immediately so the armed drift is visible in the ledger without
     // waiting a poll interval — the demo is "change a number, watch a

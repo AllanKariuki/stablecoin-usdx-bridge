@@ -1,4 +1,7 @@
 import { Body, Controller, Get, NotFoundException, Param, Post } from '@nestjs/common';
+import { AuditContext, AuditRequest, enqueueAuditEvent } from '@damp/nest-platform';
+import { AUDIT, SERVICE } from '../audit/audit-actions';
+import { Actor } from '../auth/actor.decorator';
 import { randomUUID } from 'node:crypto';
 import { CoreLedgerClient } from '../core-ledger/core-ledger.client';
 import { DbService } from '../db/db.service';
@@ -57,10 +60,31 @@ export class AttestationsController {
    * must never be able to do by accident.
    */
   @Post()
-  async create(@Body() body: { preparedBy?: string; acknowledgeBreaks?: boolean }) {
+  async create(
+    @Actor() actor: string,
+    @AuditContext() audit: AuditRequest,
+    @Body() body: { preparedBy?: string; acknowledgeBreaks?: boolean },
+  ) {
     const status = await this.ledger.reserveStatus();
+    const breaks = status.open_breaks.map((b) => `${b.leg}/${b.code}`);
 
     if (status.open_breaks.length > 0 && !body?.acknowledgeBreaks) {
+      // The control working, and recorded as such: somebody tried to attest
+      // while reconciliation said the reserves were wrong.
+      await this.db.transaction((q) =>
+        enqueueAuditEvent(
+          q,
+          {
+            actor,
+            action: AUDIT.attestationRefused,
+            subjectType: 'ATTESTATION',
+            service: SERVICE,
+            outcome: 'DENIED',
+            metadata: { openBreaks: breaks, reconciliationRunId: status.last_run?.id ?? '' },
+          },
+          audit,
+        ),
+      );
       throw new NotFoundException(
         `refusing to attest with ${status.open_breaks.length} open reconciliation break(s): ` +
           status.open_breaks.map((b) => `${b.leg}/${b.code}`).join(', ') +
@@ -68,35 +92,80 @@ export class AttestationsController {
       );
     }
 
-    const { rows } = await this.db.query<AttestationRow>(
-      `INSERT INTO attestations
-         (id, as_of, currency, issued, backing, custodian_total, chain_supply, reconciliation_run_id, prepared_by)
-       VALUES ($1, now(), $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [
-        `att_${randomUUID()}`,
-        status.currency,
-        status.issued,
-        status.backing,
-        status.custodian?.balance ?? '0',
-        JSON.stringify({ chains: status.chains, openBreaks: status.open_breaks }),
-        status.last_run?.id ?? '',
-        body?.preparedBy ?? 'rms',
-      ],
-    );
-    return render(rows[0]);
+    const row = await this.db.transaction(async (q) => {
+      const { rows } = await q.query(
+        `INSERT INTO attestations
+           (id, as_of, currency, issued, backing, custodian_total, chain_supply, reconciliation_run_id, prepared_by)
+         VALUES ($1, now(), $2, $3, $4, $5, $6, $7, $8)
+         RETURNING *`,
+        [
+          `att_${randomUUID()}`,
+          status.currency,
+          status.issued,
+          status.backing,
+          status.custodian?.balance ?? '0',
+          JSON.stringify({ chains: status.chains, openBreaks: status.open_breaks }),
+          status.last_run?.id ?? '',
+          body?.preparedBy ?? 'rms',
+        ],
+      );
+      const att = rows[0] as unknown as AttestationRow;
+      await enqueueAuditEvent(
+        q,
+        {
+          actor,
+          action: AUDIT.attestationCreated,
+          subjectType: 'ATTESTATION',
+          subjectId: att.id,
+          service: SERVICE,
+          afterState: {
+            status: att.status,
+            currency: att.currency,
+            issued: att.issued,
+            backing: att.backing,
+            custodianTotal: att.custodian_total,
+            reconciliationRunId: att.reconciliation_run_id,
+          },
+          // preparedBy is the body's claim; actor is who the gateway says
+          // sent it. Both are kept so a gap between them is visible.
+          metadata: { preparedBy: att.prepared_by, acknowledgedBreaks: breaks },
+        },
+        audit,
+      );
+      return att;
+    });
+    return render(row);
   }
 
   @Post(':id/publish')
-  async publish(@Param('id') id: string) {
-    const { rows } = await this.db.query<AttestationRow>(
-      `UPDATE attestations SET status = 'PUBLISHED', published_at = now()
-        WHERE id = $1 AND status = 'DRAFT'
-        RETURNING *`,
-      [id],
-    );
-    if (!rows[0]) throw new NotFoundException(`no draft attestation ${id}`);
-    return render(rows[0]);
+  async publish(@Actor() actor: string, @AuditContext() audit: AuditRequest, @Param('id') id: string) {
+    const row = await this.db.transaction(async (q) => {
+      const { rows } = await q.query(
+        `UPDATE attestations SET status = 'PUBLISHED', published_at = now()
+          WHERE id = $1 AND status = 'DRAFT'
+          RETURNING *`,
+        [id],
+      );
+      const att = rows[0] as unknown as AttestationRow | undefined;
+      if (!att) return null;
+      await enqueueAuditEvent(
+        q,
+        {
+          actor,
+          action: AUDIT.attestationPublished,
+          subjectType: 'ATTESTATION',
+          subjectId: id,
+          service: SERVICE,
+          beforeState: { status: 'DRAFT' },
+          afterState: { status: 'PUBLISHED', publishedAt: att.published_at?.toISOString() ?? null },
+          metadata: { preparedBy: att.prepared_by },
+        },
+        audit,
+      );
+      return att;
+    });
+    if (!row) throw new NotFoundException(`no draft attestation ${id}`);
+    return render(row);
   }
 }
 

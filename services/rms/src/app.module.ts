@@ -1,6 +1,7 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
 import { AttestationsModule } from './attestations/attestations.module';
+import { AuditRelayService } from './audit/audit-relay.service';
 import { RmsConfig } from './config/rms-config';
 import { CoreLedgerModule } from './core-ledger/core-ledger.module';
 import { CustodiansModule } from './custodians/custodians.module';
@@ -26,6 +27,8 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       ReservesModule,
       AttestationsModule,
     ],
+    // In the root module, beside the other producers'.
+    providers: [AuditRelayService],
   };
 }
 

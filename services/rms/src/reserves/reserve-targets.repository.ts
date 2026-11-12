@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { Queryable } from '@damp/nest-platform';
 import { DbService } from '../db/db.service';
 
 /**
@@ -39,8 +40,17 @@ export class ReserveTargetsRepository {
     return rows[0] ? toTarget(rows[0]) : null;
   }
 
-  async upsert(input: ReserveTarget): Promise<ReserveTarget> {
-    const { rows } = await this.db.query<TargetRow>(
+  /**
+   * Sets a target and returns it with the one it replaced (null for a first
+   * one), on `q` so the audit event commits with it. The prior row is locked
+   * so two concurrent edits cannot both report the same "before".
+   */
+  async upsert(
+    input: ReserveTarget,
+    q: Queryable = this.db,
+  ): Promise<{ target: ReserveTarget; previous: ReserveTarget | null }> {
+    const prior = await q.query('SELECT * FROM reserve_targets WHERE currency = $1 FOR UPDATE', [input.currency]);
+    const { rows } = await q.query(
       `INSERT INTO reserve_targets (id, currency, min_ratio_bps, buffer_amount, note)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (currency) DO UPDATE SET
@@ -51,7 +61,10 @@ export class ReserveTargetsRepository {
        RETURNING *`,
       [`target_${randomUUID()}`, input.currency, input.minRatioBps, input.bufferAmount, input.note],
     );
-    return toTarget(rows[0]);
+    return {
+      target: toTarget(rows[0] as unknown as TargetRow),
+      previous: prior.rows[0] ? toTarget(prior.rows[0] as unknown as TargetRow) : null,
+    };
   }
 }
 
