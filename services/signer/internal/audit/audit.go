@@ -319,7 +319,9 @@ func (l *Log) Append(ctx context.Context, r *Record) error {
 	if r.ID == "" {
 		r.ID = uuid.New().String()
 	}
-	r.CreatedAt = time.Now().UTC()
+	// Postgres keeps microseconds. Hashing a nanosecond clock reading (Linux
+	// has one; macOS doesn't) makes the stored row fail Verify.
+	r.CreatedAt = time.Now().UTC().Truncate(time.Microsecond)
 	r.PrevHash = prev
 	r.Hash = hashOf(r)
 
