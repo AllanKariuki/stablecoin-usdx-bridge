@@ -67,13 +67,19 @@ for two reasons — detecting the same document submitted under two identities,
 and proving years later that the file in storage is the file that was
 reviewed.
 
-URLs are signed with `@aws-sdk/s3-request-presigner`, path-style, with only
-`host` in the signed headers. The unit spec (`test/storage-presign.spec.ts`)
-pins the URL's shape against a fixed clock; only a real backend can say the
-signature is one it accepts, so `test/storage-minio.integration.spec.ts` PUTs
-and reads back through MinIO. It skips unless pointed at one:
+URLs are signed with `@aws-sdk/s3-request-presigner`, path-style, with
+`content-type` and `host` in the signed headers. Binding the content type is
+what makes the type the upload slot was requested for a property of the
+stored object rather than a claim: a PUT with any other `Content-Type` is a
+403. Clients must send exactly the `contentType` the slot response returns.
+The unit spec (`test/storage-presign.spec.ts`) pins the URL's shape against a
+fixed clock; only a real backend can say the signature is one it accepts, so
+`test/storage-minio.integration.spec.ts` PUTs and reads back through MinIO,
+and checks a wrong secret and a mismatched content type are both refused.
+`make test-node` starts MinIO and runs it; CI runs it against a service
+container. It skips unless pointed at one:
 
 ```sh
-docker compose --profile app up -d minio
+docker compose up -d minio
 KYC_TEST_S3_ENDPOINT=http://localhost:59000 pnpm --filter @damp/kyc test
 ```

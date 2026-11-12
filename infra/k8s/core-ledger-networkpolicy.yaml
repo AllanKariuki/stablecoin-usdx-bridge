@@ -81,6 +81,12 @@ spec:
         - podSelector:
             matchLabels:
               app: compliance
+        # P7: reporting reads every figure it reports (trial balance,
+        # statements, reconciliation pack, attestation) from the ledger at
+        # run time. Reads only, but without this every run fails.
+        - podSelector:
+            matchLabels:
+              app: reporting
       ports:
         - protocol: TCP
           port: 8081

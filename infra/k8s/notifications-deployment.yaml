@@ -48,7 +48,8 @@ spec:
             # replicas share so each outbox event is handled once. Like
             # Postgres and Keycloak, NATS is a backing service these manifests
             # point at rather than deploy; DAMP is created by core-ledger's
-            # relay, not here.
+            # relay, not here. NATS has no auth, so who may publish here is
+            # decided by nats-networkpolicy.yaml.
             - name: NATS_URL
               value: "nats://nats.default.svc.cluster.local:4222"
           resources:

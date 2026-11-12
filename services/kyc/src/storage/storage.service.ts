@@ -69,12 +69,21 @@ export class StorageService {
       return { storageKey: key, uploadUrl: null, expiresInSeconds: 0, contentType: input.contentType };
     }
 
-    // ContentType is deliberately not on the command: it would join `host`
-    // in SignedHeaders, and only `host` was ever signed. Binding it changes
-    // what the browser must send, which is its own change, not this swap.
-    const uploadUrl = await getSignedUrl(this.s3, new PutObjectCommand({ Bucket: this.bucket, Key: key }), {
-      expiresIn: this.expirySeconds,
-    });
+    // Content-Type is signed, so the backend refuses a PUT whose
+    // Content-Type differs (403 SignatureDoesNotMatch). Without it a slot
+    // issued for `image/jpeg` accepted anything — the type recorded against
+    // the document was a claim, not a property of what was stored. The client
+    // must send exactly the `contentType` returned below.
+    //
+    // Both halves are needed: ContentType on the command puts the header on
+    // the request, and `signableHeaders` makes the presigner sign it — by
+    // default it signs `host` alone and the header is silently unenforced
+    // (the MinIO integration spec caught exactly that).
+    const uploadUrl = await getSignedUrl(
+      this.s3,
+      new PutObjectCommand({ Bucket: this.bucket, Key: key, ContentType: input.contentType }),
+      { expiresIn: this.expirySeconds, signableHeaders: new Set(['content-type']) },
+    );
     return { storageKey: key, uploadUrl, expiresInSeconds: this.expirySeconds, contentType: input.contentType };
   }
 

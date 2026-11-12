@@ -184,7 +184,32 @@ jobs:
             -c "CREATE DATABASE reporting OWNER reporting;" \
             -c "CREATE DATABASE reporting_test OWNER reporting;"
 
+      - name: Start MinIO for kyc's storage spec
+        # A step rather than a `services:` entry: service containers can't
+        # override the image's command, and MinIO's default command is the
+        # bare `minio` binary, which prints usage and exits — it needs
+        # `server /data`. Same image and digest as docker-compose.yaml (see
+        # the comment there for why it is pgsty/minio).
+        run: |
+          docker run -d --name minio -p 59000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            --health-cmd "mc ready local" --health-interval 2s --health-retries 30 \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372 \
+            server /data
+          for _ in $(seq 60); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' minio)" = healthy ] && exit 0
+            sleep 1
+          done
+          docker logs minio
+          echo "::error::MinIO did not become healthy"
+          exit 1
+
       - name: pnpm -r test
+        env:
+          # Turns on services/kyc/test/storage-minio.integration.spec.ts,
+          # which otherwise skips: presigned PUT/GET round trip, a wrong
+          # secret refused, a mismatched Content-Type refused.
+          KYC_TEST_S3_ENDPOINT: http://localhost:59000
         run: pnpm -r --if-present run test
 
       - name: pnpm -r lint

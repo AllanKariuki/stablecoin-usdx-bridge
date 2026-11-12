@@ -1,0 +1,54 @@
+# NATS has no authentication configured — no users, no nkeys, no TLS client
+# certs — so the network is the only thing deciding who may publish. That
+# matters because of one subject in particular: notifications delivers
+# whatever arrives on live.notifications.push.v1 straight to customers'
+# WebSockets (services/notifications/src/ws/live-fanout.ts). Any pod that can
+# reach :4222 can put a message in front of any customer.
+#
+# Like Postgres and Keycloak, NATS is a backing service these manifests point
+# at (nats://nats.default.svc.cluster.local:4222) rather than deploy. This
+# policy assumes it runs in the default namespace with pods labelled
+# `app: nats`. The official NATS Helm chart labels its pods
+# `app.kubernetes.io/name: nats` instead, so either add an `app: nats` pod
+# label through the chart's values or change the selector below to match. A selector that matches
+# nothing is not an error, which is exactly why this is spelled out: the
+# policy would silently protect nothing.
+#
+# Two clients, found by grepping for NATS_URL:
+#   - core-ledger-worker — the outbox relay publishes ledger events to
+#     JetStream (core-ledger/internal/outbox/nats.go). Only when NATS_URL is
+#     set in core-ledger-secrets; the API server does not connect.
+#   - notifications — publishes and subscribes on
+#     live.notifications.push.v1 so a push reaches a socket on any replica.
+# A new client means a new entry here, the same way core-ledger's own
+# policy grows one per caller.
+#
+# This narrows *who* can publish; it does not make a publish trustworthy.
+# The durable fix is per-client NATS credentials with subject permissions
+# (notifications alone may publish live.notifications.>), which the
+# deployment needs before any second team's workload shares this namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nats-ingress
+spec:
+  podSelector: { matchLabels: { app: nats } }
+  policyTypes: [Ingress]
+  ingress:
+    # Client port.
+    - from:
+        - podSelector: { matchLabels: { app: core-ledger-worker } }
+        - podSelector: { matchLabels: { app: notifications } }
+      ports:
+        - { protocol: TCP, port: 4222 }
+    # Cluster routes between NATS's own replicas (JetStream needs three for
+    # a replicated stream).
+    - from:
+        - podSelector: { matchLabels: { app: nats } }
+      ports:
+        - { protocol: TCP, port: 6222 }
+    # Monitoring (/healthz, /varz, /jsz). Read-only HTTP, no publish path.
+    - from:
+        - namespaceSelector: { matchLabels: { name: observability } }
+      ports:
+        - { protocol: TCP, port: 8222 }
