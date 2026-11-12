@@ -5,6 +5,40 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## 2026-11-12
 
+### Added — audit producers for every remaining service
+- **identity** (party, org and owner-membership creation), **payments**
+  (intents created/cancelled/settled/failed, wrong-amount rail callbacks as
+  DENIED, bank accounts registered/verified/removed, beneficiaries, invoices
+  issued/voided), **rms** (reserve targets, custodian drift, attestations
+  created/refused/published), **reporting** (report runs with their result
+  hash, CSV exports, Superset guest tokens issued/refused) and **core-ledger**
+  (wallet creation, chain-supply and custodian snapshots with the value an
+  overwrite replaced) each write an `audit_outbox` event in the same
+  transaction as the change.
+- **signer forwards every signature and refusal** to audit-trail from the same
+  SERIALIZABLE transaction as its own hash-chained row, carrying that row's
+  hash so the two records can be cross-checked: one place answers "who moved
+  this money". Its egress NetworkPolicy allows audit-trail:8085.
+- **payments outbox metrics**: `payments_outbox_pending_events`,
+  `payments_outbox_delivered_total`, `payments_outbox_dead_lettered_total`. A
+  DEAD row used to be only a log line.
+
+### Changed
+- `PlatformModule.forRoot` is global, so `PlatformMetricsService` reaches
+  feature-module providers; an `@Optional()` injection outside the root module
+  resolved to undefined and its metrics never appeared.
+- identity's JIT provisioning creates party, org and membership in one
+  transaction (a crash between them left a company login with no membership).
+- rms `PUT /reserves/targets/:currency` writes the path's currency — it read
+  only the body's — and refuses a mismatched body.
+- reporting's CSV export requires `X-User-Id` (it was the one anonymous way to
+  take data out), and an export or guest token is handed over only after its
+  audit event commits.
+
+### Fixed
+- core-ledger `EnsureWallet`: a request that lost the creation race no longer
+  commits an orphan wallet account into the trial balance.
+
 ### Fixed — infrastructure gaps
 - **audit-trail and reporting had no k8s manifests**, although the P7 entry
   above claims one, so every producer's relay pointed at a Service that did not
