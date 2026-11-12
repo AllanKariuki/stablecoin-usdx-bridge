@@ -5,6 +5,35 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## 2026-11-12
 
+### Fixed — core-ledger events sent to JetStream never reached notifications
+- core-ledger's relay has one destination and NATS wins over
+  `OUTBOX_RELAY_URL`; with compose now setting the worker's `NATS_URL`, every
+  ledger event, reconciliation-break alerts included, went into the `DAMP`
+  stream and stopped there. notifications now runs a **durable JetStream
+  consumer** (`notifications-outbox`, shared by every replica) on
+  `damp.ledger.>` and `damp.reserves.>`, through the same handler and the same
+  `outbox:<id>` dedupe key as `/internal/outbox`, so switching transports
+  cannot double-notify.
+- Acked only after handling; a database error naks with backoff, and a message
+  that fails `OUTBOX_CONSUMER_MAX_DELIVERIES` (10) times, or can't be parsed, is
+  terminated, logged and counted (`notifications_outbox_messages_total`).
+- The stream stays core-ledger's: notifications only creates its durable and
+  waits when it boots before `DAMP` exists. A new durable starts from the
+  stream's retention (`OUTBOX_CONSUMER_DELIVER_POLICY=all`), so events stranded
+  before this fix are delivered once. With `NATS_URL` unset nothing changes.
+- One NATS connection now serves both live fan-out and the consumer, and
+  `PlatformModule` is global in notifications so its metrics reach `/metrics`.
+
+### Fixed — deliveries left PENDING by a crash were never retried
+- A crash between writing a delivery row and sending left it `PENDING`, and a
+  replay was skipped as a duplicate. Rows now carry a lease and an attempt
+  count: a replay reclaims a row whose lease is older than
+  `PENDING_STALE_SECONDS` (120), a sweeper re-sends stranded rows nobody
+  replays, and after `PENDING_MAX_ATTEMPTS` (5) or 24h the row is `FAILED`.
+  Taking the lease is one conditional `UPDATE`, so racing replicas re-send a
+  row once. SMTP timeouts are bounded so a send cannot outlive its lease.
+  Re-sends are at-least-once.
+
 ### Fixed — signer refusals were retried until the saga dead-lettered
 - **core-ledger read every signer refusal as transient.** `signerclient` now
   returns typed errors for all three: `PolicyDeniedError` (403),
