@@ -57,12 +57,7 @@ type entryPayload struct {
 // enqueueTransactionPosted writes the outbox row for a freshly posted
 // transaction, using the same *gorm.DB handle — and therefore the same
 // SERIALIZABLE transaction — that wrote the journal lines.
-func enqueueTransactionPosted(tx *gorm.DB, txn *Transaction, accounts map[string]*Account) error {
-	decimals, err := currencyDecimals(tx, txn.Entries)
-	if err != nil {
-		return err
-	}
-
+func enqueueTransactionPosted(tx *gorm.DB, txn *Transaction, accounts map[string]*Account, decimals map[string]int32) error {
 	entries := make([]entryPayload, 0, len(txn.Entries))
 	for _, e := range txn.Entries {
 		d := decimals[e.Currency]

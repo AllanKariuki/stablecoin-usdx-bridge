@@ -11,6 +11,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
+
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 	"github.com/pressly/goose/v3"
@@ -297,10 +299,40 @@ func (r *Repository) ClosePeriod(ctx context.Context, currency string, closingDa
 		Reason:      reason,
 		ClosedBy:    closedBy,
 	}
-	if err := r.db.WithContext(ctx).Create(c).Error; err != nil {
+	// One transaction so the closure and its audit event are the same fact.
+	// Closing a period is what makes every later correction a visible
+	// reversal rather than a quiet edit; who closed it, and when, is the
+	// first thing a reviewer of that period asks.
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(c).Error; err != nil {
+			return err
+		}
+		currencyScope := c.Currency
+		if currencyScope == "" {
+			currencyScope = "ALL"
+		}
+		return enqueueAudit(ctx, tx, audit.Event{
+			Actor:       closedBy,
+			Action:      AuditPeriodClosed,
+			SubjectType: auditSubjectClosure,
+			SubjectID:   c.ID,
+			AfterState:  map[string]any{"currency": currencyScope, "closing_date": c.ClosingDate.Format("2006-01-02")},
+			Metadata:    map[string]any{"reason": reason},
+		})
+	})
+	if err != nil {
 		return nil, err
 	}
 	return c, nil
+}
+
+// AuditStore is the relay's side of audit_outbox, on this repository's pool.
+func (r *Repository) AuditStore() (*audit.Store, error) {
+	sqlDB, err := r.db.DB()
+	if err != nil {
+		return nil, err
+	}
+	return audit.NewStore(sqlDB), nil
 }
 
 func (r *Repository) Closures(ctx context.Context) ([]LedgerClosure, error) {

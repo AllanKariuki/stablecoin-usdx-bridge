@@ -1,5 +1,7 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { AuditRequest, enqueueAuditEvent } from '@damp/nest-platform';
 import { randomUUID } from 'node:crypto';
+import { AUDIT, SERVICE, WORKFLOW_ACTOR } from '../audit/audit-actions';
 import { DbService } from '../db/db.service';
 import { CoreLedgerClient } from '../core-ledger/core-ledger.client';
 import { WorkflowClient } from './workflow.client';
@@ -48,6 +50,7 @@ export class EnforcementService {
     caseId?: string;
     reason: string;
     requestedBy: string;
+    audit?: AuditRequest;
   }) {
     if (!input.reason?.trim()) {
       // Every one of these is defensible only with a reason, and a blank one
@@ -63,20 +66,41 @@ export class EnforcementService {
     }
 
     const id = `enf_${randomUUID()}`;
-    await this.db.query(
-      `INSERT INTO enforcement_actions (id, kind, chain, target, party_id, case_id, reason, requested_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [
-        id,
-        input.kind,
-        input.chain ?? '',
-        input.target ?? '',
-        input.partyId ?? '',
-        input.caseId ?? null,
-        input.reason,
-        input.requestedBy,
-      ],
-    );
+    await this.db.transaction(async (client) => {
+      await client.query(
+        `INSERT INTO enforcement_actions (id, kind, chain, target, party_id, case_id, reason, requested_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          id,
+          input.kind,
+          input.chain ?? '',
+          input.target ?? '',
+          input.partyId ?? '',
+          input.caseId ?? null,
+          input.reason,
+          input.requestedBy,
+        ],
+      );
+      await enqueueAuditEvent(
+        client,
+        {
+          actor: input.requestedBy,
+          action: AUDIT.enforcementProposed,
+          service: SERVICE,
+          subjectType: 'ENFORCEMENT_ACTION',
+          subjectId: id,
+          afterState: { status: 'PENDING_APPROVAL', kind: input.kind },
+          metadata: {
+            chain: input.chain ?? '',
+            target: input.target ?? '',
+            partyId: input.partyId ?? '',
+            caseId: input.caseId ?? null,
+            reason: input.reason,
+          },
+        },
+        input.audit,
+      );
+    });
 
     const action = this.policyFor(input.kind);
     const payload = {
@@ -131,6 +155,7 @@ export class EnforcementService {
     // Bound to the request this action actually opened.
     if (!action.approval_request_id || action.approval_request_id !== input.requestId) {
       this.logger.error(`REFUSING an approval for enforcement ${action.id}: request ${input.requestId} is not the one it opened`);
+      await this.auditRefusal(action.id, input, 'approval request id mismatch');
       return { applied: false, reason: 'approval request id mismatch' };
     }
 
@@ -147,17 +172,61 @@ export class EnforcementService {
         `REFUSING an approval for enforcement ${action.id}: the approved payload does not match. ` +
           `Either the action changed after approval, or the decision is not for what it claims.`,
       );
+      await this.auditRefusal(action.id, input, 'payload digest mismatch');
       return { applied: false, reason: 'payload digest mismatch' };
     }
 
-    if (input.status !== 'APPROVED') {
-      await this.db.query(`UPDATE enforcement_actions SET status = 'REJECTED' WHERE id = $1`, [action.id]);
-      return { applied: true };
-    }
+    const approved = input.status === 'APPROVED';
+    await this.db.transaction(async (client) => {
+      await client.query(`UPDATE enforcement_actions SET status = $2 WHERE id = $1`, [
+        action.id,
+        approved ? 'APPROVED' : 'REJECTED',
+      ]);
+      await enqueueAuditEvent(client, {
+        actor: WORKFLOW_ACTOR,
+        action: approved ? AUDIT.enforcementApproved : AUDIT.enforcementRejected,
+        service: SERVICE,
+        subjectType: 'ENFORCEMENT_ACTION',
+        subjectId: action.id,
+        beforeState: { status: 'PENDING_APPROVAL' },
+        afterState: { status: approved ? 'APPROVED' : 'REJECTED' },
+        metadata: {
+          kind: action.kind,
+          target: action.target,
+          partyId: action.party_id,
+          approvalRequestId: input.requestId,
+          workflowStatus: input.status,
+        },
+      });
+    });
+    if (!approved) return { applied: true };
 
-    await this.db.query(`UPDATE enforcement_actions SET status = 'APPROVED' WHERE id = $1`, [action.id]);
     await this.execute(action);
     return { applied: true };
+  }
+
+  /**
+   * A decision this service refused to act on. Evidence in its own right —
+   * a forged or mismatched approval is what the digest and the request-id
+   * binding exist to catch — and the only write the refusal makes, so it is
+   * its own transaction.
+   */
+  private async auditRefusal(
+    actionId: string,
+    input: { requestId: string; payloadDigest: string; status: string },
+    reason: string,
+  ): Promise<void> {
+    await this.db.transaction((client) =>
+      enqueueAuditEvent(client, {
+        actor: WORKFLOW_ACTOR,
+        action: AUDIT.approvalRefused,
+        service: SERVICE,
+        outcome: 'DENIED',
+        subjectType: 'ENFORCEMENT_ACTION',
+        subjectId: actionId,
+        metadata: { reason, approvalRequestId: input.requestId, payloadDigest: input.payloadDigest, status: input.status },
+      }),
+    );
   }
 
   private async execute(action: Record<string, any>): Promise<void> {
@@ -170,10 +239,26 @@ export class EnforcementService {
           action.party_id,
           action.kind === 'FREEZE_WALLET' ? 'FROZEN' : 'ACTIVE',
         );
-        await this.db.query(
-          `UPDATE enforcement_actions SET status = $2, executed_at = now(), failure_reason = $3 WHERE id = $1`,
-          [action.id, ok ? 'EXECUTED' : 'FAILED', ok ? '' : 'core-ledger rejected the status change'],
-        );
+        // core-ledger audits each wallet's status change itself; this is the
+        // compliance-side fact that the approved action was carried out (or
+        // was not), tied to the enforcement action and its approval.
+        await this.db.transaction(async (client) => {
+          await client.query(
+            `UPDATE enforcement_actions SET status = $2, executed_at = now(), failure_reason = $3 WHERE id = $1`,
+            [action.id, ok ? 'EXECUTED' : 'FAILED', ok ? '' : 'core-ledger rejected the status change'],
+          );
+          await enqueueAuditEvent(client, {
+            actor: WORKFLOW_ACTOR,
+            action: AUDIT.enforcementExecuted,
+            service: SERVICE,
+            outcome: ok ? 'SUCCESS' : 'FAILURE',
+            subjectType: 'ENFORCEMENT_ACTION',
+            subjectId: action.id,
+            beforeState: { status: 'APPROVED' },
+            afterState: { status: ok ? 'EXECUTED' : 'FAILED' },
+            metadata: { kind: action.kind, partyId: action.party_id },
+          });
+        });
         return;
       }
 

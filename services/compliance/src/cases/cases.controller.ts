@@ -1,5 +1,7 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Query } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { AuditContext, AuditRequest, enqueueAuditEvent } from '@damp/nest-platform';
+import { createHash, randomUUID } from 'node:crypto';
+import { AUDIT, SERVICE } from '../audit/audit-actions';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { DbService } from '../db/db.service';
 import { EnforcementService } from '../enforcement/enforcement.service';
@@ -41,14 +43,39 @@ export class CasesController {
 
   @Post('compliance/alerts/:id/dismiss')
   @HttpCode(200)
-  async dismissAlert(@CurrentUser() userId: string, @Param('id') id: string, @Body() body: { reason?: string }) {
-    const { rows } = await this.db.query<{ id: string }>(
-      `UPDATE alerts SET status = 'DISMISSED',
-              evidence = evidence || jsonb_build_object('dismissedBy', $2::text, 'dismissReason', $3::text)
-        WHERE id = $1 AND status = 'OPEN' RETURNING id`,
-      [id, userId, body?.reason ?? ''],
-    );
-    if (!rows[0]) throw new NotFoundException('no such open alert');
+  async dismissAlert(
+    @CurrentUser() userId: string,
+    @AuditContext() audit: AuditRequest,
+    @Param('id') id: string,
+    @Body() body: { reason?: string },
+  ) {
+    const dismissed = await this.db.transaction(async (client) => {
+      const { rows } = await client.query<{ id: string; rule_name: string; party_id: string }>(
+        `UPDATE alerts SET status = 'DISMISSED',
+                evidence = evidence || jsonb_build_object('dismissedBy', $2::text, 'dismissReason', $3::text)
+          WHERE id = $1 AND status = 'OPEN' RETURNING id, rule_name, party_id`,
+        [id, userId, body?.reason ?? ''],
+      );
+      if (!rows[0]) return false;
+      // Dismissing an alert is deciding it was not suspicious — the decision
+      // a regulator samples first.
+      await enqueueAuditEvent(
+        client,
+        {
+          actor: userId,
+          action: AUDIT.alertDismissed,
+          service: SERVICE,
+          subjectType: 'ALERT',
+          subjectId: id,
+          beforeState: { status: 'OPEN' },
+          afterState: { status: 'DISMISSED' },
+          metadata: { rule: rows[0].rule_name, partyId: rows[0].party_id, reason: body?.reason ?? '' },
+        },
+        audit,
+      );
+      return true;
+    });
+    if (!dismissed) throw new NotFoundException('no such open alert');
     return { id, status: 'DISMISSED' };
   }
 
@@ -117,11 +144,38 @@ export class CasesController {
 
   @Post('compliance/cases/:id/assign')
   @HttpCode(200)
-  async assign(@Param('id') id: string, @Body() body: { assignee: string }) {
-    await this.db.query(
-      `UPDATE cases SET assigned_to = $2, status = 'INVESTIGATING', updated_at = now() WHERE id = $1`,
-      [id, body.assignee],
-    );
+  async assign(
+    @CurrentUser() userId: string,
+    @AuditContext() audit: AuditRequest,
+    @Param('id') id: string,
+    @Body() body: { assignee: string },
+  ) {
+    // Who assigned was not recorded anywhere before this; it is now, in the
+    // audit trail, with who held the case before.
+    await this.db.transaction(async (client) => {
+      const { rows } = await client.query<{ assigned_to: string; status: string }>(
+        'SELECT assigned_to, status FROM cases WHERE id = $1 FOR UPDATE',
+        [id],
+      );
+      await client.query(
+        `UPDATE cases SET assigned_to = $2, status = 'INVESTIGATING', updated_at = now() WHERE id = $1`,
+        [id, body.assignee],
+      );
+      if (!rows[0]) return;
+      await enqueueAuditEvent(
+        client,
+        {
+          actor: userId,
+          action: AUDIT.caseAssigned,
+          service: SERVICE,
+          subjectType: 'CASE',
+          subjectId: id,
+          beforeState: { assignedTo: rows[0].assigned_to || null, status: rows[0].status },
+          afterState: { assignedTo: body.assignee, status: 'INVESTIGATING' },
+        },
+        audit,
+      );
+    });
     return { id, assignedTo: body.assignee };
   }
 
@@ -137,6 +191,7 @@ export class CasesController {
   @HttpCode(200)
   async close(
     @CurrentUser() userId: string,
+    @AuditContext() audit: AuditRequest,
     @Param('id') id: string,
     @Body() body: { outcome: 'CLEARED' | 'SAR'; notes?: string; sarNarrative?: string },
   ) {
@@ -144,22 +199,52 @@ export class CasesController {
       throw new NotFoundException('a SAR needs a narrative — the narrative is the report');
     }
 
-    const { rows } = await this.db.query<Record<string, any>>(
-      `UPDATE cases SET status = $2, closed_at = now(), closed_by = $3, closing_notes = $4,
-              sar_narrative = $5, sar_filed_at = CASE WHEN $2 = 'CLOSED_SAR' THEN now() ELSE NULL END,
-              updated_at = now()
-        WHERE id = $1 AND status NOT LIKE 'CLOSED%'
-        RETURNING *`,
-      [
-        id,
-        body.outcome === 'SAR' ? 'CLOSED_SAR' : 'CLOSED_CLEARED',
-        userId,
-        body?.notes ?? '',
-        body?.sarNarrative ?? '',
-      ],
-    );
-    if (!rows[0]) throw new NotFoundException('no such open case');
-    return renderCase(rows[0]);
+    const closed = await this.db.transaction(async (client) => {
+      const { rows: before } = await client.query<{ status: string }>(
+        'SELECT status FROM cases WHERE id = $1 FOR UPDATE',
+        [id],
+      );
+      const { rows } = await client.query<Record<string, any>>(
+        `UPDATE cases SET status = $2, closed_at = now(), closed_by = $3, closing_notes = $4,
+                sar_narrative = $5, sar_filed_at = CASE WHEN $2 = 'CLOSED_SAR' THEN now() ELSE NULL END,
+                updated_at = now()
+          WHERE id = $1 AND status NOT LIKE 'CLOSED%'
+          RETURNING *`,
+        [
+          id,
+          body.outcome === 'SAR' ? 'CLOSED_SAR' : 'CLOSED_CLEARED',
+          userId,
+          body?.notes ?? '',
+          body?.sarNarrative ?? '',
+        ],
+      );
+      if (!rows[0]) return null;
+      // The narrative itself is not copied into the trail: it is in the case,
+      // verbatim, and the trail is readable by every auditor while a SAR's
+      // contents are not. Its digest is, so the filed text is pinned.
+      await enqueueAuditEvent(
+        client,
+        {
+          actor: userId,
+          action: AUDIT.caseClosed,
+          service: SERVICE,
+          subjectType: 'CASE',
+          subjectId: id,
+          beforeState: { status: before[0]?.status },
+          afterState: { status: rows[0].status },
+          metadata: {
+            reference: rows[0].reference,
+            partyId: rows[0].party_id,
+            sarFiled: rows[0].status === 'CLOSED_SAR',
+            sarNarrativeSha256: rows[0].sar_narrative ? sha256(rows[0].sar_narrative) : null,
+          },
+        },
+        audit,
+      );
+      return rows[0];
+    });
+    if (!closed) throw new NotFoundException('no such open case');
+    return renderCase(closed);
   }
 
   /** The SAR as a filing-ready document, assembled from the case's evidence. */
@@ -214,6 +299,7 @@ export class CasesController {
   @Post('compliance/enforcement')
   async propose(
     @CurrentUser() userId: string,
+    @AuditContext() audit: AuditRequest,
     @Body()
     body: {
       kind: 'BLACKLIST' | 'UNBLACKLIST' | 'PAUSE' | 'UNPAUSE' | 'FREEZE_WALLET' | 'UNFREEZE_WALLET';
@@ -224,7 +310,7 @@ export class CasesController {
       reason: string;
     },
   ) {
-    return this.enforcement.propose({ ...body, requestedBy: userId });
+    return this.enforcement.propose({ ...body, requestedBy: userId, audit });
   }
 
   @Get('compliance/enforcement')
@@ -266,4 +352,8 @@ function renderCase(row: Record<string, any>) {
     closedBy: row.closed_by || null,
     createdAt: row.created_at.toISOString(),
   };
+}
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
 }

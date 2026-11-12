@@ -269,6 +269,11 @@ services:
       # of NATS, e.g. to relay over OUTBOX_RELAY_URL instead, which NATS would
       # otherwise win over.
       NATS_URL: ${WORKER_NATS_URL-nats://nats:4222}
+      # The worker, not the API, drains audit_outbox: the API writes each
+      # audit event in the same transaction as the change it describes.
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      # Dev default; real deployments must override (shared with audit-trail's INGEST_TOKEN).
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     volumes:
       - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro
     ports:
@@ -383,6 +388,8 @@ services:
     environment:
       DATABASE_URL: postgres://workflow:workflow@postgres:5432/workflow?sslmode=disable
       CALLBACK_SECRET: ${WORKFLOW_CALLBACK_SECRET:-dev-workflow-callback-secret}
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "3006:3006"
 
@@ -408,6 +415,8 @@ services:
       WORKFLOW_CALLBACK_SECRET: ${WORKFLOW_CALLBACK_SECRET:-dev-workflow-callback-secret}
       SELF_URL: http://kyc:3007
       S3_ENDPOINT: http://minio:9000
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "3007:3007"
 
@@ -433,6 +442,8 @@ services:
       WORKFLOW_CALLBACK_SECRET: ${WORKFLOW_CALLBACK_SECRET:-dev-workflow-callback-secret}
       SELF_URL: http://compliance:3004
       NOTIFICATIONS_URL: http://notifications:3000
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "3004:3004"
 
@@ -508,6 +519,9 @@ services:
       # Five minutes rather than an hour, so a demo produces an anchor and an
       # inclusion proof inside a session rather than after one.
       ANCHOR_INTERVAL: 5m
+      # The bearer token every producer's relay presents (their
+      # AUDIT_TRAIL_TOKEN). Dev default; real deployments must override.
+      INGEST_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "8085:8085"
 

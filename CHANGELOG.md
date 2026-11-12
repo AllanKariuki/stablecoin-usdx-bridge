@@ -191,6 +191,77 @@ the PR #17 review.
   replica delivers to its own sockets and nobody counts the total.
 - The NATS subject has no auth in front of it, the same trust model as
   `/internal/*`: anything that can reach the broker can push to a socket.
+## 2026-11-12 — P7 follow-up: audit-trail producers
+
+Branch `feat/p7-audit-producers`. Closes the P7 note that
+`services/audit-trail` had no producers, with the delivery Qodo asked for:
+**transactional** — an outbox per producer, written in the same database
+transaction as the action it describes, relayed with retries, idempotent on
+an event id.
+
+### Added
+
+- **`shared/go/platform/audit`** and **`@damp/nest-platform`'s audit module** —
+  the same `audit_outbox` table, wire shape and rules in both languages.
+  - `Enqueue` / `enqueueAuditEvent` take the caller's transaction handle and
+    nothing else. An event committed separately from its action is evidence
+    of something that may have rolled back, which is worse than no event.
+  - The event id is minted at enqueue, so every redelivery carries the same
+    one.
+  - The relay claims with `FOR UPDATE SKIP LOCKED` (safe on every replica),
+    backs off with full jitter, and has **no attempt budget for transient
+    failures**: giving up because audit-trail was down for an afternoon would
+    put a hole in the trail exactly where an outage was. Only a 4xx refusal
+    is dead-lettered. `audit_outbox_pending_events` is the alarm.
+  - Request id, forwarded source IP, user agent and `X-Roles` reach the event
+    from a fiber middleware / `@AuditContext()` decorator.
+- **Producers wired:** core-ledger (every journal posting incl. bridge legs,
+  reversals, manual journals, wallet status changes, period closes,
+  dead-letter resolutions — actor from `X-User-Id` via `actor()`; the worker
+  runs the relay), workflow (proposals, each approval, rejections,
+  cancellations, expiries), compliance (enforcement proposal → approval →
+  execution, case assignment and closure, alert dismissal), kyc (review,
+  approval with the tier change, rejection). Refused approvals — a
+  self-approval, a digest or request-id mismatch — are recorded as `DENIED`.
+- **audit-trail dedupes on `id`**: 201 first time, 200 with the original
+  seq/hash on a redelivery, 409 for a different event under a recorded id.
+  Recording can be gated on `INGEST_TOKEN`; producers send it as
+  `AUDIT_TRAIL_TOKEN`.
+- New env: `AUDIT_TRAIL_URL`, `AUDIT_TRAIL_TOKEN` (core-ledger worker,
+  workflow, kyc, compliance), `INGEST_TOKEN` (audit-trail). Compose defaults
+  them to a dev token; k8s reads Secret `audit-trail-ingest` (key `token`),
+  which must be provided per deployment.
+
+### Fixed — found by the first tests of audit-trail against real Postgres
+
+- **Every read of an event failed.** `database/sql` can't scan `text[]` into
+  `[]string`, so `Verify` — which gates boot — the event list and proofs all
+  errored once a single event existed. The service would have refused to
+  restart after its first recorded event.
+- **An event with no `actor_roles` was a 500** (nil slice → `NULL` into a
+  `NOT NULL` column).
+- **`occurred_at` was hashed at nanosecond precision and stored at
+  microsecond**, so on Linux every event would fail `Verify` on read-back.
+  Both sides now truncate to microseconds before hashing.
+- workflow's `decide()` said it ran "inside one transaction"; it ran separate
+  queries. It now holds the request's row lock for the whole decision.
+- core-ledger's `POST /wallets/:id/status` recorded no actor at all;
+  compliance's case assignment didn't either.
+
+### Notes
+
+- **Not verified live.** Go suite under `-race` against real Postgres
+  (bridge_test, signer_test, audit_trail_test), every Node workspace suite,
+  workflow/kyc/compliance against their `*_test` databases. No relay has
+  delivered to a running audit-trail container.
+- There is still **no k8s manifest for audit-trail itself** (or reporting),
+  though the P7 entry below says there is. The producers' manifests point at
+  `audit-trail.default.svc.cluster.local:8085`.
+- workflow's policy check still trusts the `roles` a decider puts in the
+  request body. Not changed here; the audit event records those claimed
+  roles beside the gateway's `X-Roles`, so a gap between them is visible.
+- Not yet producers: identity (role grants), payments, rms, reporting,
+  signer, indexer, notifications.
 
 ## 2026-11-09
 

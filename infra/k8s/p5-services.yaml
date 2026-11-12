@@ -44,6 +44,15 @@ spec:
             - name: CALLBACK_SECRET
               valueFrom:
                 secretKeyRef: { name: workflow-callback, key: secret }
+            # services/audit-trail. audit_outbox rows are written in the same
+            # transaction as each decision; this relay delivers them. The
+            # token is audit-trail's INGEST_TOKEN — one Secret, shared by
+            # every producer and the receiver.
+            - name: AUDIT_TRAIL_URL
+              value: "http://audit-trail.default.svc.cluster.local:8085"
+            - name: AUDIT_TRAIL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: audit-trail-ingest, key: token }
           resources:
             requests: { memory: "128Mi", cpu: "50m" }
             limits: { memory: "256Mi", cpu: "500m" }
@@ -130,6 +139,15 @@ spec:
             - name: WORKFLOW_CALLBACK_SECRET
               valueFrom:
                 secretKeyRef: { name: workflow-callback, key: secret }
+            # services/audit-trail. audit_outbox rows are written in the same
+            # transaction as each decision; this relay delivers them. The
+            # token is audit-trail's INGEST_TOKEN — one Secret, shared by
+            # every producer and the receiver.
+            - name: AUDIT_TRAIL_URL
+              value: "http://audit-trail.default.svc.cluster.local:8085"
+            - name: AUDIT_TRAIL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: audit-trail-ingest, key: token }
           resources:
             requests: { memory: "160Mi", cpu: "100m" }
             limits: { memory: "320Mi", cpu: "500m" }
@@ -210,6 +228,15 @@ spec:
                 secretKeyRef: { name: workflow-callback, key: secret }
             - name: NOTIFICATIONS_URL
               value: "http://notifications.default.svc.cluster.local:3000"
+            # services/audit-trail. audit_outbox rows are written in the same
+            # transaction as each decision; this relay delivers them. The
+            # token is audit-trail's INGEST_TOKEN — one Secret, shared by
+            # every producer and the receiver.
+            - name: AUDIT_TRAIL_URL
+              value: "http://audit-trail.default.svc.cluster.local:8085"
+            - name: AUDIT_TRAIL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: audit-trail-ingest, key: token }
           resources:
             requests: { memory: "192Mi", cpu: "150m" }
             limits: { memory: "384Mi", cpu: "1000m" }
