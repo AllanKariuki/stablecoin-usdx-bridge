@@ -191,8 +191,8 @@ export class BanksController {
     if (!body?.name || !body?.accountRef) {
       throw new NotFoundException('name and accountRef are required');
     }
-    const { created, ...beneficiary } = await this.audited(audit, async (q) => {
-      const b = await this.repo.addBeneficiary(
+    return this.audited(audit, async (q) => {
+      const { created, ...b } = await this.repo.addBeneficiary(
         {
           partyId,
           name: body.name,
@@ -221,11 +221,10 @@ export class BanksController {
           },
           // An existing beneficiary re-added under a new name is a rename,
           // not a new destination.
-          metadata: { renamed: !b.created },
+          metadata: { renamed: !created },
         },
       };
     });
-    return beneficiary;
   }
 }
 
