@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AuditContext, AuditRequest } from '@damp/nest-platform';
 import type { Request } from 'express-serve-static-core';
 import { PaymentsConfig } from '../config/payments-config';
 import { CurrentUser, IdempotencyKey } from '../auth/current-user.decorator';
@@ -50,15 +51,16 @@ export class IntentsController {
       description?: string;
       phoneNumber?: string;
     },
+    @AuditContext() audit: AuditRequest = {},
   ) {
-    const intent = await this.service.create({ ...body, partyId, idempotencyKey });
+    const intent = await this.service.create({ ...body, partyId, idempotencyKey, audit });
 
     // An internal transfer has no rail to wait on, so it settles here. It
     // goes through the same SettlementService the rails do rather than a
     // second inline path, because two settlement implementations become two
     // different answers to "did money move".
     if (intent.rail === 'internal' && intent.status === 'PROCESSING') {
-      await this.settlement.settle(intent, intent.amount);
+      await this.settlement.settle(intent, intent.amount, partyId, audit);
       return render((await this.repo.find(intent.id))!);
     }
     return render(intent);
@@ -66,8 +68,12 @@ export class IntentsController {
 
   @Post('payment-intents/:id/cancel')
   @HttpCode(200)
-  async cancel(@CurrentUser() partyId: string, @Param('id') id: string) {
-    const cancelled = await this.service.cancel(id, partyId);
+  async cancel(
+    @CurrentUser() partyId: string,
+    @Param('id') id: string,
+    @AuditContext() audit: AuditRequest = {},
+  ) {
+    const cancelled = await this.service.cancel(id, partyId, audit);
     if (!cancelled) {
       // Deliberately specific: "it's too late" is different from "it doesn't
       // exist", and a customer who sees the former knows their money is
@@ -96,7 +102,12 @@ export class IntentsController {
    */
   @Post('rails/:rail/callback')
   @HttpCode(200)
-  async callback(@Param('rail') rail: string, @Body() body: unknown, @Req() req: Request) {
+  async callback(
+    @Param('rail') rail: string,
+    @Body() body: unknown,
+    @Req() req: Request,
+    @AuditContext() audit: AuditRequest = {},
+  ) {
     this.assertCallbackSecret(req);
     const provider = this.rails.get(rail);
     const parsed = provider.parseCallback(body);
@@ -107,7 +118,7 @@ export class IntentsController {
       return { received: true, matched: false, reason: 'callback body was not in a shape this rail produces' };
     }
 
-    await this.settlement.onRailCallback(provider.name, parsed);
+    await this.settlement.onRailCallback(provider.name, parsed, audit);
     return { received: true, matched: true, railRef: parsed.railRef, source: req.ip };
   }
 

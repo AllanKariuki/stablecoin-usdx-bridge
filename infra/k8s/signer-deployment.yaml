@@ -120,6 +120,15 @@ spec:
                 configMapKeyRef:
                   name: usdx-deployment
                   key: usdx-mint-address
+            # services/audit-trail. Every signature and refusal is written to
+            # audit_outbox in the same transaction as the signatures row and
+            # forwarded from here. Secrets are namespaced: audit-trail-ingest
+            # must also exist in the signer namespace (same token as default's).
+            - name: AUDIT_TRAIL_URL
+              value: "http://audit-trail.default.svc.cluster.local:8085"
+            - name: AUDIT_TRAIL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: audit-trail-ingest, key: token }
           volumeMounts:
             - name: tls
               mountPath: /tls
@@ -219,8 +228,9 @@ spec:
         - protocol: TCP
           port: 8084
   # Egress is restricted too, which is unusual and deliberate: this pod's only
-  # legitimate outbound destinations are its database and Vault. A signer that
-  # could reach the internet is a signer that could exfiltrate what it holds.
+  # legitimate outbound destinations are its database, Vault and audit-trail's
+  # ingest port. A signer that could reach the internet is a signer that could
+  # exfiltrate what it holds.
   egress:
     - to:
         - namespaceSelector:
@@ -239,6 +249,18 @@ spec:
       ports:
         - protocol: TCP
           port: 8200
+    # The audit relay. One pod, one port: what leaves is the signer's own
+    # audit events, which carry no key material.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: default
+          podSelector:
+            matchLabels:
+              app: audit-trail
+      ports:
+        - protocol: TCP
+          port: 8085
     # DNS, or nothing above resolves.
     - to:
         - namespaceSelector: {}

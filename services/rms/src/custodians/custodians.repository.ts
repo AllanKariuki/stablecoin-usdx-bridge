@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { Queryable } from '@damp/nest-platform';
 import { DbService } from '../db/db.service';
 
 export interface Custodian {
@@ -89,15 +90,26 @@ export class CustodiansRepository {
    * merges into config rather than replacing it, so a provider's other
    * settings survive a demo.
    */
-  async setDrift(id: string, drift: string): Promise<Custodian | null> {
-    const { rows } = await this.db.query<CustodianRow>(
+  async setDrift(
+    id: string,
+    drift: string,
+    q: Queryable = this.db,
+  ): Promise<{ custodian: Custodian; previousDrift: string } | null> {
+    // Locked and read first, so the audit event's "before" is the value this
+    // update actually replaced.
+    const prior = await q.query(`SELECT config->>'drift' AS drift FROM custodians WHERE id = $1 FOR UPDATE`, [id]);
+    if (!prior.rows[0]) return null;
+    const { rows } = await q.query(
       `UPDATE custodians
           SET config = config || jsonb_build_object('drift', $2::text), updated_at = now()
         WHERE id = $1
         RETURNING *`,
       [id, drift],
     );
-    return rows[0] ? toCustodian(rows[0]) : null;
+    return {
+      custodian: toCustodian(rows[0] as unknown as CustodianRow),
+      previousDrift: (prior.rows[0].drift as string | null) ?? '0',
+    };
   }
 
   /**

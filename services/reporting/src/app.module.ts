@@ -1,5 +1,6 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { AuditRelayService } from './audit/audit-relay.service';
 import { ReportingConfig } from './config/reporting-config';
 import { DbModule } from './db/db.module';
 import { ReportsController } from './reports/reports.controller';
@@ -21,6 +22,8 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       DbModule,
       ReportingModule,
     ],
+    // In the root module, beside the other producers'.
+    providers: [AuditRelayService],
   };
 }
 

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import { Queryable } from '@damp/nest-platform';
 import { DbService } from '../db/db.service';
 import { Org } from './org.types';
 
@@ -26,17 +27,24 @@ export class OrgsRepository {
    * always returns a row (a bare DO NOTHING would silently return nothing
    * to the losing side, which then has no org id to build a membership
    * against).
+   *
+   * `created` is whether this call inserted the row (xmax = 0 on the
+   * returned tuple) rather than finding it — only a creation is audited.
    */
-  async ensure(input: { orgId: string; slug: string; name: string }): Promise<Org> {
+  async ensure(
+    input: { orgId: string; slug: string; name: string },
+    q: Queryable = this.db,
+  ): Promise<{ org: Org; created: boolean }> {
     const id = `org_${randomUUID()}`;
-    const { rows } = await this.db.query<OrgRow>(
+    const { rows } = await q.query(
       `INSERT INTO orgs (id, org_id, slug, name)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (org_id) DO UPDATE SET name = EXCLUDED.name
-       RETURNING *`,
+       RETURNING *, (xmax = 0) AS inserted`,
       [id, input.orgId, input.slug, input.name],
     );
-    return toOrg(rows[0]);
+    const row = rows[0] as unknown as OrgRow & { inserted: boolean };
+    return { org: toOrg(row), created: row.inserted };
   }
 }
 

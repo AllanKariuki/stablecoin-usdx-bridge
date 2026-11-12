@@ -1,5 +1,7 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Query } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AuditContext, AuditRequest, enqueueAuditEvent } from '@damp/nest-platform';
+import { AUDIT, SERVICE } from '../audit/audit-actions';
 import { CurrentUser, IdempotencyKey } from '../auth/current-user.decorator';
 import { DbService } from '../db/db.service';
 import { toMoney } from '../money/money';
@@ -56,11 +58,33 @@ export class InvoicesController {
       description?: string;
       lineItems?: unknown[];
     },
+    @AuditContext() audit: AuditRequest = {},
   ) {
-    // The invoice and the event announcing it commit together, so an invoice
-    // can't exist that its payer was never going to be told about.
+    // The invoice, its audit event and the event announcing it commit
+    // together, so an invoice can't exist that its payer was never going to
+    // be told about, or that nobody can say was issued.
     const invoice = await this.db.transaction(async (q) => {
       const created = await this.repo.create({ ...body, issuerPartyId: partyId }, q);
+      await enqueueAuditEvent(
+        q,
+        {
+          actor: partyId,
+          action: AUDIT.invoiceIssued,
+          subjectType: 'INVOICE',
+          subjectId: created.id,
+          service: SERVICE,
+          afterState: {
+            number: created.number,
+            amount: created.amount,
+            currency: created.currency,
+            status: created.status,
+            payerPartyId: created.payerPartyId,
+            payerEmail: created.payerEmail,
+            dueDate: created.dueDate?.toISOString().slice(0, 10) ?? null,
+          },
+        },
+        audit,
+      );
       // Addressed to the payer when there is one. An invoice issued to an
       // email address that isn't a party yet has nobody to notify in-app —
       // the payment link is the notification.
@@ -86,8 +110,27 @@ export class InvoicesController {
 
   @Post(':id/void')
   @HttpCode(200)
-  async void(@CurrentUser() partyId: string, @Param('id') id: string) {
-    const voided = await this.repo.void(id, partyId);
+  async void(@CurrentUser() partyId: string, @Param('id') id: string, @AuditContext() audit: AuditRequest = {}) {
+    const voided = await this.db.transaction(async (q) => {
+      const before = await this.repo.void(id, partyId, q);
+      if (!before) return false;
+      await enqueueAuditEvent(
+        q,
+        {
+          actor: partyId,
+          action: AUDIT.invoiceVoided,
+          subjectType: 'INVOICE',
+          subjectId: id,
+          service: SERVICE,
+          beforeState: { status: before },
+          // The payment link is revoked with it; recorded because "could
+          // somebody still pay this?" is the question a void answers.
+          afterState: { status: 'VOID', payLinkRevoked: true },
+        },
+        audit,
+      );
+      return true;
+    });
     if (!voided) throw new NotFoundException('no such open invoice');
     // Voiding clears pay_token, so the payment link stops resolving. That is
     // what makes voiding a revocation rather than a label.
@@ -134,6 +177,7 @@ export class InvoicesController {
     @IdempotencyKey() idempotencyKey: string,
     @Param('id') id: string,
     @Body() body: { beneficiaryId?: string },
+    @AuditContext() audit: AuditRequest = {},
   ) {
     const invoice = await this.repo.find(id);
     if (!invoice || invoice.status !== 'OPEN') throw new NotFoundException('no such open invoice');
@@ -147,10 +191,11 @@ export class InvoicesController {
       beneficiaryId: body?.beneficiaryId,
       description: `Invoice ${invoice.number}`,
       idempotencyKey,
+      audit,
     });
 
     if (intent.rail === 'internal' && intent.status === 'PROCESSING') {
-      await this.settlement.settle(intent, intent.amount);
+      await this.settlement.settle(intent, intent.amount, partyId, audit);
     }
     return renderIntent((await this.intentsRepo.find(intent.id))!);
   }

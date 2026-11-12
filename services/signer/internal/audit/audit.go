@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	trail "github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
+
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -129,6 +131,65 @@ func Open(dsn string) (*Log, error) {
 
 func (l *Log) Ping(ctx context.Context) error { return l.db.PingContext(ctx) }
 func (l *Log) Close() error                   { return l.db.Close() }
+
+// AuditStore is the audit_outbox Append writes into, for the relay that
+// delivers it to services/audit-trail.
+func (l *Log) AuditStore() *trail.Store { return trail.NewStore(l.db) }
+
+// Audit-trail actions, one per outcome, so "every denial this month" is a
+// filter on action rather than on a field inside the state.
+const (
+	TrailActionAllowed = "signer.signature.allowed"
+	TrailActionDenied  = "signer.signature.denied"
+	TrailActionError   = "signer.signature.error"
+)
+
+// trailEvent is r as services/audit-trail records it. The actor is the
+// mTLS client identity, the same one the policy authorised. The event id is
+// derived from the record id, so it is unique per row and stable across
+// relay redeliveries. hash/prev_hash tie the event to this log's own chain:
+// an auditor can check the signer's table against the trail, and a row
+// removed from one is still in the other.
+func trailEvent(r *Record) trail.Event {
+	action, outcome := TrailActionError, trail.OutcomeFailure
+	switch r.Outcome {
+	case OutcomeAllowed:
+		action, outcome = TrailActionAllowed, trail.OutcomeSuccess
+	case OutcomeDenied:
+		action, outcome = TrailActionDenied, trail.OutcomeDenied
+	}
+	actor := r.Caller
+	if actor == "" {
+		actor = "unauthenticated"
+	}
+	return trail.Event{
+		ID:          "signer:" + r.ID,
+		Actor:       actor,
+		Action:      action,
+		SubjectType: "SIGNATURE",
+		SubjectID:   r.ID,
+		Service:     "signer",
+		Outcome:     outcome,
+		AfterState: map[string]any{
+			"chain":          r.Chain,
+			"method":         r.Method,
+			"key_id":         r.KeyID,
+			"backend":        r.Backend,
+			"amount":         r.Amount,
+			"destination":    r.Destination,
+			"correlation_id": r.CorrelationID,
+			"digest":         r.Digest,
+			"payload_digest": r.PayloadDigest,
+			"outcome":        r.Outcome,
+		},
+		Metadata: map[string]any{
+			"reason":    r.Reason,
+			"hash":      r.Hash,
+			"prev_hash": r.PrevHash,
+		},
+		OccurredAt: r.CreatedAt,
+	}
+}
 
 // ErrAlreadySigned means these exact bytes have been signed under this
 // (chain, method, correlation_id) already. The caller replays it rather than
@@ -273,6 +334,12 @@ func (l *Log) Append(ctx context.Context, r *Record) error {
 		if strings.Contains(err.Error(), "uq_signatures_idempotent") {
 			return ErrAlreadySigned
 		}
+		return err
+	}
+	// The same record for services/audit-trail, in the same transaction: a
+	// signature with no trail event, or an event for a signature that rolled
+	// back, cannot exist.
+	if _, err := trail.Enqueue(ctx, tx, trailEvent(r)); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -77,11 +77,11 @@ func TestNotFinalYetDoesNotSpendTheBudget(t *testing.T) {
 	w := New(repo, saga, logger, cfg)
 
 	user := "worker-" + time.Now().UTC().Format("20060102150405.000000000")
-	usd, err := repo.EnsureWallet(ctx, user, "USD", "", "", "Main")
+	usd, err := repo.EnsureWallet(ctx, user, "USD", "", "", "Main", "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet USD: %v", err)
 	}
-	usdx, err := repo.EnsureWallet(ctx, user, "USDX", "ETHEREUM", "0x00000000000000000000000000000000000000E1", "USD-X")
+	usdx, err := repo.EnsureWallet(ctx, user, "USDX", "ETHEREUM", "0x00000000000000000000000000000000000000E1", "USD-X", "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet USDX: %v", err)
 	}

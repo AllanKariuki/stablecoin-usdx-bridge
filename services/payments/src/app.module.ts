@@ -1,5 +1,6 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { AuditRelayService } from './audit/audit-relay.service';
 import { BanksModule } from './banks/banks.module';
 import { PaymentsConfig } from './config/payments-config';
 import { CoreLedgerModule } from './core-ledger/core-ledger.module';
@@ -30,6 +31,8 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       InvoicesModule,
       IntentsModule,
     ],
+    // In the root module, beside workflow's, kyc's and compliance's.
+    providers: [AuditRelayService],
   };
 }
 

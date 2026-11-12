@@ -326,6 +326,8 @@ services:
       DATABASE_URL: postgres://payments:payments@postgres:5432/payments?sslmode=disable
       CORE_LEDGER_URL: http://core-ledger:8081
       NOTIFICATIONS_URL: http://notifications:3000
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "3003:3003"
 
@@ -508,6 +510,10 @@ services:
       DATABASE_URL: postgres://signer:signer@postgres:5432/signer?sslmode=disable
       SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
       POLICY_PATH: /app/policy.yaml
+      # Every signature and refusal is forwarded, from the same transaction
+      # as the signer's own audit row.
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     volumes:
       - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro
       # Read-only, and mounted rather than baked: a policy is a document
@@ -558,7 +564,10 @@ services:
     environment:
       DATABASE_URL: postgres://reporting:reporting@postgres:5432/reporting?sslmode=disable
       CORE_LEDGER_URL: http://core-ledger:8081
+      # Read for audit extracts, and where this service's own audit relay
+      # delivers runs, exports and guest tokens.
       AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "3008:3008"
 

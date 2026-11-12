@@ -63,7 +63,12 @@ what this service dedupes on.
 
 | Producer | Library | What it records |
 |---|---|---|
-| core-ledger | `shared/go/platform/audit` (relay in the worker) | every journal posting, reversals, manual journals, wallet status changes, period closes, dead-letter resolutions |
+| core-ledger | `shared/go/platform/audit` (relay in the worker) | every journal posting, reversals, manual journals, wallet creation and status changes, period closes, dead-letter resolutions, chain-supply and custodian snapshots (with the value an overwrite replaced) |
+| signer | `shared/go/platform/audit` | every signature and refusal, from the same transaction as its own hash-chained row, carrying that row's hash |
+| identity | `@damp/nest-platform` audit | party, org and owner-membership creation (JIT provisioning) |
+| payments | `@damp/nest-platform` audit | intents created/cancelled/settled/failed, wrong-amount callbacks (`DENIED`), bank accounts registered/verified/removed, beneficiaries, invoices issued/voided |
+| rms | `@damp/nest-platform` audit | reserve targets, custodian drift, attestations created/refused (`DENIED`)/published |
+| reporting | `@damp/nest-platform` audit | report runs (with result hash), CSV exports, Superset guest tokens issued/refused |
 | workflow | `@damp/nest-platform` audit | proposals, each approval, rejections, cancellations, expiries, refused self-approvals (`DENIED`) |
 | compliance | `@damp/nest-platform` audit | enforcement proposals/approvals/execution, refused approvals, case assignment and closure, alert dismissal |
 | kyc | `@damp/nest-platform` audit | reviewer decisions, approvals (with the tier change), rejections, refused approvals |

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { DbService } from '../db/db.service';
+import { DbService, Queryable } from '../db/db.service';
 
 export interface Bank {
   id: string;
@@ -77,29 +77,32 @@ export class BanksRepository {
    * credential for a customer's bank relationship and nothing more. A
    * payments service that keeps one is a payments service that can leak one.
    */
-  async registerAccount(input: {
-    partyId: string;
-    bankId: string;
-    accountName: string;
-    accountNumber: string;
-    currency: string;
-  }): Promise<BankAccount> {
+  async registerAccount(
+    input: {
+      partyId: string;
+      bankId: string;
+      accountName: string;
+      accountNumber: string;
+      currency: string;
+    },
+    q: Queryable = this.db,
+  ): Promise<BankAccount & { created: boolean }> {
     const last4 = input.accountNumber.replace(/\D/g, '').slice(-4);
     // The rail's handle. A real rail returns one from a verification call;
     // the stub derives a stable one so re-registering the same account is the
     // same row rather than a duplicate.
     const accountRef = `acct_${input.bankId}_${last4}`;
 
-    const { rows } = await this.db.query<Record<string, any>>(
+    const { rows } = await q.query<Record<string, any>>(
       `INSERT INTO bank_accounts (id, party_id, bank_id, account_name, account_last4, account_ref, currency, is_default)
        VALUES ($1,$2,$3,$4,$5,$6,$7, NOT EXISTS (
             SELECT 1 FROM bank_accounts WHERE party_id = $2 AND status <> 'REMOVED'))
        ON CONFLICT (party_id, bank_id, account_ref) DO UPDATE SET
             account_name = EXCLUDED.account_name, status = 'PENDING', updated_at = now()
-       RETURNING *, (SELECT name FROM banks WHERE id = $3) AS bank_name`,
+       RETURNING *, (SELECT name FROM banks WHERE id = $3) AS bank_name, (xmax = 0) AS inserted`,
       [`ba_${randomUUID()}`, input.partyId, input.bankId, input.accountName, last4, accountRef, input.currency],
     );
-    return toAccount(rows[0]);
+    return { ...toAccount(rows[0]), created: rows[0].inserted };
   }
 
   /**
@@ -108,8 +111,8 @@ export class BanksRepository {
    * registration so the two states are distinguishable, because paying out to
    * an unverified account is the mistake this table exists to prevent.
    */
-  async verifyAccount(id: string): Promise<BankAccount | null> {
-    const { rows } = await this.db.query<Record<string, any>>(
+  async verifyAccount(id: string, q: Queryable = this.db): Promise<BankAccount | null> {
+    const { rows } = await q.query<Record<string, any>>(
       `UPDATE bank_accounts SET status = 'VERIFIED', verified_at = now(), updated_at = now()
         WHERE id = $1 AND status = 'PENDING'
         RETURNING *, (SELECT name FROM banks WHERE id = bank_id) AS bank_name`,
@@ -118,11 +121,11 @@ export class BanksRepository {
     return rows[0] ? toAccount(rows[0]) : null;
   }
 
-  async removeAccount(id: string, partyId: string): Promise<boolean> {
+  async removeAccount(id: string, partyId: string, q: Queryable = this.db): Promise<boolean> {
     // Soft delete. A settled payment references this row, and a hard delete
     // would break the trail from a journal entry back to where the money
     // went.
-    const { rows } = await this.db.query<{ id: string }>(
+    const { rows } = await q.query<{ id: string }>(
       `UPDATE bank_accounts SET status = 'REMOVED', updated_at = now()
         WHERE id = $1 AND party_id = $2 AND status <> 'REMOVED' RETURNING id`,
       [id, partyId],
@@ -145,12 +148,15 @@ export class BanksRepository {
     return rows[0] ? toBeneficiary(rows[0]) : null;
   }
 
-  async addBeneficiary(input: Omit<Beneficiary, 'id'>): Promise<Beneficiary> {
-    const { rows } = await this.db.query<Record<string, any>>(
+  async addBeneficiary(
+    input: Omit<Beneficiary, 'id'>,
+    q: Queryable = this.db,
+  ): Promise<Beneficiary & { created: boolean }> {
+    const { rows } = await q.query<Record<string, any>>(
       `INSERT INTO beneficiaries (id, party_id, name, bank_id, account_ref, currency, kind, target_party_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (party_id, kind, account_ref) DO UPDATE SET name = EXCLUDED.name
-       RETURNING *`,
+       RETURNING *, (xmax = 0) AS inserted`,
       [
         `ben_${randomUUID()}`,
         input.partyId,
@@ -162,7 +168,7 @@ export class BanksRepository {
         input.targetPartyId,
       ],
     );
-    return toBeneficiary(rows[0]);
+    return { ...toBeneficiary(rows[0]), created: rows[0].inserted };
   }
 }
 

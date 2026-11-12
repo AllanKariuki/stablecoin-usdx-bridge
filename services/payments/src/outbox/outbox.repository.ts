@@ -71,6 +71,12 @@ export class OutboxRepository {
     return rows;
   }
 
+  /** Rows not yet delivered — the backlog the relay's gauge reports. */
+  async pendingCount(): Promise<number> {
+    const { rows } = await this.db.query<{ n: number }>(`SELECT count(*)::int AS n FROM outbox WHERE status = 'PENDING'`);
+    return Number(rows[0]?.n ?? 0);
+  }
+
   async markPublished(id: string): Promise<void> {
     await this.db.query(
       `UPDATE outbox SET status = 'PUBLISHED', published_at = now(), last_error = '' WHERE id = $1`,

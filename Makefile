@@ -160,7 +160,7 @@ test-sol:
 ## test script yet.
 #
 # workflow, kyc and compliance's audit-outbox specs run against their own
-# *_test databases too, as do payments', notifications' and reporting's. A
+# *_test databases too, as do payments', notifications', rms' and reporting's. A
 # volume older than any of those phases never ran their init scripts;
 # db-backfill creates whatever is missing.
 #

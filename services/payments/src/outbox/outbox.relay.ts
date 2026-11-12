@@ -1,5 +1,7 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { PlatformMetricsService } from '@damp/nest-platform';
+import { Counter, Gauge } from 'prom-client';
 import { OutboxRepository, OutboxRow } from './outbox.repository';
 
 /** How long a claimed row is hidden from other relays while one delivers it. */
@@ -33,13 +35,49 @@ export class OutboxRelay implements OnModuleInit, OnModuleDestroy {
   private draining: Promise<void> | null = null;
   private again = false;
 
+  private readonly delivered?: Counter<'event'>;
+  private readonly dead?: Counter<'event'>;
+
   constructor(
     private readonly outbox: OutboxRepository,
     config: ConfigService,
+    @Optional() metrics?: PlatformMetricsService,
   ) {
     this.baseUrl = config.get<string>('NOTIFICATIONS_URL', { infer: true }) ?? '';
     this.intervalSeconds = Number(config.get('OUTBOX_RELAY_SECONDS', { infer: true }) ?? 5);
     this.maxAttempts = Number(config.get('OUTBOX_MAX_ATTEMPTS', { infer: true }) ?? 100);
+
+    // Named after the audit relay's audit_outbox_* metrics, on the same
+    // registry /metrics serves. A DEAD row used to be a log line and nothing
+    // else: a customer who was never told their payment landed, findable
+    // only by someone already grepping for it.
+    if (metrics) {
+      const registers = [metrics.registry];
+      const outbox = this.outbox;
+      new Gauge({
+        name: 'payments_outbox_pending_events',
+        help: 'Payment events committed with their state change and not yet delivered to services/notifications.',
+        registers,
+        // Read at scrape time rather than set by the relay: with
+        // NOTIFICATIONS_URL unset the relay never runs, and that is exactly
+        // when the backlog grows.
+        async collect() {
+          this.set(await outbox.pendingCount());
+        },
+      });
+      this.delivered = new Counter({
+        name: 'payments_outbox_delivered_total',
+        help: 'Payment events services/notifications accepted, by event.',
+        labelNames: ['event'],
+        registers,
+      });
+      this.dead = new Counter({
+        name: 'payments_outbox_dead_lettered_total',
+        help: 'Payment events given up on (refused, or out of attempts), by event. Each is a customer who was not told.',
+        labelNames: ['event'],
+        registers,
+      });
+    }
   }
 
   onModuleInit(): void {
@@ -105,6 +143,7 @@ export class OutboxRelay implements OnModuleInit, OnModuleDestroy {
       });
       if (res.ok) {
         await this.outbox.markPublished(row.id);
+        this.delivered?.inc({ event: row.event });
         return;
       }
       status = res.status;
@@ -123,6 +162,7 @@ export class OutboxRelay implements OnModuleInit, OnModuleDestroy {
     await this.outbox.markFailed(row.id, reason, backoffSeconds(row.attempts), dead);
 
     if (dead) {
+      this.dead?.inc({ event: row.event });
       this.logger.error(
         `outbox event ${row.id} (${row.event} for ${row.party_id}) is DEAD after ${row.attempts} attempt(s): ${reason}`,
       );

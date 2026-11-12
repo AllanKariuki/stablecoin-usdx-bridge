@@ -63,6 +63,14 @@ type Config struct {
 	USDXProxyAddress string `env:"USDX_PROXY_ADDRESS" default:""`
 	USDXProgramID    string `env:"USDX_PROGRAM_ID" default:""`
 	USDXMintAddress  string `env:"USDX_MINT_ADDRESS" default:""`
+
+	// --- services/audit-trail ---
+	//
+	// Every Append also writes an audit_outbox row in the same transaction;
+	// the relay delivers them here. Empty is supported — events wait durably
+	// — and logged as a warning. The token is audit-trail's INGEST_TOKEN.
+	AuditTrailURL   string `env:"AUDIT_TRAIL_URL" default:""`
+	AuditTrailToken string `env:"AUDIT_TRAIL_TOKEN" default:""`
 }
 
 func Load() (Config, error) {
