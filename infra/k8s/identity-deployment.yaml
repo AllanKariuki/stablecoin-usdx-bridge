@@ -45,6 +45,15 @@ spec:
             # KEYCLOAK_ADMIN_CLIENT_SECRET comes from identity-secrets —
             # never hardcode the real value here (damp-realm.json's
             # placeholder is dev-only).
+            # services/audit-trail. audit_outbox rows are written in the same
+            # transaction as each change; this relay delivers them. The
+            # token is audit-trail's INGEST_TOKEN — one Secret, shared by
+            # every producer and the receiver.
+            - name: AUDIT_TRAIL_URL
+              value: "http://audit-trail.default.svc.cluster.local:8085"
+            - name: AUDIT_TRAIL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: audit-trail-ingest, key: token }
           resources:
             requests:
               memory: "128Mi"

@@ -174,6 +174,16 @@ test-node: up
 	@docker exec usdx-postgres psql -U bridge -d postgres -tAc \
 		"SELECT 1 FROM pg_roles WHERE rolname = 'workflow'" | grep -q 1 \
 		|| docker exec -i usdx-postgres psql -U bridge -d postgres -v ON_ERROR_STOP=1 < infra/postgres/init/04-p5-databases.sql
+	@# rms's and reporting's audit-outbox specs need rms_test (02-p3) and
+	@# reporting_test (06-p7); created here on volumes that predate them.
+	@for svc in rms reporting; do \
+		docker exec usdx-postgres psql -U bridge -d postgres -tAc \
+			"SELECT 1 FROM pg_roles WHERE rolname = '$$svc'" | grep -q 1 \
+			|| docker exec usdx-postgres psql -U bridge -d postgres -c "CREATE ROLE $$svc WITH LOGIN PASSWORD '$$svc'"; \
+		docker exec usdx-postgres psql -U bridge -d postgres -tAc \
+			"SELECT 1 FROM pg_database WHERE datname = '$${svc}_test'" | grep -q 1 \
+			|| docker exec usdx-postgres createdb -U bridge -O $$svc $${svc}_test; \
+	done
 	pnpm --filter "./shared/node/**" run build
 	pnpm -r --if-present run test
 
