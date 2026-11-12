@@ -103,7 +103,7 @@ export class MoneyMovementController {
   }
 }
 
-function requireIdempotencyKey(key: string | undefined): asserts key is string {
+export function requireIdempotencyKey(key: string | undefined): asserts key is string {
   if (!key) {
     throw new PlatformException(400, 'MISSING_IDEMPOTENCY_KEY', 'Idempotency-Key header is required');
   }

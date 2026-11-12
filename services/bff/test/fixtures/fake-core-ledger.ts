@@ -10,7 +10,10 @@ import { AddressInfo } from 'node:net';
  */
 export class FakeCoreLedger {
   private server: Server;
-  private wallets = new Map<string, { id: string; user_id: string; currency: string; balance: string }>();
+  private wallets = new Map<string, FakeWallet>();
+  private sagas = new Map<string, Record<string, unknown>>();
+  /** The X-User-Id core-ledger last saw on a write — what its actor() would stamp as initiated_by. */
+  lastActor = '';
   private transactions: Array<{ id: string; user_id: string; created_at: string; amount: string }> = [];
   private nextId = 1;
 
@@ -53,9 +56,19 @@ export class FakeCoreLedger {
     if (method === 'POST' && url.pathname === '/wallets') {
       const userId = String(body.user_id);
       const currency = String(body.currency ?? 'USD');
-      const existing = [...this.wallets.values()].find((w) => w.user_id === userId && w.currency === currency);
+      const chain = String(body.chain ?? '');
+      const existing = [...this.wallets.values()].find(
+        (w) => w.user_id === userId && w.currency === currency && w.chain === chain,
+      );
       if (existing) return this.json(res, 201, this.renderWallet(existing));
-      const wallet = { id: `wallet-${this.nextId++}`, user_id: userId, currency, balance: '0.00' };
+      const wallet: FakeWallet = {
+        id: `wallet-${this.nextId++}`,
+        user_id: userId,
+        currency,
+        chain,
+        address: String(body.address ?? ''),
+        balance: currency === 'USDX' ? '0.000000' : '0.00',
+      };
       this.wallets.set(wallet.id, wallet);
       return this.json(res, 201, this.renderWallet(wallet));
     }
@@ -111,6 +124,51 @@ export class FakeCoreLedger {
       return this.json(res, 201, this.renderTransaction(tx, wallet.currency));
     }
 
+    if (method === 'POST' && (url.pathname === '/issuances' || url.pathname === '/redemptions')) {
+      this.lastActor = String(req.headers['x-user-id'] ?? '');
+      const issuing = url.pathname === '/issuances';
+      const usdx = this.wallets.get(String(body.usdx_wallet_id));
+      if (!usdx) return this.json(res, 404, { error: 'no such wallet', code: 'UNKNOWN_WALLET' });
+      const correlationId = `corr-${req.headers['idempotency-key']}`;
+      if (!this.sagas.has(correlationId)) {
+        this.sagas.set(correlationId, {
+          correlation_id: correlationId,
+          kind: issuing ? 'MINT' : 'REDEEM',
+          user_id: usdx.user_id,
+          source_address: issuing ? '' : usdx.address,
+          target_address: issuing ? usdx.address : '',
+          amount: Number(body.amount).toFixed(6),
+          source_chain: issuing ? '' : usdx.chain,
+          target_chain: issuing ? usdx.chain : '',
+          status: 'PENDING',
+          source_tx_hash: '',
+          dest_tx_hash: '',
+          source_wallet_id: issuing ? '' : usdx.id,
+          target_wallet_id: issuing ? usdx.id : '',
+          ledger_tx_id: `tx-${this.nextId++}`,
+          attempts: 0,
+          next_attempt_at: new Date().toISOString(),
+          last_error: '',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      }
+      const saga = this.sagas.get(correlationId)!;
+      const tx = { id: String(saga.ledger_tx_id), created_at: String(saga.created_at), amount: String(body.amount) };
+      return this.json(res, 202, {
+        ...this.renderTransaction(tx, issuing ? 'USD' : 'USDX'),
+        correlation_id: correlationId,
+        saga_status: saga.status,
+      });
+    }
+
+    const transferMatch = url.pathname.match(/^\/transfers\/([^/]+)$/);
+    if (method === 'GET' && transferMatch) {
+      const saga = this.sagas.get(decodeURIComponent(transferMatch[1]));
+      if (!saga) return this.json(res, 404, { error: 'not found', code: 'TRANSFER_NOT_FOUND' });
+      return this.json(res, 200, saga);
+    }
+
     if (method === 'GET' && url.pathname === '/transactions') {
       const userId = url.searchParams.get('user_id') ?? '';
       const limit = Number(url.searchParams.get('limit') ?? '50');
@@ -124,13 +182,20 @@ export class FakeCoreLedger {
     this.json(res, 404, { error: 'no route', code: 'NOT_FOUND' });
   }
 
-  private renderWallet(w: { id: string; user_id: string; currency: string; balance: string }) {
+  /** Moves a saga along as the worker would, for specs that poll it. */
+  advanceSaga(correlationId: string, patch: Record<string, unknown>): void {
+    const saga = this.sagas.get(correlationId);
+    if (!saga) throw new Error(`no saga ${correlationId}`);
+    Object.assign(saga, patch);
+  }
+
+  private renderWallet(w: FakeWallet) {
     return {
       id: w.id,
       user_id: w.user_id,
       currency: w.currency,
-      chain: '',
-      address: '',
+      chain: w.chain,
+      address: w.address,
       status: 'ACTIVE',
       label: 'Main',
       balance: w.balance,
@@ -166,4 +231,13 @@ export class FakeCoreLedger {
     res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) });
     res.end(payload);
   }
+}
+
+interface FakeWallet {
+  id: string;
+  user_id: string;
+  currency: string;
+  chain: string;
+  address: string;
+  balance: string;
 }

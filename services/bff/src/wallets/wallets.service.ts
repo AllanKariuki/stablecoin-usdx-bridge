@@ -37,6 +37,23 @@ export class WalletsService {
     return wallets.map(toWalletView);
   }
 
+  async createWallet(input: {
+    userId: string;
+    currency: string;
+    chain: string;
+    address: string;
+    label: string;
+  }): Promise<WalletView> {
+    const wallet = await this.coreLedger.post<CoreLedgerWallet>('/wallets', {
+      user_id: input.userId,
+      currency: input.currency,
+      chain: input.chain,
+      address: input.address,
+      label: input.label,
+    });
+    return toWalletView(wallet);
+  }
+
   async getWallet(walletId: string): Promise<WalletView> {
     const wallet = await this.coreLedger.get<CoreLedgerWallet>(`/wallets/${encodeURIComponent(walletId)}`);
     return toWalletView(wallet);

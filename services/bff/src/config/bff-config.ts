@@ -26,6 +26,16 @@ export class BffConfig {
   @IsNotEmpty()
   CORE_LEDGER_URL!: string;
 
+  // Explorer links for the saga's tx hashes, `{hash}` substituted. Server
+  // config rather than frontend config because which network a hash lives on
+  // is a property of the core-ledger this bff talks to. Empty disables the
+  // link for that chain (the hash is still shown).
+  @IsString()
+  ETHEREUM_EXPLORER_TX_URL = 'https://sepolia.etherscan.io/tx/{hash}';
+
+  @IsString()
+  SOLANA_EXPLORER_TX_URL = 'https://explorer.solana.com/tx/{hash}?cluster=devnet';
+
   // P4's two services are forwarded to rather than reshaped: they already
   // emit camelCase and the Money shape, so a translation layer here would be
   // a second place for the two to disagree. Empty is a supported state — the

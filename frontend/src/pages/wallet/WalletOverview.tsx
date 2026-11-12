@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import BalanceCard from '../../components/dashboard/BalanceCard';
 import DepositForm from '../../components/wallet/DepositForm';
 import TransferForm from '../../components/wallet/TransferForm';
+import IssueRedeemForm from '../../components/wallet/IssueRedeemForm';
 import { useAppDispatch, useAppSelector } from '../../redux/hooks';
 import {
   fetchWalletStatement,
@@ -87,6 +88,7 @@ const WalletOverview = () => {
 
         <div className="lg:col-span-6 space-y-6">
           <DepositForm wallets={wallets} defaultWalletId={selectedWallet?.id} />
+          {wallets.length > 0 && <IssueRedeemForm wallets={wallets} />}
           {wallets.length > 1 && <TransferForm wallets={wallets} />}
         </div>
       </div>
