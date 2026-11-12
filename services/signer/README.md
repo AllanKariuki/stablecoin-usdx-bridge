@@ -82,6 +82,16 @@ later cannot be dated, because every row after it is equally suspect.
 first sign of a compromised caller probing what it can get through, and a log
 that only recorded successes would show that as silence.
 
+**Every row is also forwarded to services/audit-trail.** Append writes an
+`audit_outbox` event (`signer.signature.allowed` / `.denied` / `.error`, actor
+= the mTLS client) in the same SERIALIZABLE transaction as the signatures row,
+and a relay delivers it to `AUDIT_TRAIL_URL`. The table here stays the
+signer's own evidence and nothing reads the trail to sign; the forward exists
+so an auditor answering "who moved this money" has one place to look rather
+than a second database only this service can reach. Each event carries the
+row's `hash` and `prev_hash`, so the two records can be checked against each
+other — deleting a row from one leaves it in the other, which is also anchored.
+
 ## Backends
 
 | | |
