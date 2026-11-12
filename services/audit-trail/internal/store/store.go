@@ -14,6 +14,8 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/audit-trail/internal/chain"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
@@ -89,34 +91,88 @@ func Open(dsn string) (*Store, error) {
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 func (s *Store) Close() error                   { return s.db.Close() }
 
-// Append records one event, linked to its predecessor.
+// ErrIDConflict is a second event under an id already recorded for a
+// different one. A producer redelivering after a lost acknowledgement sends
+// the same event; one sending a different event under a used id is a bug or
+// a forgery, and neither should be answered with "already recorded".
+var ErrIDConflict = errors.New("event id already recorded for a different event")
+
+// appendRetries bounds how often Append replays a transaction Postgres
+// aborted. Two producers appending at once is the normal case for a shared
+// audit trail, and under SERIALIZABLE one of them losing is expected rather
+// than an error to hand back.
+const appendRetries = 5
+
+// Append records one event, linked to its predecessor, and reports whether it
+// was new.
 //
-// SERIALIZABLE because the read of the tip and the insert must be atomic:
-// two concurrent appends that both read the same tip would produce two rows
-// claiming the same predecessor — a fork in a chain whose whole value is that
-// it has none.
-func (s *Store) Append(ctx context.Context, e *Event) error {
+// An event whose id is already recorded is not appended twice: delivery from
+// a producer's outbox is at-least-once, and the trail is where that has to
+// become exactly-once — a duplicate here would be a second, equally
+// hash-chained claim that the action happened twice. The existing event is
+// loaded into e and Append returns (false, nil); a different event under the
+// same id is ErrIDConflict.
+func (s *Store) Append(ctx context.Context, e *Event) (created bool, err error) {
+	for attempt := 0; attempt < appendRetries; attempt++ {
+		created, err = s.appendOnce(ctx, e)
+		if err == nil || !isRetryable(err) {
+			return created, err
+		}
+	}
+	return false, fmt.Errorf("appending audit event: still conflicting after %d attempts: %w", appendRetries, err)
+}
+
+// appendOnce is SERIALIZABLE because the read of the tip and the insert must
+// be atomic: two concurrent appends that both read the same tip would produce
+// two rows claiming the same predecessor — a fork in a chain whose whole
+// value is that it has none.
+func (s *Store) appendOnce(ctx context.Context, e *Event) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	if e.ID != "" {
+		existing, err := eventByID(ctx, tx, e.ID)
+		if err != nil {
+			return false, err
+		}
+		if existing != nil {
+			if !sameEvent(existing, e) {
+				return false, ErrIDConflict
+			}
+			*e = *existing
+			return false, nil
+		}
+	}
 
 	var prev string
 	err = tx.QueryRowContext(ctx, `SELECT hash FROM events ORDER BY seq DESC LIMIT 1`).Scan(&prev)
 	if errors.Is(err, sql.ErrNoRows) {
 		prev = GenesisHash
 	} else if err != nil {
-		return err
+		return false, err
 	}
 
 	if e.ID == "" {
 		e.ID = uuid.New().String()
 	}
 	if e.OccurredAt.IsZero() {
-		e.OccurredAt = time.Now().UTC()
+		e.OccurredAt = time.Now()
 	}
-	e.RecordedAt = time.Now().UTC()
+	// A nil slice goes to the driver as NULL, and actor_roles is NOT NULL —
+	// so every event from a producer that named no roles was a 500.
+	if e.ActorRoles == nil {
+		e.ActorRoles = []string{}
+	}
+	// Microseconds, because that is all a timestamptz keeps. occurred_at is
+	// hashed; a nanosecond value hashes one way here and another when the row
+	// is read back, and Verify — which runs at boot and refuses to start on a
+	// break — would find a "tamper" in every event written on a clock with
+	// sub-microsecond resolution.
+	e.OccurredAt = e.OccurredAt.UTC().Truncate(time.Microsecond)
+	e.RecordedAt = time.Now().UTC().Truncate(time.Microsecond)
 	e.PrevHash = prev
 	e.Hash = chain.Hex(chain.HashLeaf(e.CanonicalBytes()))
 
@@ -132,9 +188,46 @@ func (s *Store) Append(ctx context.Context, e *Event) error {
 		jsonOrDefault(e.Metadata), e.RequestID, e.SourceIP, e.UserAgent,
 		e.OccurredAt, e.RecordedAt, e.PrevHash, e.Hash).Scan(&e.Seq)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit()
+	return true, tx.Commit()
+}
+
+// sameEvent compares the fields that say what happened. Request metadata
+// (source IP, user agent) is left out: it is context, and a producer filling
+// it in on a later delivery has not described a different event.
+func sameEvent(a, b *Event) bool {
+	return a.Actor == b.Actor && a.Action == b.Action && a.SubjectType == b.SubjectType &&
+		a.SubjectID == b.SubjectID && a.Service == b.Service && a.Outcome == b.Outcome &&
+		a.OnBehalfOf == b.OnBehalfOf
+}
+
+func eventByID(ctx context.Context, tx *sql.Tx, id string) (*Event, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT * FROM events WHERE id = $1`, id)
+	if err != nil {
+		return nil, err
+	}
+	r := newRows(rows)
+	defer r.Close()
+	if !r.Next() {
+		return nil, r.Err()
+	}
+	e, err := scanEvent(r)
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// isRetryable is a serialization failure, or the unique index on id catching
+// two deliveries of one event racing each other — on the retry, the loser
+// finds the winner's row and answers "already recorded".
+func isRetryable(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "40001" || pgErr.Code == "23505"
+	}
+	return false
 }
 
 // CanonicalBytes is what gets hashed, into both the chain and the Merkle
@@ -365,10 +458,21 @@ func (s *Store) query(ctx context.Context, sql string, args ...any) (*sqlRows, e
 	if err != nil {
 		return nil, err
 	}
-	return &sqlRows{rows}, nil
+	return newRows(rows), nil
 }
 
-type sqlRows struct{ *sql.Rows }
+// sqlRows carries a pgtype.Map alongside the rows because database/sql
+// cannot scan a text[] into a []string on its own — the driver hands it over
+// as the array's text literal. Without it, every read of an event failed,
+// Verify included, which is the check audit-trail refuses to boot without.
+// One map per result set rather than a shared one: a pgtype.Map caches scan
+// plans and is not safe for concurrent use.
+type sqlRows struct {
+	*sql.Rows
+	types *pgtype.Map
+}
+
+func newRows(rows *sql.Rows) *sqlRows { return &sqlRows{Rows: rows, types: pgtype.NewMap()} }
 
 func scanEvent(rows *sqlRows) (Event, error) {
 	var (
@@ -376,7 +480,7 @@ func scanEvent(rows *sqlRows) (Event, error) {
 		before, after, meta []byte
 		anchorID            sql.NullString
 	)
-	err := rows.Scan(&e.Seq, &e.ID, &e.Actor, &e.ActorRoles, &e.OnBehalfOf, &e.Action,
+	err := rows.Scan(&e.Seq, &e.ID, &e.Actor, rows.types.SQLScanner(&e.ActorRoles), &e.OnBehalfOf, &e.Action,
 		&e.SubjectType, &e.SubjectID, &e.Service, &e.Outcome, &before, &after, &meta,
 		&e.RequestID, &e.SourceIP, &e.UserAgent, &e.OccurredAt, &e.RecordedAt,
 		&e.PrevHash, &e.Hash, &anchorID)

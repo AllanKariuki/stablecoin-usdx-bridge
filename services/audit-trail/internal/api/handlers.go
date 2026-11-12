@@ -3,7 +3,10 @@
 package api
 
 import (
+	"crypto/subtle"
+	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/audit-trail/internal/chain"
@@ -14,18 +17,23 @@ import (
 )
 
 type Handlers struct {
-	store  *store.Store
-	logger *slog.Logger
+	store       *store.Store
+	logger      *slog.Logger
+	ingestToken string
 }
 
-func New(st *store.Store, logger *slog.Logger) *Handlers {
-	return &Handlers{store: st, logger: logger}
+// New takes the shared ingest token producers present as a bearer token.
+// Empty leaves recording open to anything that can reach the port, which is
+// what it was before producers existed — main.go warns when it starts that
+// way.
+func New(st *store.Store, logger *slog.Logger, ingestToken string) *Handlers {
+	return &Handlers{store: st, logger: logger, ingestToken: ingestToken}
 }
 
 func (h *Handlers) Register(app *fiber.App) {
 	// Recording is /internal: services post here, humans do not. It is absent
 	// from the gateway's route table, whose default is deny.
-	app.Post("/internal/events", h.record)
+	app.Post("/internal/events", h.authenticateProducer, h.record)
 
 	app.Get("/audit/events", h.events)
 	app.Get("/audit/events/:eventId/proof", h.proof)
@@ -33,16 +41,46 @@ func (h *Handlers) Register(app *fiber.App) {
 	app.Get("/audit/verify", h.verify)
 }
 
+// authenticateProducer gates recording on INGEST_TOKEN.
+//
+// Absence from the gateway keeps browsers out; it does nothing about any
+// other pod on the cluster network, and recording is the one write on this
+// service — an unauthenticated one lets anything that can reach it put words
+// in any actor's mouth, permanently, in a log built so nobody can take them
+// back out. A shared token is the floor rather than the ceiling (mTLS, as
+// services/signer does it, is the ceiling), and it is what every producer's
+// relay already sends.
+func (h *Handlers) authenticateProducer(c *fiber.Ctx) error {
+	if h.ingestToken == "" {
+		return c.Next()
+	}
+	presented, ok := strings.CutPrefix(c.Get(fiber.HeaderAuthorization), "Bearer ")
+	if !ok || subtle.ConstantTimeCompare([]byte(presented), []byte(h.ingestToken)) != 1 {
+		return platform.WriteError(c, fiber.StatusUnauthorized, "UNAUTHENTICATED",
+			"recording an audit event needs the producer ingest token")
+	}
+	return c.Next()
+}
+
 // record accepts one event.
+//
+// Idempotent on `id`. Producers deliver from a transactional outbox, which is
+// at-least-once by construction, so the same event arriving twice is
+// expected: the second gets 200 and the first recording's seq and hash, not a
+// second row. An event without an id is given one and always appended — the
+// pre-outbox behaviour, kept for callers that have no way to retry anyway.
 //
 // Always 2xx once written. A producer that got a 500 from the audit trail
 // would have to decide whether to fail the action it was auditing — and
 // whichever it chose would be wrong: failing means an outage here stops the
 // platform, and not failing means the action happens unaudited. So this
-// endpoint is built to not fail, and its callers treat it as best-effort with
-// the durable path being core-ledger's outbox.
+// endpoint is built to not fail, and no producer calls it inline: each writes
+// the event to its own audit_outbox in the same transaction as the action
+// (shared/go/platform/audit, or @damp/nest-platform's audit module) and a
+// relay delivers it from there, retrying until it lands.
 func (h *Handlers) record(c *fiber.Ctx) error {
 	var req struct {
+		ID          string         `json:"id"`
 		Actor       string         `json:"actor"`
 		ActorRoles  []string       `json:"actor_roles"`
 		OnBehalfOf  string         `json:"on_behalf_of"`
@@ -66,6 +104,9 @@ func (h *Handlers) record(c *fiber.Ctx) error {
 		return platform.WriteError(c, fiber.StatusBadRequest, "INVALID_REQUEST",
 			"actor and action are required: an audit event that names neither is not evidence of anything")
 	}
+	if len(req.ID) > 128 {
+		return platform.WriteError(c, fiber.StatusBadRequest, "INVALID_REQUEST", "id must be at most 128 characters")
+	}
 
 	occurredAt := time.Time{}
 	if req.OccurredAt != "" {
@@ -75,6 +116,7 @@ func (h *Handlers) record(c *fiber.Ctx) error {
 	}
 
 	event := &store.Event{
+		ID:          req.ID,
 		Actor:       req.Actor,
 		ActorRoles:  req.ActorRoles,
 		OnBehalfOf:  req.OnBehalfOf,
@@ -92,17 +134,33 @@ func (h *Handlers) record(c *fiber.Ctx) error {
 		OccurredAt:  occurredAt,
 	}
 
-	if err := h.store.Append(c.Context(), event); err != nil {
+	created, err := h.store.Append(c.Context(), event)
+	if errors.Is(err, store.ErrIDConflict) {
+		// Not retryable, and the producer's relay dead-letters it: a second,
+		// different event under a recorded id is a bug or a forgery, and
+		// either way somebody should look rather than the trail quietly
+		// keeping whichever arrived first.
+		h.logger.Error("refused an audit event whose id is already recorded for a different event",
+			slog.String("id", req.ID), slog.String("action", req.Action), slog.String("service", req.Service))
+		return platform.WriteError(c, fiber.StatusConflict, "EVENT_ID_CONFLICT",
+			"this id is already recorded for a different event")
+	}
+	if err != nil {
 		h.logger.Error("could not record an audit event",
 			slog.String("action", req.Action), slog.String("actor", req.Actor), slog.Any("error", err))
 		return platform.WriteError(c, fiber.StatusInternalServerError, "AUDIT_WRITE_FAILED",
 			"the event could not be recorded")
 	}
 
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"id":   event.ID,
-		"seq":  event.Seq,
-		"hash": event.Hash,
+	status := fiber.StatusCreated
+	if !created {
+		status = fiber.StatusOK
+	}
+	return c.Status(status).JSON(fiber.Map{
+		"id":        event.ID,
+		"seq":       event.Seq,
+		"hash":      event.Hash,
+		"duplicate": !created,
 	})
 }
 
