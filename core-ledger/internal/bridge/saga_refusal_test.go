@@ -66,7 +66,7 @@ func (f *fixture) fundBridge(t *testing.T) (correlationID string, solana *ledger
 	if res := f.saga.Execute(f.ctx, f.issue(t, 300_00)); res.Failed() {
 		t.Fatalf("seeding mint failed: %+v", res)
 	}
-	solana, err := f.repo.EnsureWallet(f.ctx, f.user, "USDX", "SOLANA", "So11111111111111111111111111111111111111112", "USD-X Solana")
+	solana, err := f.repo.EnsureWallet(f.ctx, f.user, "USDX", "SOLANA", "So11111111111111111111111111111111111111112", "USD-X Solana", "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet SOLANA: %v", err)
 	}
