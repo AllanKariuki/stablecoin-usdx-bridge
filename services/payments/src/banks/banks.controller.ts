@@ -1,5 +1,8 @@
 import { Body, Controller, Delete, Get, HttpCode, NotFoundException, Param, Post } from '@nestjs/common';
+import { AuditContext, AuditRequest, AuditEvent, enqueueAuditEvent } from '@damp/nest-platform';
+import { AUDIT, SERVICE } from '../audit/audit-actions';
 import { CurrentUser } from '../auth/current-user.decorator';
+import { DbService, Queryable } from '../db/db.service';
 import { BanksRepository } from './banks.repository';
 
 /**
@@ -15,7 +18,26 @@ import { BanksRepository } from './banks.repository';
  */
 @Controller('banks')
 export class BanksController {
-  constructor(private readonly repo: BanksRepository) {}
+  constructor(
+    private readonly repo: BanksRepository,
+    private readonly db: DbService,
+  ) {}
+
+  /**
+   * Where money may be sent is the thing a payout fraud changes first, so
+   * every change to it is audited in the same transaction as the change.
+   * Only the last four digits are ever in an event, as in the table.
+   */
+  private audited<T>(
+    audit: AuditRequest,
+    fn: (q: Queryable) => Promise<{ result: T; event?: Omit<AuditEvent, 'service'> }>,
+  ): Promise<T> {
+    return this.db.transaction(async (q) => {
+      const { result, event } = await fn(q);
+      if (event) await enqueueAuditEvent(q, { ...event, service: SERVICE }, audit);
+      return result;
+    });
+  }
 
   @Get('available')
   async available() {
@@ -44,6 +66,7 @@ export class BanksController {
   async register(
     @CurrentUser() partyId: string,
     @Body() body: { bankId: string; accountName: string; accountNumber: string; currency?: string },
+    @AuditContext() audit: AuditRequest = {},
   ) {
     if (!body?.bankId || !body?.accountNumber) {
       throw new NotFoundException('bankId and accountNumber are required');
@@ -52,12 +75,30 @@ export class BanksController {
     const bank = banks.find((b) => b.id === body.bankId);
     if (!bank) throw new NotFoundException(`no bank ${body.bankId}`);
 
-    const account = await this.repo.registerAccount({
-      partyId,
-      bankId: body.bankId,
-      accountName: body.accountName ?? '',
-      accountNumber: body.accountNumber,
-      currency: body.currency ?? bank.currency,
+    const account = await this.audited(audit, async (q) => {
+      const a = await this.repo.registerAccount(
+        {
+          partyId,
+          bankId: body.bankId,
+          accountName: body.accountName ?? '',
+          accountNumber: body.accountNumber,
+          currency: body.currency ?? bank.currency,
+        },
+        q,
+      );
+      return {
+        result: a,
+        event: {
+          actor: partyId,
+          action: AUDIT.bankAccountRegistered,
+          subjectType: 'BANK_ACCOUNT',
+          subjectId: a.id,
+          afterState: { bankId: a.bankId, accountName: a.accountName, accountLast4: a.accountLast4, currency: a.currency, status: a.status },
+          // Re-registering an existing account resets it to PENDING — a
+          // verified destination becoming unverified is worth telling apart.
+          metadata: { reRegistered: !a.created },
+        },
+      };
     });
     return render(account);
   }
@@ -72,18 +113,56 @@ export class BanksController {
    */
   @Post('link')
   @HttpCode(200)
-  async link(@CurrentUser() partyId: string, @Body() body: { accountId: string }) {
+  async link(
+    @CurrentUser() partyId: string,
+    @Body() body: { accountId: string },
+    @AuditContext() audit: AuditRequest = {},
+  ) {
     const existing = await this.repo.findAccount(body?.accountId ?? '');
     if (!existing || existing.partyId !== partyId) {
       throw new NotFoundException('no such bank account');
     }
-    const verified = await this.repo.verifyAccount(existing.id);
+    const verified = await this.audited(audit, async (q) => {
+      const v = await this.repo.verifyAccount(existing.id, q);
+      return {
+        result: v,
+        // Verification is what makes an account a payout destination.
+        event: v
+          ? {
+              actor: partyId,
+              action: AUDIT.bankAccountVerified,
+              subjectType: 'BANK_ACCOUNT',
+              subjectId: v.id,
+              beforeState: { status: existing.status },
+              afterState: { status: v.status, accountLast4: v.accountLast4, bankId: v.bankId },
+            }
+          : undefined,
+      };
+    });
     return render(verified ?? existing);
   }
 
   @Delete('user-accounts/:accountId')
-  async remove(@CurrentUser() partyId: string, @Param('accountId') accountId: string) {
-    const removed = await this.repo.removeAccount(accountId, partyId);
+  async remove(
+    @CurrentUser() partyId: string,
+    @Param('accountId') accountId: string,
+    @AuditContext() audit: AuditRequest = {},
+  ) {
+    const removed = await this.audited(audit, async (q) => {
+      const r = await this.repo.removeAccount(accountId, partyId, q);
+      return {
+        result: r,
+        event: r
+          ? {
+              actor: partyId,
+              action: AUDIT.bankAccountRemoved,
+              subjectType: 'BANK_ACCOUNT',
+              subjectId: accountId,
+              afterState: { status: 'REMOVED' },
+            }
+          : undefined,
+      };
+    });
     if (!removed) throw new NotFoundException('no such bank account');
     return { id: accountId, status: 'REMOVED' };
   }
@@ -107,19 +186,46 @@ export class BanksController {
       currency: string;
       targetPartyId?: string;
     },
+    @AuditContext() audit: AuditRequest = {},
   ) {
     if (!body?.name || !body?.accountRef) {
       throw new NotFoundException('name and accountRef are required');
     }
-    return this.repo.addBeneficiary({
-      partyId,
-      name: body.name,
-      kind: body.kind ?? 'BANK',
-      bankId: body.bankId ?? null,
-      accountRef: body.accountRef,
-      currency: body.currency ?? 'USD',
-      targetPartyId: body.targetPartyId ?? '',
+    const { created, ...beneficiary } = await this.audited(audit, async (q) => {
+      const b = await this.repo.addBeneficiary(
+        {
+          partyId,
+          name: body.name,
+          kind: body.kind ?? 'BANK',
+          bankId: body.bankId ?? null,
+          accountRef: body.accountRef,
+          currency: body.currency ?? 'USD',
+          targetPartyId: body.targetPartyId ?? '',
+        },
+        q,
+      );
+      return {
+        result: b,
+        event: {
+          actor: partyId,
+          action: AUDIT.beneficiaryAdded,
+          subjectType: 'BENEFICIARY',
+          subjectId: b.id,
+          afterState: {
+            name: b.name,
+            kind: b.kind,
+            bankId: b.bankId,
+            accountRef: b.accountRef,
+            currency: b.currency,
+            targetPartyId: b.targetPartyId,
+          },
+          // An existing beneficiary re-added under a new name is a rename,
+          // not a new destination.
+          metadata: { renamed: !b.created },
+        },
+      };
     });
+    return beneficiary;
   }
 }
 

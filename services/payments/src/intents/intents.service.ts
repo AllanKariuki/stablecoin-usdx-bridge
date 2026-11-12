@@ -1,6 +1,9 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { AuditRequest, enqueueAuditEvent } from '@damp/nest-platform';
+import { AUDIT, railActor, SERVICE } from '../audit/audit-actions';
 import { BanksRepository } from '../banks/banks.repository';
 import { CoreLedgerClient } from '../core-ledger/core-ledger.client';
+import { DbService } from '../db/db.service';
 import { toScaled } from '../money/money';
 import { RailRegistry } from '../rails/rail.registry';
 import { IntentDirection, IntentsRepository, PaymentIntent } from './intents.repository';
@@ -23,6 +26,7 @@ export class IntentsService {
     private readonly banks: BanksRepository,
     private readonly ledger: CoreLedgerClient,
     private readonly rails: RailRegistry,
+    private readonly db: DbService,
   ) {}
 
   async create(input: {
@@ -36,6 +40,7 @@ export class IntentsService {
     description?: string;
     idempotencyKey: string;
     phoneNumber?: string;
+    audit?: AuditRequest;
   }): Promise<PaymentIntent> {
     this.assertAmount(input.amount, input.currency);
 
@@ -79,18 +84,52 @@ export class IntentsService {
       rail = beneficiary.kind === 'WALLET' ? 'internal' : rail;
     }
 
-    const { intent, created } = await this.intents.create({
-      partyId: input.partyId,
-      direction: input.direction,
-      amount: input.amount,
-      currency: input.currency,
-      walletId: wallet.id,
-      bankAccountId: input.bankAccountId ?? null,
-      beneficiaryId: input.beneficiaryId ?? null,
-      invoiceId: input.invoiceId ?? null,
-      rail,
-      idempotencyKey: input.idempotencyKey,
-      description: input.description,
+    // The intent and its audit event commit together, and only a new intent
+    // is audited: an idempotent retry asked for nothing new.
+    const { intent, created } = await this.db.transaction(async (q) => {
+      const result = await this.intents.create(
+        {
+          partyId: input.partyId,
+          direction: input.direction,
+          amount: input.amount,
+          currency: input.currency,
+          walletId: wallet.id,
+          bankAccountId: input.bankAccountId ?? null,
+          beneficiaryId: input.beneficiaryId ?? null,
+          invoiceId: input.invoiceId ?? null,
+          rail,
+          idempotencyKey: input.idempotencyKey,
+          description: input.description,
+        },
+        q,
+      );
+      if (result.created) {
+        const i = result.intent;
+        await enqueueAuditEvent(
+          q,
+          {
+            actor: input.partyId,
+            action: AUDIT.intentCreated,
+            subjectType: 'PAYMENT_INTENT',
+            subjectId: i.id,
+            service: SERVICE,
+            afterState: {
+              direction: i.direction,
+              amount: i.amount,
+              currency: i.currency,
+              status: i.status,
+              rail: i.rail,
+              walletId: i.walletId,
+              bankAccountId: i.bankAccountId,
+              beneficiaryId: i.beneficiaryId,
+              invoiceId: i.invoiceId,
+            },
+            metadata: { idempotencyKey: input.idempotencyKey, description: i.description },
+          },
+          input.audit,
+        );
+      }
+      return result;
     });
 
     if (!created) {
@@ -132,7 +171,7 @@ export class IntentsService {
             });
 
       if (initiation.status === 'FAILED') {
-        await this.intents.markFailed(intent.id, initiation.failureReason ?? 'the rail refused the request');
+        await this.failAtInitiation(intent, initiation.failureReason ?? 'the rail refused the request');
       } else {
         await this.intents.recordRailAccepted(intent.id, initiation.railRef, initiation.status);
       }
@@ -144,16 +183,56 @@ export class IntentsService {
       return { ...refreshed, metadata: { ...refreshed.metadata, customerAction: initiation.customerAction } };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await this.intents.markFailed(intent.id, `the rail could not be reached: ${message}`);
+      await this.failAtInitiation(intent, `the rail could not be reached: ${message}`);
       throw new BadRequestException(message);
     }
   }
 
-  async cancel(id: string, partyId: string): Promise<boolean> {
+  async cancel(id: string, partyId: string, audit: AuditRequest = {}): Promise<boolean> {
     // Only REQUIRES_ACTION cancels. Once a rail has the request, cancelling
     // in this database would leave an intent that says CANCELLED while money
     // is still moving.
-    return this.intents.markCancelled(id, partyId);
+    return this.db.transaction(async (q) => {
+      if (!(await this.intents.markCancelled(id, partyId, q))) return false;
+      await enqueueAuditEvent(
+        q,
+        {
+          actor: partyId,
+          action: AUDIT.intentCancelled,
+          subjectType: 'PAYMENT_INTENT',
+          subjectId: id,
+          service: SERVICE,
+          beforeState: { status: 'REQUIRES_ACTION' },
+          afterState: { status: 'CANCELLED' },
+        },
+        audit,
+      );
+      return true;
+    });
+  }
+
+  /**
+   * The rail refused or could not be reached before it took the request. No
+   * money moved, so there is no payment.failed notification here (the caller
+   * gets the error in its response) — but the intent changed state on a
+   * rail's say-so, which is what the audit event records.
+   */
+  private async failAtInitiation(intent: PaymentIntent, reason: string): Promise<void> {
+    await this.db.transaction(async (q) => {
+      if (!(await this.intents.markFailed(intent.id, reason, q))) return;
+      await enqueueAuditEvent(q, {
+        actor: railActor(intent.rail),
+        onBehalfOf: intent.partyId,
+        action: AUDIT.intentFailed,
+        subjectType: 'PAYMENT_INTENT',
+        subjectId: intent.id,
+        service: SERVICE,
+        outcome: 'FAILURE',
+        beforeState: { status: intent.status },
+        afterState: { status: 'FAILED' },
+        metadata: { reason, stage: 'initiation' },
+      });
+    });
   }
 
   private assertAmount(amount: string, currency: string): void {

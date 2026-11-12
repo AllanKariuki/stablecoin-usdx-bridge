@@ -119,14 +119,20 @@ export class InvoicesRepository {
     );
   }
 
-  async void(id: string, issuerPartyId: string): Promise<boolean> {
-    const { rows } = await this.db.query<{ id: string }>(
-      `UPDATE invoices SET status = 'VOID', pay_token = NULL, updated_at = now()
-        WHERE id = $1 AND issuer_party_id = $2 AND status IN ('DRAFT', 'OPEN')
-        RETURNING id`,
+  /**
+   * Voids an invoice and returns the status it had, or null if there was no
+   * DRAFT/OPEN invoice of this issuer's to void. `q` lets the controller
+   * write the audit event in the same transaction.
+   */
+  async void(id: string, issuerPartyId: string, q: Queryable = this.db): Promise<string | null> {
+    const { rows } = await q.query<{ before: string }>(
+      `UPDATE invoices i SET status = 'VOID', pay_token = NULL, updated_at = now()
+         FROM (SELECT id, status AS before FROM invoices WHERE id = $1 FOR UPDATE) prior
+        WHERE i.id = prior.id AND i.issuer_party_id = $2 AND i.status IN ('DRAFT', 'OPEN')
+        RETURNING prior.before`,
       [id, issuerPartyId],
     );
-    return rows.length > 0;
+    return rows[0]?.before ?? null;
   }
 
   /**

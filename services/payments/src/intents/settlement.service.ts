@@ -1,4 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { AuditRequest, enqueueAuditEvent } from '@damp/nest-platform';
+import { AUDIT, railActor, SERVICE } from '../audit/audit-actions';
 import { CoreLedgerClient, LedgerError } from '../core-ledger/core-ledger.client';
 import { DbService } from '../db/db.service';
 import { OutboxRelay } from '../outbox/outbox.relay';
@@ -49,8 +51,12 @@ export class SettlementService {
    * Every real rail delivers callbacks at-least-once, so this is called more
    * than once for the same payment as a matter of routine, not as an error
    * case.
+   *
+   * `audit` is the callback's HTTP request (source IP above all): when a
+   * settlement is questioned, where the callback came from is the first
+   * thing anyone asks.
    */
-  async onRailCallback(rail: string, callback: RailCallback): Promise<void> {
+  async onRailCallback(rail: string, callback: RailCallback, audit: AuditRequest = {}): Promise<void> {
     const intent = await this.intents.findByRailRef(rail, callback.railRef);
     if (!intent) {
       // Not an error worth throwing over: a callback for a reference this
@@ -62,7 +68,7 @@ export class SettlementService {
     }
 
     if (callback.status === 'FAILED') {
-      await this.fail(intent, callback.failureReason ?? `${rail} reported a failure`);
+      await this.fail(intent, callback.failureReason ?? `${rail} reported a failure`, railActor(rail), audit);
       return;
     }
     if (callback.status !== 'SETTLED') {
@@ -81,11 +87,29 @@ export class SettlementService {
         `${rail} reported ${callback.amount} ${intent.currency} against intent ${intent.id} for ${intent.amount}; ` +
           `NOT settling — needs operator review`,
       );
+      // Nothing changed, but this is the one path where a forged callback
+      // would show itself, so the refusal is evidence in its own right.
+      await this.db.transaction((q) =>
+        enqueueAuditEvent(
+          q,
+          {
+            actor: railActor(rail),
+            onBehalfOf: intent.partyId,
+            action: AUDIT.settlementRefused,
+            subjectType: 'PAYMENT_INTENT',
+            subjectId: intent.id,
+            service: SERVICE,
+            outcome: 'DENIED',
+            metadata: { reportedAmount: callback.amount, expectedAmount: intent.amount, currency: intent.currency, railRef: callback.railRef },
+          },
+          audit,
+        ),
+      );
       return;
     }
     const amount = intent.amount;
 
-    await this.settle(intent, amount);
+    await this.settle(intent, amount, railActor(rail), audit);
   }
 
   /**
@@ -95,8 +119,16 @@ export class SettlementService {
    * same path for a rail that confirmed out of band — and because having one
    * settlement implementation rather than two is the only way the operator
    * path is as correct as the automatic one.
+   *
+   * `actor` is who caused the settlement: the rail for a callback, the
+   * customer for an internal transfer they asked for.
    */
-  async settle(intent: PaymentIntent, amount: string): Promise<void> {
+  async settle(
+    intent: PaymentIntent,
+    amount: string,
+    actor: string = railActor(intent.rail),
+    audit: AuditRequest = {},
+  ): Promise<void> {
     if (intent.ledgerTxId) {
       this.logger.log(`intent ${intent.id} is already settled as ${intent.ledgerTxId}; nothing to do`);
       return;
@@ -159,7 +191,7 @@ export class SettlementService {
           `core-ledger refused settlement of ${intent.id}: ${err.message}. ` +
             `The rail has already moved the money; this needs a human.`,
         );
-        await this.fail(intent, `ledger rejected settlement: ${err.body.slice(0, 500)}`);
+        await this.fail(intent, `ledger rejected settlement: ${err.body.slice(0, 500)}`, actor, audit);
         return;
       }
       // "We don't know." The intent must NOT be marked failed: the rail moved
@@ -181,6 +213,21 @@ export class SettlementService {
       if (intent.invoiceId) {
         await this.invoices.markPaid(intent.invoiceId, intent.id, q);
       }
+      await enqueueAuditEvent(
+        q,
+        {
+          actor,
+          onBehalfOf: actor === intent.partyId ? undefined : intent.partyId,
+          action: AUDIT.intentSettled,
+          subjectType: 'PAYMENT_INTENT',
+          subjectId: intent.id,
+          service: SERVICE,
+          beforeState: { status: intent.status },
+          afterState: { status: 'SETTLED', ledgerTxId, amount, currency: intent.currency },
+          metadata: { direction: intent.direction, rail: intent.rail, railRef: intent.railRef, invoiceId: intent.invoiceId },
+        },
+        audit,
+      );
       await this.outbox.enqueue(q, {
         event: 'payment.settled',
         partyId: intent.partyId,
@@ -207,9 +254,25 @@ export class SettlementService {
     this.relay.kick();
   }
 
-  private async fail(intent: PaymentIntent, reason: string): Promise<void> {
+  private async fail(intent: PaymentIntent, reason: string, actor: string, audit: AuditRequest): Promise<void> {
     const transitioned = await this.db.transaction(async (q) => {
       if (!(await this.intents.markFailed(intent.id, reason, q))) return false;
+      await enqueueAuditEvent(
+        q,
+        {
+          actor,
+          onBehalfOf: actor === intent.partyId ? undefined : intent.partyId,
+          action: AUDIT.intentFailed,
+          subjectType: 'PAYMENT_INTENT',
+          subjectId: intent.id,
+          service: SERVICE,
+          outcome: 'FAILURE',
+          beforeState: { status: intent.status },
+          afterState: { status: 'FAILED' },
+          metadata: { reason, rail: intent.rail, railRef: intent.railRef },
+        },
+        audit,
+      );
       await this.outbox.enqueue(q, {
         event: 'payment.failed',
         partyId: intent.partyId,

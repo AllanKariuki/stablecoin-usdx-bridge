@@ -60,22 +60,27 @@ export class IntentsRepository {
    * `DO NOTHING` returns no row and the caller would then need a second query
    * — leaving a window where a concurrent request sees neither. Updating
    * `updated_at` is the cheapest way to make the conflict path still RETURN.
+   *
+   * `q` lets the service write the intent and its audit event together.
    */
-  async create(input: {
-    partyId: string;
-    direction: IntentDirection;
-    amount: string;
-    currency: string;
-    walletId: string;
-    bankAccountId?: string | null;
-    beneficiaryId?: string | null;
-    invoiceId?: string | null;
-    rail: string;
-    idempotencyKey: string;
-    description?: string;
-    metadata?: Record<string, unknown>;
-  }): Promise<{ intent: PaymentIntent; created: boolean }> {
-    const { rows } = await this.db.query<IntentRow & { inserted: boolean }>(
+  async create(
+    input: {
+      partyId: string;
+      direction: IntentDirection;
+      amount: string;
+      currency: string;
+      walletId: string;
+      bankAccountId?: string | null;
+      beneficiaryId?: string | null;
+      invoiceId?: string | null;
+      rail: string;
+      idempotencyKey: string;
+      description?: string;
+      metadata?: Record<string, unknown>;
+    },
+    q: Queryable = this.db,
+  ): Promise<{ intent: PaymentIntent; created: boolean }> {
+    const { rows } = await q.query<IntentRow & { inserted: boolean }>(
       `INSERT INTO payment_intents
          (id, party_id, direction, amount, currency, wallet_id, bank_account_id,
           beneficiary_id, invoice_id, rail, idempotency_key, description, metadata)
@@ -122,8 +127,8 @@ export class IntentsRepository {
     return rows.map(toIntent);
   }
 
-  async recordRailAccepted(id: string, railRef: string, status: IntentStatus): Promise<void> {
-    await this.db.query(
+  async recordRailAccepted(id: string, railRef: string, status: IntentStatus, q: Queryable = this.db): Promise<void> {
+    await q.query(
       `UPDATE payment_intents SET rail_ref = $2, status = $3, updated_at = now() WHERE id = $1`,
       [id, railRef, status],
     );
@@ -174,8 +179,8 @@ export class IntentsRepository {
     return rows.length > 0;
   }
 
-  async markCancelled(id: string, partyId: string): Promise<boolean> {
-    const { rows } = await this.db.query<{ id: string }>(
+  async markCancelled(id: string, partyId: string, q: Queryable = this.db): Promise<boolean> {
+    const { rows } = await q.query<{ id: string }>(
       `UPDATE payment_intents SET status = 'CANCELLED', updated_at = now()
         WHERE id = $1 AND party_id = $2 AND status = 'REQUIRES_ACTION'
         RETURNING id`,
