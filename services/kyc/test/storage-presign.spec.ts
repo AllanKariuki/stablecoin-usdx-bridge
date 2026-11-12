@@ -44,9 +44,9 @@ describe('StorageService presigning', () => {
     expect(q.get('X-Amz-Credential')).toBe('AKIDEXAMPLE/20261112/us-east-1/s3/aws4_request');
     expect(q.get('X-Amz-Date')).toBe('20261112T083015Z');
     expect(q.get('X-Amz-Expires')).toBe('300');
-    // Only host is signed, as before — the content type is returned for the
-    // client to send, not bound into the signature.
-    expect(q.get('X-Amz-SignedHeaders')).toBe('host');
+    // The content type is bound into the signature, so the backend refuses
+    // an upload that sends any other one.
+    expect(q.get('X-Amz-SignedHeaders')).toBe('content-type;host');
     expect(q.get('X-Amz-Content-Sha256')).toBe('UNSIGNED-PAYLOAD');
     expect(q.get('X-Amz-Signature')).toMatch(/^[0-9a-f]{64}$/);
     // A checksum of an empty body here would fail every real upload.

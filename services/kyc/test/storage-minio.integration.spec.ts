@@ -6,7 +6,7 @@ import { StorageService } from '../src/storage/storage.service';
 // LEDGER_TEST_DATABASE_URL: set it to a reachable MinIO and the suite runs,
 // leave it unset and it skips. Locally:
 //
-//   docker compose --profile app up -d minio
+//   docker compose up -d minio      (or `make test-node`, which does this)
 //   KYC_TEST_S3_ENDPOINT=http://localhost:59000 pnpm --filter @damp/kyc test
 //
 // The unit spec pins the URL's shape; only a real backend can say the
@@ -71,7 +71,20 @@ const REGION = 'us-east-1';
         ({ S3_ENDPOINT: ENDPOINT, S3_BUCKET: bucket, S3_REGION: REGION, S3_ACCESS_KEY: ACCESS_KEY, S3_SECRET_KEY: 'wrong' })[k],
     } as never);
     const slot = await forged.presignUpload({ caseId: 'case-it', partyId: 'party-it', kind: 'PASSPORT', contentType: 'image/jpeg' });
-    const put = await fetch(slot.uploadUrl!, { method: 'PUT', body: 'x' });
+    // The right content type, so the only thing wrong is the secret.
+    const put = await fetch(slot.uploadUrl!, { method: 'PUT', body: 'x', headers: { 'content-type': slot.contentType } });
     expect(put.status).toBe(403);
+  });
+
+  it('rejects an upload whose Content-Type differs from the one the slot was issued for', async () => {
+    const slot = await storage.presignUpload({ caseId: 'case-it', partyId: 'party-it', kind: 'PASSPORT', contentType: 'image/jpeg' });
+    // Cleaned up regardless, so a regression fails this test and not afterAll.
+    keys.push(slot.storageKey);
+
+    const put = await fetch(slot.uploadUrl!, { method: 'PUT', body: '<html></html>', headers: { 'content-type': 'text/html' } });
+    expect(put.status).toBe(403);
+    // And nothing was stored under the key.
+    const get = await fetch((await storage.presignDownload(slot.storageKey))!);
+    expect(get.status).toBe(404);
   });
 });
