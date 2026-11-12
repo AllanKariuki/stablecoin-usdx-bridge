@@ -5,6 +5,16 @@ import { Pool, QueryResultRow } from 'pg';
 import { runMigrations } from './migration-runner';
 
 /**
+ * Anything a repository can run a statement against: the pool itself, or the
+ * one client a transaction is pinned to. Repositories that take one of these
+ * as an optional last argument can join a caller's transaction without
+ * knowing it exists.
+ */
+export interface Queryable {
+  query<T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
+}
+
+/**
  * Owns payments's Postgres pool and runs migrations at boot, before the
  * app starts accepting traffic — the Node equivalent of core-ledger's
  * NewRepository (core-ledger/internal/ledger/repository.go), which does
@@ -14,7 +24,7 @@ import { runMigrations } from './migration-runner';
  * `await app.listen(port)` returns.
  */
 @Injectable()
-export class DbService implements OnModuleInit, OnModuleDestroy {
+export class DbService implements OnModuleInit, OnModuleDestroy, Queryable {
   private pool!: Pool;
 
   constructor(private readonly config: ConfigService) {}
@@ -37,6 +47,28 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
 
   query<T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]): Promise<{ rows: T[] }> {
     return this.pool.query<T>(text, params);
+  }
+
+  /**
+   * Runs `fn` inside one transaction on one pinned client.
+   *
+   * Exists for the outbox: a state change and the event announcing it must
+   * commit together or not at all, which two independent pool queries cannot
+   * promise — each could land on a different connection.
+   */
+  async transaction<T>(fn: (q: Queryable) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async ping(): Promise<void> {

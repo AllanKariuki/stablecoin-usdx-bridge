@@ -116,6 +116,81 @@ started decoding what it signs.
 - Local development now needs `USDX_PROGRAM_ID`/`USDX_MINT_ADDRESS` (and
   `USDX_PROXY_ADDRESS` for Ethereum) in `services/signer/.env` for the signer
   to sign anything on that chain.
+Branch `feat/p4-payment-outbox-fanout`. The two P4 follow-ups deferred from
+the PR #17 review.
+
+### Added — payment events can no longer be lost to a notifications outage
+- **payments has a transactional outbox.** A settlement used to tell the
+  customer with a best-effort POST made *after* the intent was marked, so if
+  notifications was down at that moment the email and the toast were gone —
+  the money had moved and nothing remembered that somebody still needed
+  telling. `payment.settled`, `payment.failed` and `invoice.issued` are now
+  rows in `outbox`, written in the same transaction as the status change they
+  announce (migration `002_outbox.sql`).
+  - The invoice a payment settles is now marked PAID inside that transaction
+    too. Before, a crash between the two statements left an invoice OPEN
+    behind a SETTLED intent.
+  - `markFailed` only fires on a real transition. A rail repeating its
+    failure callback, or a late failure for money that already landed, used
+    to send the customer another "your payment failed".
+- **`OutboxRelay`** delivers to notifications' `/internal/events`: kicked
+  after each commit so the toast still arrives while the page is open, swept
+  every `OUTBOX_RELAY_SECONDS`, backing off 1s → 5 min, `DEAD` after
+  `OUTBOX_MAX_ATTEMPTS` (100, about eight hours) or at once on a 4xx that
+  isn't 408/429. Rows are claimed `FOR UPDATE SKIP LOCKED`, so every replica
+  runs one. An unset `NOTIFICATIONS_URL` queues rather than drops.
+- **notifications dedupes webhook fan-out on the event id.** The delivery log
+  was already UNIQUE on the producer's key, but the webhook queue behind it
+  wasn't, so every outbox replay — routine for an at-least-once relay —
+  queued another signed POST to every subscriber (migration
+  `002_webhook_dedupe.sql`).
+
+### Added — live pushes reach sockets on every notifications replica
+- With `NATS_URL` set, every in-app push is published on core NATS and every
+  replica (the publisher included) delivers it to its own sockets. With two
+  replicas, a customer on A used to miss every push produced on B.
+- **NATS, not Postgres `LISTEN/NOTIFY`.** NATS was already in compose and is
+  the bus the plan names; core-ledger already publishes to it. `NOTIFY` would
+  have avoided a client dependency, but caps a payload at 8000 bytes (so a
+  large message means every replica re-reading the row from the database) and
+  holds a dedicated connection per replica out of a pool sized for queries.
+  Unlike the indexer's advisory lock, nothing here needs to live in the same
+  database as the state it guards.
+- **Core pub/sub on `live.notifications.push.v1`, deliberately outside
+  `damp.>`.** core-ledger's DAMP stream captures `damp.>` with 30-day file
+  retention, and JetStream stores plain publishes to any subject a stream
+  covers — a push named `damp.notifications.*` would have kept every rendered
+  message for a month. A push is a latency optimisation over `deliveries`, not
+  a domain event.
+- **Unset or unreachable NATS falls back to in-process delivery**, exactly
+  the old behaviour. One replica (local dev) needs no broker; a broker outage
+  costs cross-replica reach, not the service. NATS is not a readiness check
+  for the same reason — pulling notifications out of rotation over a degraded
+  toast would also stop email.
+- compose sets `NATS_URL` for notifications so the path k8s relies on is the
+  one exercised locally; k8s points at `nats.default.svc` (like Postgres and
+  Keycloak, a backing service these manifests reference but don't deploy).
+  CI's Node job gains a NATS service container.
+
+### Fixed
+- **payments could not boot.** `InvoicesController` injects `IntentsService`
+  and `SettlementService`, which `IntentsModule` exports but doesn't make
+  global, and `InvoicesModule` never imported it. Found by booting the real
+  app for this change's smoke test; every earlier test constructed classes
+  directly and never resolved the module graph.
+
+### Notes
+- **Verified:** payments' outbox suite and notifications' dedupe suite against
+  real Postgres (`payments_test` / `notifications_test`), the fan-out suite
+  against a real NATS, and an end-to-end run of the built apps — payments plus
+  two notifications replicas sharing NATS: an invoice issued through replica
+  A's ingest reached a WebSocket held by replica B; with A killed, the next
+  invoice's event waited in the outbox and was delivered to B once A came
+  back.
+- A fanned-out push records `recipients: null` in its delivery row: each
+  replica delivers to its own sockets and nobody counts the total.
+- The NATS subject has no auth in front of it, the same trust model as
+  `/internal/*`: anything that can reach the broker can push to a socket.
 
 ## 2026-11-09
 

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { DbService } from '../db/db.service';
+import { DbService, Queryable } from '../db/db.service';
 
 export type IntentDirection = 'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER';
 export type IntentStatus = 'REQUIRES_ACTION' | 'PROCESSING' | 'SETTLED' | 'FAILED' | 'CANCELLED';
@@ -138,9 +138,12 @@ export class IntentsRepository {
    * not to post a second journal transaction. Checking in application code
    * instead would leave a window between the read and the write that two
    * concurrent callbacks fit through.
+   *
+   * `q` lets settlement run this inside the transaction that also writes the
+   * outbox event, so the intent cannot say SETTLED without the event existing.
    */
-  async markSettled(id: string, ledgerTxId: string): Promise<boolean> {
-    const { rows } = await this.db.query<{ id: string }>(
+  async markSettled(id: string, ledgerTxId: string, q: Queryable = this.db): Promise<boolean> {
+    const { rows } = await q.query<{ id: string }>(
       `UPDATE payment_intents
           SET status = 'SETTLED', ledger_tx_id = $2, settled_at = now(),
               failure_reason = '', updated_at = now()
@@ -151,16 +154,24 @@ export class IntentsRepository {
     return rows.length > 0;
   }
 
-  async markFailed(id: string, reason: string): Promise<void> {
-    // Never overwrites a settled intent. A late failure callback for money
-    // that already landed must not un-settle it in this database while the
-    // journal still says it moved.
-    await this.db.query(
+  /**
+   * Marks an intent failed. Returns whether this call made the transition.
+   *
+   * Never overwrites a settled intent: a late failure callback for money that
+   * already landed must not un-settle it in this database while the journal
+   * still says it moved. Nor does it re-fail a FAILED one — a rail repeating
+   * its failure callback is routine, and only the first should produce a
+   * payment.failed event (the first reason is the one kept).
+   */
+  async markFailed(id: string, reason: string, q: Queryable = this.db): Promise<boolean> {
+    const { rows } = await q.query<{ id: string }>(
       `UPDATE payment_intents
           SET status = 'FAILED', failure_reason = $2, updated_at = now()
-        WHERE id = $1 AND status NOT IN ('SETTLED', 'CANCELLED')`,
+        WHERE id = $1 AND status NOT IN ('SETTLED', 'CANCELLED', 'FAILED')
+        RETURNING id`,
       [id, reason.slice(0, 2000)],
     );
+    return rows.length > 0;
   }
 
   async markCancelled(id: string, partyId: string): Promise<boolean> {

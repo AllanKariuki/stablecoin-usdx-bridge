@@ -94,8 +94,19 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
     return rows.length > 0;
   }
 
-  /** Queues one delivery per matching endpoint. */
-  async enqueue(partyId: string, event: string, payload: Record<string, unknown>): Promise<void> {
+  /**
+   * Queues one delivery per matching endpoint.
+   *
+   * `dedupeKey` is the producer's event id. With it, a replayed event (which
+   * an outbox produces routinely) queues nothing new; without it, every call
+   * queues, as before.
+   */
+  async enqueue(
+    partyId: string,
+    event: string,
+    payload: Record<string, unknown>,
+    dedupeKey?: string,
+  ): Promise<void> {
     const { rows } = await this.db.query<EndpointRow>(
       // An empty events array means every event: a subscriber that wants
       // everything shouldn't have to enumerate a list that grows.
@@ -106,8 +117,9 @@ export class WebhooksService implements OnModuleInit, OnModuleDestroy {
 
     for (const endpoint of rows) {
       await this.db.query(
-        `INSERT INTO webhook_deliveries (id, endpoint_id, event, payload) VALUES ($1,$2,$3,$4)`,
-        [`whd_${randomUUID()}`, endpoint.id, event, JSON.stringify(payload)],
+        `INSERT INTO webhook_deliveries (id, endpoint_id, event, payload, dedupe_key) VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (endpoint_id, dedupe_key) DO NOTHING`,
+        [`whd_${randomUUID()}`, endpoint.id, event, JSON.stringify(payload), dedupeKey ?? null],
       );
     }
   }

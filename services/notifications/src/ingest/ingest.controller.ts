@@ -7,9 +7,11 @@ import { DeliveryService } from '../delivery/delivery.service';
  *
  * Two doors, on purpose:
  *
- *  - `/internal/events` is the direct, best-effort call other services make
- *    when they want the customer told *now* — payments calls it the moment a
- *    settlement lands, so the toast appears while the page is still open.
+ *  - `/internal/events` takes a named event for a party. payments' outbox
+ *    relay posts here: the event was written in the same transaction as the
+ *    settlement and is retried until accepted, with the outbox row id as
+ *    `dedupeKey` so a replay tells nobody twice. Any non-2xx — including a
+ *    database error surfacing as a 500 — makes the relay try again later.
  *
  *  - `/internal/outbox` is the durable one. core-ledger's transactional
  *    outbox relay POSTs here (`OUTBOX_RELAY_URL`), which means the event was

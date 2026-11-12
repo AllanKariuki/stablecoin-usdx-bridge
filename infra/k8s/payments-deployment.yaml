@@ -10,7 +10,8 @@ spec:
   # than by a process being careful: payment_intents.idempotency_key is
   # UNIQUE, and markSettled's `WHERE ledger_tx_id = ''` predicate means the
   # loser of a settlement race updates zero rows and posts no second journal
-  # transaction.
+  # transaction. The outbox relay is safe on every replica for the same kind
+  # of reason: rows are claimed with FOR UPDATE SKIP LOCKED.
   replicas: 2
   selector:
     matchLabels:
@@ -38,6 +39,10 @@ spec:
               value: "http://core-ledger.default.svc.cluster.local:8081"
             - name: NOTIFICATIONS_URL
               value: "http://notifications.default.svc.cluster.local:3000"
+            - name: OUTBOX_RELAY_SECONDS
+              value: "5"
+            - name: OUTBOX_MAX_ATTEMPTS
+              value: "100"
           resources:
             requests:
               memory: "192Mi"

@@ -7,6 +7,7 @@ import { EmailTransport } from './delivery/email.transport';
 import { IngestController } from './ingest/ingest.controller';
 import { NotificationsController } from './notifications.controller';
 import { WebhooksService } from './webhooks/webhooks.service';
+import { LiveFanout } from './ws/live-fanout';
 import { WsAuth } from './ws/ws.auth';
 import { WsGateway } from './ws/ws.gateway';
 
@@ -18,8 +19,8 @@ import { WsGateway } from './ws/ws.gateway';
 @Global()
 @Module({
   controllers: [NotificationsController, IngestController],
-  providers: [WsGateway, WsAuth, EmailTransport, WebhooksService, DeliveryService],
-  exports: [WsGateway, WsAuth, DeliveryService],
+  providers: [WsGateway, LiveFanout, WsAuth, EmailTransport, WebhooksService, DeliveryService],
+  exports: [WsGateway, LiveFanout, WsAuth, DeliveryService],
 })
 export class NotificationsModule {}
 

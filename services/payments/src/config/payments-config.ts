@@ -30,10 +30,27 @@ export class PaymentsConfig {
   @IsString()
   CORE_LEDGER_SERVICE_TOKEN = '';
 
-  // Best-effort, and empty is fine: a notification that fails to send must
-  // never fail a settlement that already happened.
+  // Where the outbox relay delivers payment events. Empty is fine: events
+  // queue in the outbox and are delivered once it is set. Either way a
+  // notification can never fail a settlement that already happened.
   @IsString()
   NOTIFICATIONS_URL = '';
+
+  // How often the relay sweeps for due events. Each commit that writes one
+  // also kicks the relay immediately, so this bounds retry latency, not the
+  // normal case.
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  OUTBOX_RELAY_SECONDS = 5;
+
+  // Attempts before an event is marked DEAD. Backoff caps at five minutes, so
+  // the default of 100 rides out roughly eight hours of notifications being
+  // unreachable.
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  OUTBOX_MAX_ATTEMPTS = 100;
 
   // Where payment links point. Not the API base — a link goes in an email and
   // is opened in a browser.
