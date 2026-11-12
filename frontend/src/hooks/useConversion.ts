@@ -71,6 +71,7 @@ export function useConversion() {
    */
   const {
     data: transactionHistory = [],
+    isLoading: isLoadingHistory,
     refetch: refetchHistory,
   } = useQuery({
     queryKey: ['conversion:history'],
@@ -238,6 +239,7 @@ export function useConversion() {
     wallets,
     kycStatus,
     transactionHistory,
+    isLoadingHistory,
 
     // Quote operations
     getQuote,

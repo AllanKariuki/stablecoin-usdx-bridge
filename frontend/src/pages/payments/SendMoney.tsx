@@ -5,16 +5,7 @@ import PaymentDetails from '../../components/payments/PaymentDetails';
 import PaymentReview from '../../components/payments/PaymentReview';
 import PaymentSuccess from '../../components/payments/PaymentSuccess';
 import { useNavigate } from 'react-router-dom';
-
-interface Recipient {
-  id: string;
-  name: string;
-  type: 'individual' | 'business' | 'account' | 'crypto-wallet';
-  account: string;
-  avatar?: string;
-  walletType?: 'fiat' | 'crypto' | 'stablecoin';
-  currency?: string;
-}
+import type { Recipient } from '../../types/payments/payments';
 
 interface SendFormData {
   recipient: string;

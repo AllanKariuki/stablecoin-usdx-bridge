@@ -80,7 +80,7 @@ const OverviewBalance: React.FC<OverviewBalanceProps> = ({
                 borderRadius: '8px',
                 fontSize: '12px'
               }}
-              formatter={(value: number) => [`$${value}`, 'Balance']}
+              formatter={(value) => [`$${value}`, 'Balance']}
             />
             <Bar 
               dataKey="value" 

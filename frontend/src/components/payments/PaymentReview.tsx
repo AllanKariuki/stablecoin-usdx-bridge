@@ -1,12 +1,5 @@
 import React from 'react';
-
-interface Recipient {
-  id: string;
-  name: string;
-  type: 'individual' | 'business' | 'account';
-  account: string;
-  avatar?: string;
-}
+import type { Recipient } from '../../types/payments/payments';
 
 interface PaymentReviewProps {
   recipient: Recipient;

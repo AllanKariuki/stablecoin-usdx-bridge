@@ -6,7 +6,6 @@
 import { getWebSocketInstance } from '../../../services/websocketService';
 import type { WebSocketMessage } from '../../../types/auth-and-websocket/websocket';
 import type { TransactionStatusUpdate } from '../../../types/conversion';
-import type { AppDispatch } from '../../store';
 
 let wsInstance: ReturnType<typeof getWebSocketInstance> | null = null;
 let activeTransactionId: string | null = null;
@@ -16,7 +15,6 @@ let activeTransactionId: string | null = null;
  * Call this when a transaction is created or when you want to monitor a specific transaction
  * 
  * @param transactionId - The transaction ID to monitor
- * @param dispatch - Redux dispatch function
  * @param onUpdate - Callback function to handle transaction updates
  * @returns Cleanup function to disconnect WebSocket
  * 
@@ -24,7 +22,6 @@ let activeTransactionId: string | null = null;
  * ```typescript
  * const unsubscribe = setupTransactionWebSocket(
  *   'tx-123',
- *   dispatch,
  *   (update) => dispatch(handleWebSocketTransactionUpdate(update))
  * );
  * 
@@ -34,7 +31,6 @@ let activeTransactionId: string | null = null;
  */
 export const setupTransactionWebSocket = (
   transactionId: string,
-  dispatch: AppDispatch,
   onUpdate: (update: TransactionStatusUpdate) => void
 ): (() => void) => {
   // If already monitoring this transaction, return no-op
