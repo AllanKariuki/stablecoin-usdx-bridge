@@ -38,6 +38,17 @@ export class NotificationsConfig {
   @IsString()
   KEYCLOAK_ISSUER_URL = '';
 
+  /**
+   * Where to fetch the signing keys, when that differs from the issuer. The
+   * issuer is compared against the token's `iss`, so it must be the URL the
+   * *browser* reached Keycloak on (http://localhost:8080/...) — but inside a
+   * container that address is the container itself. Empty derives the keys
+   * URL from the issuer, which is right whenever the two agree.
+   */
+  @IsOptional()
+  @IsString()
+  KEYCLOAK_JWKS_URL = '';
+
   @IsString()
   OIDC_AUDIENCE = 'damp-portal';
 

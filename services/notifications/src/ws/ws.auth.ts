@@ -38,7 +38,9 @@ export class WsAuth {
           'Acceptable in local development only — a party id supplied by the client is taken at face value.',
       );
     } else {
-      this.jwks = createRemoteJWKSet(new URL(`${this.issuer}/protocol/openid-connect/certs`));
+      const jwksUrl =
+        config.get<string>('KEYCLOAK_JWKS_URL', { infer: true }) || `${this.issuer}/protocol/openid-connect/certs`;
+      this.jwks = createRemoteJWKSet(new URL(jwksUrl));
     }
   }
 
