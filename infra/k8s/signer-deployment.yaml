@@ -12,6 +12,22 @@ metadata:
   labels:
     name: signer
 ---
+# Per-deployment contract identities, in the signer's own namespace
+# (ConfigMaps do not cross namespaces). Fill these with the values core-ledger
+# runs with — they must match exactly, or every mint is refused as calling a
+# contract that is not ours. Left empty here on purpose: an empty value is a
+# refusal to start naming the missing variable, not a signer that quietly
+# signs nothing.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: usdx-deployment
+  namespace: signer
+data:
+  usdx-proxy-address: ""   # USDX ERC1967 proxy (never the implementation)
+  usdx-program-id: ""      # usdx_bridge program id
+  usdx-mint-address: ""    # USD-X SPL mint
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,8 +38,9 @@ metadata:
 spec:
   # Two replicas. Safe because the hash chain's read-then-insert runs in a
   # SERIALIZABLE transaction — two concurrent appends cannot both claim the
-  # same predecessor — and idempotency is a partial unique index rather than
-  # a check in application code.
+  # same predecessor — and idempotency is a partial unique index plus a
+  # one-payload-per-correlation check inside that same transaction, rather
+  # than a check in one replica's memory.
   replicas: 2
   selector:
     matchLabels:
@@ -77,6 +94,27 @@ spec:
               value: /tls/ca.crt
             - name: POLICY_PATH
               value: /policy/policy.yaml
+            # Which contracts are ours: the USD-X proxy, the usdx_bridge
+            # program, the USD-X mint — the same values core-ledger is given
+            # as USDX_PROXY_ADDRESS / USDX_PROGRAM_ID / USDX_MINT_ADDRESS.
+            # Not `optional`: a missing key stops the pod being created, and
+            # an empty value stops the signer at boot (all three are required
+            # outside ENV=local). See the usdx-deployment ConfigMap below.
+            - name: USDX_PROXY_ADDRESS
+              valueFrom:
+                configMapKeyRef:
+                  name: usdx-deployment
+                  key: usdx-proxy-address
+            - name: USDX_PROGRAM_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: usdx-deployment
+                  key: usdx-program-id
+            - name: USDX_MINT_ADDRESS
+              valueFrom:
+                configMapKeyRef:
+                  name: usdx-deployment
+                  key: usdx-mint-address
           volumeMounts:
             - name: tls
               mountPath: /tls
