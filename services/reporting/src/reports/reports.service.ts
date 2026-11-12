@@ -1,6 +1,8 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
+import { AuditRequest, enqueueAuditEvent, Queryable } from '@damp/nest-platform';
+import { AUDIT, SERVICE } from '../audit/audit-actions';
 import { DbService } from '../db/db.service';
 
 export type ReportKind =
@@ -79,7 +81,12 @@ export class ReportsService {
     return rows[0] ? toDefinition(rows[0]) : null;
   }
 
-  async run(definitionId: string, params: Record<string, unknown>, requestedBy: string): Promise<ReportRun> {
+  async run(
+    definitionId: string,
+    params: Record<string, unknown>,
+    requestedBy: string,
+    audit: AuditRequest = {},
+  ): Promise<ReportRun> {
     const definition = await this.definition(definitionId);
     if (!definition) throw new NotFoundException(`no report definition ${definitionId}`);
 
@@ -99,21 +106,80 @@ export class ReportsService {
       // to match the run it claims to come from.
       const hash = createHash('sha256').update(JSON.stringify(result)).digest('hex');
 
-      await this.db.query(
-        `UPDATE report_runs SET status = 'COMPLETE', result = $2, row_count = $3,
-                result_hash = $4, finished_at = now() WHERE id = $1`,
-        [runId, JSON.stringify(result), result.rows.length, `sha256:${hash}`],
-      );
+      // The run's outcome and its audit event commit together. The hash is
+      // in the event, so a file produced from this run can be tied to who
+      // ran it from the trail alone.
+      await this.db.transaction(async (q) => {
+        await q.query(
+          `UPDATE report_runs SET status = 'COMPLETE', result = $2, row_count = $3,
+                  result_hash = $4, finished_at = now() WHERE id = $1`,
+          [runId, JSON.stringify(result), result.rows.length, `sha256:${hash}`],
+        );
+        await this.auditRun(q, definition, runId, merged, requestedBy, audit, {
+          status: 'COMPLETE',
+          rowCount: result.rows.length,
+          resultHash: `sha256:${hash}`,
+        });
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await this.db.query(
-        `UPDATE report_runs SET status = 'FAILED', error = $2, finished_at = now() WHERE id = $1`,
-        [runId, message.slice(0, 2000)],
-      );
+      await this.db.transaction(async (q) => {
+        await q.query(`UPDATE report_runs SET status = 'FAILED', error = $2, finished_at = now() WHERE id = $1`, [
+          runId,
+          message.slice(0, 2000),
+        ]);
+        await this.auditRun(q, definition, runId, merged, requestedBy, audit, { status: 'FAILED', error: message.slice(0, 500) });
+      });
       this.logger.error(`report ${definition.name} failed: ${message}`);
     }
 
     return (await this.findRun(runId))!;
+  }
+
+  private auditRun(
+    q: Queryable,
+    definition: ReportDefinition,
+    runId: string,
+    params: Record<string, unknown>,
+    requestedBy: string,
+    audit: AuditRequest,
+    after: Record<string, unknown>,
+  ): Promise<string> {
+    return enqueueAuditEvent(
+      q,
+      {
+        actor: requestedBy,
+        action: AUDIT.reportRun,
+        subjectType: 'REPORT_RUN',
+        subjectId: runId,
+        service: SERVICE,
+        outcome: after.status === 'COMPLETE' ? 'SUCCESS' : 'FAILURE',
+        afterState: after,
+        metadata: { definitionId: definition.id, definition: definition.name, kind: definition.kind, params },
+      },
+      audit,
+    );
+  }
+
+  /**
+   * Records that `actor` took a copy of a run out of the platform. Called
+   * before the file is sent: if this cannot commit, the export is refused.
+   */
+  async recordExport(run: ReportRun, actor: string, format: string, audit: AuditRequest = {}): Promise<void> {
+    await this.db.transaction((q) =>
+      enqueueAuditEvent(
+        q,
+        {
+          actor,
+          action: AUDIT.reportExported,
+          subjectType: 'REPORT_RUN',
+          subjectId: run.id,
+          service: SERVICE,
+          metadata: { format, kind: run.kind, rowCount: run.rowCount, resultHash: run.resultHash, requestedBy: run.requestedBy },
+        },
+        audit,
+      ),
+    );
   }
 
   async findRun(id: string): Promise<ReportRun | null> {

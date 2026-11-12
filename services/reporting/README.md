@@ -53,6 +53,15 @@ The permissions come from the `X-Permissions` header auth-proxy set and
 Traefik stripped from the inbound request — never from a body field, which
 would be the caller telling us what they are allowed to see.
 
+## Who exported what
+
+Every report run (with its result hash), every CSV export and every guest
+token issued — or refused by the RLS rule above — writes an `audit_outbox`
+event, relayed to services/audit-trail. The export and the token are handed
+over only after that event commits; if it cannot, the request fails rather
+than leaving the platform unrecorded. That makes `GET
+/reports/runs/:runId/export.csv` require `X-User-Id` like the other routes.
+
 ## CSV escaping, including the rule people leave out
 
 Four rules, written out rather than pulled in — a library for four rules is a

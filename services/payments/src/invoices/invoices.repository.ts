@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { DbService } from '../db/db.service';
+import { DbService, Queryable } from '../db/db.service';
 
 export interface Invoice {
   id: string;
@@ -25,18 +25,22 @@ export interface Invoice {
 export class InvoicesRepository {
   constructor(private readonly db: DbService) {}
 
-  async create(input: {
-    issuerPartyId: string;
-    payerPartyId?: string;
-    payerEmail?: string;
-    payerName?: string;
-    amount: string;
-    currency: string;
-    dueDate?: string | null;
-    description?: string;
-    lineItems?: unknown[];
-  }): Promise<Invoice> {
-    const { rows } = await this.db.query<Record<string, any>>(
+  /** `q` lets the controller write the invoice.issued event in the same transaction. */
+  async create(
+    input: {
+      issuerPartyId: string;
+      payerPartyId?: string;
+      payerEmail?: string;
+      payerName?: string;
+      amount: string;
+      currency: string;
+      dueDate?: string | null;
+      description?: string;
+      lineItems?: unknown[];
+    },
+    q: Queryable = this.db,
+  ): Promise<Invoice> {
+    const { rows } = await q.query<Record<string, any>>(
       `INSERT INTO invoices
          (id, number, issuer_party_id, payer_party_id, payer_email, payer_name,
           amount, currency, status, due_date, description, line_items, pay_token)
@@ -44,7 +48,7 @@ export class InvoicesRepository {
        RETURNING *`,
       [
         `inv_${randomUUID()}`,
-        await this.nextNumber(),
+        await this.nextNumber(q),
         input.issuerPartyId,
         input.payerPartyId ?? '',
         input.payerEmail ?? '',
@@ -104,23 +108,31 @@ export class InvoicesRepository {
   /**
    * Marks an invoice paid. Guarded on OPEN so a duplicate settlement callback
    * does not overwrite the intent that actually paid it with a later one.
+   * Runs inside settlement's transaction, so an intent can no longer settle
+   * while the invoice it paid stays OPEN.
    */
-  async markPaid(invoiceId: string, intentId: string): Promise<void> {
-    await this.db.query(
+  async markPaid(invoiceId: string, intentId: string, q: Queryable = this.db): Promise<void> {
+    await q.query(
       `UPDATE invoices SET status = 'PAID', paid_intent_id = $2, paid_at = now(), updated_at = now()
         WHERE id = $1 AND status = 'OPEN'`,
       [invoiceId, intentId],
     );
   }
 
-  async void(id: string, issuerPartyId: string): Promise<boolean> {
-    const { rows } = await this.db.query<{ id: string }>(
-      `UPDATE invoices SET status = 'VOID', pay_token = NULL, updated_at = now()
-        WHERE id = $1 AND issuer_party_id = $2 AND status IN ('DRAFT', 'OPEN')
-        RETURNING id`,
+  /**
+   * Voids an invoice and returns the status it had, or null if there was no
+   * DRAFT/OPEN invoice of this issuer's to void. `q` lets the controller
+   * write the audit event in the same transaction.
+   */
+  async void(id: string, issuerPartyId: string, q: Queryable = this.db): Promise<string | null> {
+    const { rows } = await q.query<{ before: string }>(
+      `UPDATE invoices i SET status = 'VOID', pay_token = NULL, updated_at = now()
+         FROM (SELECT id, status AS before FROM invoices WHERE id = $1 FOR UPDATE) prior
+        WHERE i.id = prior.id AND i.issuer_party_id = $2 AND i.status IN ('DRAFT', 'OPEN')
+        RETURNING prior.before`,
       [id, issuerPartyId],
     );
-    return rows.length > 0;
+    return rows[0]?.before ?? null;
   }
 
   /**
@@ -128,9 +140,9 @@ export class InvoicesRepository {
    * is what somebody quotes on a phone call. A UUID would be correct and
    * useless for that.
    */
-  private async nextNumber(): Promise<string> {
+  private async nextNumber(q: Queryable): Promise<string> {
     const year = new Date().getUTCFullYear();
-    const { rows } = await this.db.query<{ count: string }>(
+    const { rows } = await q.query<{ count: string }>(
       `SELECT count(*) FROM invoices WHERE number LIKE $1`,
       [`INV-${year}-%`],
     );

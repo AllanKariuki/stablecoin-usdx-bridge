@@ -74,6 +74,16 @@ the caller passes `acknowledgeBreaks: true` (which records the breaks on the
 attestation). Publishing "our reserves are fine" while a control says they are
 not is the one thing an attestation must never be able to do by accident.
 
+## Audit
+
+Setting a reserve target, arming a drift, creating, refusing (open break) and
+publishing an attestation each write an `audit_outbox` event in the same
+transaction, relayed to services/audit-trail (`AUDIT_TRAIL_URL`). The actor is
+`X-User-Id`; rms has no gateway route yet, so a call without one — the curl
+demo above — is recorded as `unattributed` rather than refused.
+`PUT /reserves/targets/:currency` writes the path's currency and refuses a
+body naming a different one.
+
 ## Money
 
 `src/money/money.ts` is the only place this service does arithmetic. Amounts

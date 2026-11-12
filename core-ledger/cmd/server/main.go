@@ -11,6 +11,7 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/config"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -92,6 +93,10 @@ func main() {
 		ErrorHandler:          platform.ErrorHandler,
 	})
 	platform.Chain(app, platform.ChainConfig{Service: serviceName, Logger: logger, Metrics: metrics})
+	// After Chain, so the request id it captures is the one Chain assigned.
+	// What it captures rides on the request context down to the repository,
+	// where the audit event is written inside the action's own transaction.
+	app.Use(audit.Middleware())
 
 	health.Register(app)
 	app.Get("/metrics", metrics.Handler())

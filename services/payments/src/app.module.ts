@@ -1,12 +1,13 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { AuditRelayService } from './audit/audit-relay.service';
 import { BanksModule } from './banks/banks.module';
 import { PaymentsConfig } from './config/payments-config';
 import { CoreLedgerModule } from './core-ledger/core-ledger.module';
 import { DbModule } from './db/db.module';
 import { IntentsModule } from './intents/intents.module';
 import { InvoicesModule } from './invoices/invoices.module';
-import { NotificationsModule } from './notifications/notifications.module';
+import { OutboxModule } from './outbox/outbox.module';
 import { RailsModule } from './rails/rails.module';
 
 /**
@@ -24,12 +25,14 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       PlatformModule.forRoot({ service: 'payments', version, commit }),
       DbModule,
       CoreLedgerModule,
-      NotificationsModule,
+      OutboxModule,
       RailsModule,
       BanksModule,
       InvoicesModule,
       IntentsModule,
     ],
+    // In the root module, beside workflow's, kyc's and compliance's.
+    providers: [AuditRelayService],
   };
 }
 

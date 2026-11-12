@@ -94,7 +94,10 @@ func main() {
 	platform.Chain(app, platform.ChainConfig{Service: serviceName, Logger: logger, Metrics: metrics})
 	health.Register(app)
 	app.Get("/metrics", metrics.Handler())
-	api.New(st, logger).Register(app)
+	if cfg.IngestToken == "" {
+		logger.Warn("INGEST_TOKEN is not set; any caller that can reach this port can record events as any actor")
+	}
+	api.New(st, logger, cfg.IngestToken).Register(app)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	err = platform.Run(app, addr, health, logger, platform.ShutdownConfig{}, func(context.Context) error {

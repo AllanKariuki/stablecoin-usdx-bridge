@@ -213,6 +213,12 @@ services:
       # answers on its service name and its own port, not the published one.
       DATABASE_URL: postgres://bridge:bridge@postgres:5432/bridge?sslmode=disable
       SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
+      # .env.example's SIGNER_URL is host-side (https://localhost:8084), which
+      # inside a container is the container itself — and remote signing also
+      # needs the mTLS client cert/key/CA, which nothing here mounts yet. So
+      # compose signs with the env keys unless CORE_LEDGER_SIGNER_URL opts in
+      # (e.g. https://signer:8084, plus mounted SIGNER_*_PATH files).
+      SIGNER_URL: ${CORE_LEDGER_SIGNER_URL-}
       # Pinned for the same reason: a host-side PORT in .env (picked to dodge
       # something else on the host) would move the listener away from the
       # port the mapping and the healthcheck below both assume.
@@ -242,12 +248,32 @@ services:
         # The API runs the migrations and seeds the chart of accounts; the
         # worker only posts against it.
         condition: service_started
+      nats:
+        condition: service_healthy
     env_file:
       - core-ledger/.env
     environment:
       DATABASE_URL: postgres://bridge:bridge@postgres:5432/bridge?sslmode=disable
       SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
       WORKER_PORT: "8181"
+      SIGNER_URL: ${CORE_LEDGER_SIGNER_URL-}
+      # Same host-side problem as NATS_URL below. Off by default rather than
+      # pointed at indexer:8083: the indexer needs its own chain config to be
+      # useful, and with INDEXER_URL empty the saga polls the chain directly,
+      # which works anywhere. WORKER_INDEXER_URL=http://indexer:8083 opts in.
+      INDEXER_URL: ${WORKER_INDEXER_URL-}
+      # Overrides .env's host-side nats://localhost:54222, which inside this
+      # container is the container itself: the relay failed to connect and
+      # every outbox event sat unpublished. The worker is the only process
+      # that relays the outbox. WORKER_NATS_URL= (set but empty) opts back out
+      # of NATS, e.g. to relay over OUTBOX_RELAY_URL instead, which NATS would
+      # otherwise win over.
+      NATS_URL: ${WORKER_NATS_URL-nats://nats:4222}
+      # The worker, not the API, drains audit_outbox: the API writes each
+      # audit event in the same transaction as the change it describes.
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      # Dev default; real deployments must override (shared with audit-trail's INGEST_TOKEN).
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     volumes:
       - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro
     ports:
@@ -300,6 +326,8 @@ services:
       DATABASE_URL: postgres://payments:payments@postgres:5432/payments?sslmode=disable
       CORE_LEDGER_URL: http://core-ledger:8081
       NOTIFICATIONS_URL: http://notifications:3000
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "3003:3003"
 
@@ -313,15 +341,37 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      nats:
+        condition: service_healthy
     env_file:
       - services/notifications/.env
     environment:
       DATABASE_URL: postgres://notifications:notifications@postgres:5432/notifications?sslmode=disable
+      # Needed for correctness, not just fan-out: the worker above relays
+      # core-ledger's outbox to JetStream (its NATS_URL wins over
+      # OUTBOX_RELAY_URL), and this is how those events — reconciliation
+      # alerts included — reach notifications (see OutboxConsumer). It also
+      # makes compose exercise the cross-replica push path k8s depends on.
+      # Unset falls back to in-process pushes and the HTTP outbox door only.
+      NATS_URL: nats://nats:4222
       # Mailpit lives in the obs profile, so this resolves only when both are
       # up. An unreachable SMTP host logs the email rather than failing the
       # notification — see EmailTransport.
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
+      # The issuer stays the browser-facing localhost:8080 from .env — it is
+      # what tokens carry in `iss` — but the keys are fetched over the compose
+      # network, since localhost in here is this container. Before this every
+      # token failed verification and no socket ever authenticated.
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/damp/protocol/openid-connect/certs
+      # identity runs on the host, not in compose (see infra/traefik). From
+      # localhost the lookup failed silently and the raw Keycloak subject was
+      # used as the party id, so pushes went to an id no wallet carries.
+      IDENTITY_SERVICE_URL: http://host.docker.internal:3001
+    # host.docker.internal is built in on Docker Desktop; this makes it
+    # resolve on Linux engines too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # 3000 is fixed by frontend/public/runtime-config.js, which declares
     # VITE_APP_WEBSOCKET_URL = ws://localhost:3000/ws. That is also why
     # Grafana is on 53000.
@@ -343,6 +393,8 @@ services:
     environment:
       DATABASE_URL: postgres://workflow:workflow@postgres:5432/workflow?sslmode=disable
       CALLBACK_SECRET: ${WORKFLOW_CALLBACK_SECRET:-dev-workflow-callback-secret}
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "3006:3006"
 
@@ -368,6 +420,8 @@ services:
       WORKFLOW_CALLBACK_SECRET: ${WORKFLOW_CALLBACK_SECRET:-dev-workflow-callback-secret}
       SELF_URL: http://kyc:3007
       S3_ENDPOINT: http://minio:9000
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "3007:3007"
 
@@ -393,15 +447,30 @@ services:
       WORKFLOW_CALLBACK_SECRET: ${WORKFLOW_CALLBACK_SECRET:-dev-workflow-callback-secret}
       SELF_URL: http://compliance:3004
       NOTIFICATIONS_URL: http://notifications:3000
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "3004:3004"
 
   # MinIO holds KYC documents. They never pass through services/kyc — the
   # browser PUTs straight here on a presigned URL, which keeps passport scans
   # out of that process's memory, its logs and its request traces.
+  #
+  # Not behind the `app` profile: kyc's storage integration spec runs against
+  # it, and `make test-node` should not have to start nine app containers to
+  # get one bucket.
+  #
+  # pgsty/minio, not minio/minio. Upstream stopped distributing community
+  # images: every minio/minio tag (pinned or :latest) is now "pull access
+  # denied" on Docker Hub, and quay.io/minio/minio answers 401. pgsty/minio is
+  # Pigsty's rebuild of the AGPL source with the same entrypoint, `minio
+  # server` command line and bundled `mc` (so the healthcheck below is
+  # unchanged), still releasing. bitnamilegacy/minio also pulls, but Bitnami
+  # froze it in 2025 and it takes no security fixes. Pinned by tag *and*
+  # digest: a third-party publisher re-pushing a tag should not change what
+  # runs here silently.
   minio:
-    profiles: ["app"]
-    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
     container_name: usdx-minio
     command: ["server", "/data", "--console-address", ":9001"]
     ports:
@@ -441,6 +510,10 @@ services:
       DATABASE_URL: postgres://signer:signer@postgres:5432/signer?sslmode=disable
       SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
       POLICY_PATH: /app/policy.yaml
+      # Every signature and refusal is forwarded, from the same transaction
+      # as the signer's own audit row.
+      AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     volumes:
       - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro
       # Read-only, and mounted rather than baked: a policy is a document
@@ -468,6 +541,9 @@ services:
       # Five minutes rather than an hour, so a demo produces an anchor and an
       # inclusion proof inside a session rather than after one.
       ANCHOR_INTERVAL: 5m
+      # The bearer token every producer's relay presents (their
+      # AUDIT_TRAIL_TOKEN). Dev default; real deployments must override.
+      INGEST_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "8085:8085"
 
@@ -488,7 +564,10 @@ services:
     environment:
       DATABASE_URL: postgres://reporting:reporting@postgres:5432/reporting?sslmode=disable
       CORE_LEDGER_URL: http://core-ledger:8081
+      # Read for audit extracts, and where this service's own audit relay
+      # delivers runs, exports and guest tokens.
       AUDIT_TRAIL_URL: http://audit-trail:8085
+      AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     ports:
       - "3008:3008"
 
@@ -511,6 +590,7 @@ services:
       DATABASE_URL: postgres://bridge:bridge@postgres:5432/bridge?sslmode=disable
       SOLANA_RELAYER_KEYPAIR_PATH: /app/solana-relayer.json
       RECONCILE_PREFER_SNAPSHOTS: "true"
+      SIGNER_URL: ${CORE_LEDGER_SIGNER_URL-}
       PUSHGATEWAY_URL: http://pushgateway:9091
     volumes:
       - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro

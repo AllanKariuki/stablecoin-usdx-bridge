@@ -25,6 +25,7 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/signer/internal/keystore"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/signer/internal/policy"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
+	trail "github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -60,6 +61,19 @@ func main() {
 		slog.Int("rules", len(signingPolicy.Rules)),
 		slog.Int("daily_limits", len(signingPolicy.DailyLimits)))
 
+	// Same reasoning as the policy: which contracts are ours is checked before
+	// anything can sign, so a deployment missing one fails here with the
+	// variable's name rather than at its first mint.
+	deployment, err := cfg.Deployment()
+	if err != nil {
+		logger.Error("loading the deployment configuration", slog.Any("error", err))
+		os.Exit(1)
+	}
+	logger.Info("deployment configuration loaded",
+		slog.String("usdx_proxy", deployment.EthContract.Hex()),
+		slog.String("usdx_program", deployment.SolProgram.String()),
+		slog.String("usdx_mint", deployment.SolMint.String()))
+
 	backend, err := keystore.Resolve(cfg.KeyBackend, cfg.Env, keystore.Config{
 		EthPrivateKeyHex:     cfg.EthPrivateKeyHex,
 		SolKeypairPath:       cfg.SolKeypairPath,
@@ -84,6 +98,13 @@ func main() {
 	}
 	defer auditLog.Close()
 
+	resignCap, err := cfg.ResignCap()
+	if err != nil {
+		logger.Error("invalid re-sign cap", slog.Any("error", err))
+		os.Exit(1)
+	}
+	auditLog.LimitResigns(resignCap)
+
 	// The chain is verified at boot. If the log has been tampered with, that
 	// is something to know before signing anything else into it — a break
 	// discovered later cannot be dated, because every row after the break is
@@ -104,13 +125,35 @@ func main() {
 
 	metrics := platform.NewMetrics(serviceName)
 
+	// The signatures table is the signer's own evidence; audit-trail is
+	// where everything else on the platform is. Append writes both in one
+	// transaction and this relay delivers the second. Stopped with the
+	// process: an undelivered event is still in audit_outbox next boot.
+	relayCtx, stopRelay := context.WithCancel(context.Background())
+	defer stopRelay()
+	auditMetrics := trail.NewMetrics()
+	if err := metrics.Register(auditMetrics.Collectors()...); err != nil {
+		logger.Error("registering audit relay metrics", slog.Any("error", err))
+		os.Exit(1)
+	}
+	if cfg.AuditTrailURL != "" {
+		relay := trail.NewRelay(auditLog.AuditStore(), trail.NewHTTPPublisher(cfg.AuditTrailURL, cfg.AuditTrailToken), logger).
+			WithMetrics(auditMetrics)
+		go relay.Run(relayCtx)
+	} else {
+		logger.Warn("AUDIT_TRAIL_URL is not set; signature audit events accumulate in audit_outbox until it is")
+	}
+
 	app := fiber.New(fiber.Config{DisableStartupMessage: true, ErrorHandler: platform.ErrorHandler})
 	platform.Chain(app, platform.ChainConfig{Service: serviceName, Logger: logger, Metrics: metrics})
+	// Request id and source IP onto the context Append writes the trail
+	// event with.
+	app.Use(trail.Middleware())
 	// Before the routes: every handler reads the client identity this sets.
 	app.Use(api.ClientIdentity())
 	health.Register(app)
 	app.Get("/metrics", metrics.Handler())
-	api.New(backend, signingPolicy, auditLog, logger).Register(app)
+	api.New(backend, signingPolicy, deployment, auditLog, logger).Register(app)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 

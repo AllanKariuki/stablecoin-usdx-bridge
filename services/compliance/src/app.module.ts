@@ -1,6 +1,7 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
 import { CasesController } from './cases/cases.controller';
+import { AuditRelayService } from './audit/audit-relay.service';
 import { ComplianceConfig } from './config/compliance-config';
 import { CoreLedgerClient } from './core-ledger/core-ledger.client';
 import { DbModule } from './db/db.module';
@@ -26,6 +27,10 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       DbModule,
       ComplianceModule,
     ],
+    // In the root module because that is where PlatformModule's exports
+    // (the metrics registry the relay's backlog gauge registers on) are
+    // visible.
+    providers: [AuditRelayService],
   };
 }
 

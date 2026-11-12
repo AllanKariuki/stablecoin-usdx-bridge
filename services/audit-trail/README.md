@@ -42,7 +42,7 @@ activity.
 
 | | |
 |---|---|
-| `POST /internal/events` | Where services record. Cluster-internal, absent from the gateway. |
+| `POST /internal/events` | Where services record. Cluster-internal, absent from the gateway, and gated on `Authorization: Bearer $INGEST_TOKEN` when that is set. **Idempotent on `id`**: 201 the first time, 200 with the original seq/hash on a redelivery, 409 for a *different* event under a recorded id. |
 | `GET /audit/events` | Filter by actor, action, subject or request id. |
 | `GET /audit/events/:id/proof` | The event, its inclusion proof, the root, **and the algorithm** — an inclusion proof somebody cannot independently check is a claim, not a proof. |
 | `GET /audit/anchors` | Every root, with its publication status. |
@@ -51,6 +51,32 @@ activity.
 The chain is verified **at boot**, and a break is a refusal to start — a break
 discovered later cannot be dated, because every row after it is equally
 suspect.
+
+## Producers
+
+Nothing calls the recording endpoint inline. Each producer writes the event
+to its **own** `audit_outbox` table in the same transaction as the action,
+and a relay delivers it here — so an outage of this service neither blocks a
+decision nor loses its evidence, and an action that rolled back leaves no
+evidence behind. Delivery is at-least-once; the event id minted at enqueue is
+what this service dedupes on.
+
+| Producer | Library | What it records |
+|---|---|---|
+| core-ledger | `shared/go/platform/audit` (relay in the worker) | every journal posting, reversals, manual journals, wallet creation and status changes, period closes, dead-letter resolutions, chain-supply and custodian snapshots (with the value an overwrite replaced) |
+| signer | `shared/go/platform/audit` | every signature and refusal, from the same transaction as its own hash-chained row, carrying that row's hash |
+| identity | `@damp/nest-platform` audit | party, org and owner-membership creation (JIT provisioning) |
+| payments | `@damp/nest-platform` audit | intents created/cancelled/settled/failed, wrong-amount callbacks (`DENIED`), bank accounts registered/verified/removed, beneficiaries, invoices issued/voided |
+| rms | `@damp/nest-platform` audit | reserve targets, custodian drift, attestations created/refused (`DENIED`)/published |
+| reporting | `@damp/nest-platform` audit | report runs (with result hash), CSV exports, Superset guest tokens issued/refused |
+| workflow | `@damp/nest-platform` audit | proposals, each approval, rejections, cancellations, expiries, refused self-approvals (`DENIED`) |
+| compliance | `@damp/nest-platform` audit | enforcement proposals/approvals/execution, refused approvals, case assignment and closure, alert dismissal |
+| kyc | `@damp/nest-platform` audit | reviewer decisions, approvals (with the tier change), rejections, refused approvals |
+
+The relays retry transient failures **without an attempt budget** — giving
+up because this service was down would put a hole in the trail exactly where
+an outage was — and dead-letter only an outright 4xx refusal.
+`audit_outbox_pending_events` is the alarm.
 
 ## What publishing actually does today
 

@@ -32,7 +32,9 @@ export class CoreLedgerClient {
     try {
       const response = await fetch(new URL('/wallets', this.baseUrl), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // Named so core-ledger's ledger.wallet.created audit event says who
+        // created the wallet rather than its anonymous "api" fallback.
+        headers: { 'Content-Type': 'application/json', 'X-User-Id': 'service:identity' },
         body: JSON.stringify({ user_id: partyId, currency: 'USD', label: 'Main' }),
       });
       if (!response.ok) {

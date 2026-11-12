@@ -328,7 +328,19 @@ func (r *Repository) postOnce(ctx context.Context, req PostRequest) (*Transactio
 		// Inside the same SERIALIZABLE transaction, deliberately: a journal
 		// that committed without its event, or an event about a transaction
 		// that rolled back, are both states no consumer can recover from.
-		if err := enqueueTransactionPosted(tx, txn, byID); err != nil {
+		decimals, err := currencyDecimals(tx, txn.Entries)
+		if err != nil {
+			return err
+		}
+		if err := enqueueTransactionPosted(tx, txn, byID, decimals); err != nil {
+			return err
+		}
+		// And the audit event, in the same transaction for the same reason:
+		// a posting with no record of who made it, or a record of a posting
+		// that rolled back, are each a hole in the evidence. The actor is
+		// InitiatedBy — X-User-Id for an API call, "bridge-saga" for the
+		// worker's legs.
+		if err := auditTransactionPosted(ctx, tx, txn, byID, decimals); err != nil {
 			return err
 		}
 

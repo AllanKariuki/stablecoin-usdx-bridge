@@ -87,20 +87,10 @@ type Policy struct {
 	// individually under the limit.
 	DailyLimits map[string]*big.Int
 
-	// Targets is, per chain, the contracts (Ethereum) or programs (Solana) the
-	// signer will sign calls to. A chain with none listed signs nothing: the
-	// decoder can prove what a transaction says, but only this list says
-	// whether the contract it calls is ours.
-	Targets map[string][]string
+	// Which contracts and programs are ours is not policy: it is deployment
+	// configuration (decode.Deployment), shared with core-ledger and checked
+	// by the decoder before a request ever reaches Evaluate.
 }
-
-// TargetAllowed reports whether target is a listed contract/program for chain.
-func (p Policy) TargetAllowed(chain, target string) bool {
-	return containsFold(p.Targets[strings.ToUpper(chain)], target)
-}
-
-// TargetsFor returns the listed targets for a chain.
-func (p Policy) TargetsFor(chain string) []string { return p.Targets[strings.ToUpper(chain)] }
 
 // Decision is why a request was allowed or refused. The reason travels to the
 // audit log and to the caller, because "policy denied" with no explanation

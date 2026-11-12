@@ -1,13 +1,6 @@
 import React from 'react';
 import { CheckCircle } from 'lucide-react';
-
-interface Recipient {
-  id: string;
-  name: string;
-  type: 'individual' | 'business' | 'account';
-  account: string;
-  avatar?: string;
-}
+import type { Recipient } from '../../types/payments/payments';
 
 interface PaymentSuccessProps {
   recipient: Recipient;

@@ -5,6 +5,155 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## 2026-11-12
 
+### Added — audit producers for every remaining service
+- **identity** (party, org and owner-membership creation), **payments**
+  (intents created/cancelled/settled/failed, wrong-amount rail callbacks as
+  DENIED, bank accounts registered/verified/removed, beneficiaries, invoices
+  issued/voided), **rms** (reserve targets, custodian drift, attestations
+  created/refused/published), **reporting** (report runs with their result
+  hash, CSV exports, Superset guest tokens issued/refused) and **core-ledger**
+  (wallet creation, chain-supply and custodian snapshots with the value an
+  overwrite replaced) each write an `audit_outbox` event in the same
+  transaction as the change.
+- **signer forwards every signature and refusal** to audit-trail from the same
+  SERIALIZABLE transaction as its own hash-chained row, carrying that row's
+  hash so the two records can be cross-checked: one place answers "who moved
+  this money". Its egress NetworkPolicy allows audit-trail:8085.
+- **payments outbox metrics**: `payments_outbox_pending_events`,
+  `payments_outbox_delivered_total`, `payments_outbox_dead_lettered_total`. A
+  DEAD row used to be only a log line.
+
+### Changed
+- `PlatformModule.forRoot` is global, so `PlatformMetricsService` reaches
+  feature-module providers; an `@Optional()` injection outside the root module
+  resolved to undefined and its metrics never appeared.
+- identity's JIT provisioning creates party, org and membership in one
+  transaction (a crash between them left a company login with no membership).
+- rms `PUT /reserves/targets/:currency` writes the path's currency — it read
+  only the body's — and refuses a mismatched body.
+- reporting's CSV export requires `X-User-Id` (it was the one anonymous way to
+  take data out), and an export or guest token is handed over only after its
+  audit event commits.
+
+### Fixed
+- core-ledger `EnsureWallet`: a request that lost the creation race no longer
+  commits an orphan wallet account into the trial balance.
+
+### Fixed — infrastructure gaps
+- **audit-trail and reporting had no k8s manifests**, although the P7 entry
+  above claims one, so every producer's relay pointed at a Service that did not
+  exist. `infra/k8s/p7-services.yaml` adds both. audit-trail runs one replica
+  with `Recreate`: its anchoring loop has no leader election, and two replicas
+  could close overlapping windows that both pass `UNIQUE (from_seq, to_seq)`.
+  Ingress is the four producers, bff, reporting and observability; egress is
+  Postgres and DNS. core-ledger's NetworkPolicy now admits reporting, which
+  reads every figure from it.
+- **NATS is reachable only by its two clients.** It has no auth, and
+  notifications pushes whatever arrives on `live.notifications.push.v1` to
+  customer sockets. `infra/k8s/nats-networkpolicy.yaml` limits :4222 to
+  core-ledger-worker and notifications (assumes pods labelled `app: nats`).
+- **kyc's presigned PUT signs Content-Type.** A slot issued for one type
+  accepted anything. Setting ContentType on the command was not enough — the
+  presigner signs `host` alone unless told otherwise (`signableHeaders`), which
+  the MinIO spec's new negative case caught.
+- **MinIO's pinned image could not be pulled**: upstream no longer publishes
+  community images. Compose and CI use
+  `pgsty/minio:RELEASE.2026-08-04T00-00-00Z`, pinned by digest — a maintained
+  rebuild with the same CLI and `mc`. MinIO left the `app` profile so tests can
+  start it alone.
+- **kyc's MinIO spec now runs in `make test-node` and CI**; it had skipped
+  everywhere since it was written.
+- **`make db-backfill`** creates every `infra/postgres/init/*.sql` role and
+  database an existing volume lacks, one guarded statement at a time.
+  test-node only back-filled P5, so a pre-P4 volume never got payments or
+  notifications.
+- Manifests are YAML-parsed and structure-checked only, never applied.
+
+### Fixed — core-ledger events sent to JetStream never reached notifications
+- core-ledger's relay has one destination and NATS wins over
+  `OUTBOX_RELAY_URL`; with compose now setting the worker's `NATS_URL`, every
+  ledger event, reconciliation-break alerts included, went into the `DAMP`
+  stream and stopped there. notifications now runs a **durable JetStream
+  consumer** (`notifications-outbox`, shared by every replica) on
+  `damp.ledger.>` and `damp.reserves.>`, through the same handler and the same
+  `outbox:<id>` dedupe key as `/internal/outbox`, so switching transports
+  cannot double-notify.
+- Acked only after handling; a database error naks with backoff, and a message
+  that fails `OUTBOX_CONSUMER_MAX_DELIVERIES` (10) times, or can't be parsed, is
+  terminated, logged and counted (`notifications_outbox_messages_total`).
+- The stream stays core-ledger's: notifications only creates its durable and
+  waits when it boots before `DAMP` exists. A new durable starts from the
+  stream's retention (`OUTBOX_CONSUMER_DELIVER_POLICY=all`), so events stranded
+  before this fix are delivered once. With `NATS_URL` unset nothing changes.
+- One NATS connection now serves both live fan-out and the consumer, and
+  `PlatformModule` is global in notifications so its metrics reach `/metrics`.
+
+### Fixed — deliveries left PENDING by a crash were never retried
+- A crash between writing a delivery row and sending left it `PENDING`, and a
+  replay was skipped as a duplicate. Rows now carry a lease and an attempt
+  count: a replay reclaims a row whose lease is older than
+  `PENDING_STALE_SECONDS` (120), a sweeper re-sends stranded rows nobody
+  replays, and after `PENDING_MAX_ATTEMPTS` (5) or 24h the row is `FAILED`.
+  Taking the lease is one conditional `UPDATE`, so racing replicas re-send a
+  row once. SMTP timeouts are bounded so a send cannot outlive its lease.
+  Re-sends are at-least-once.
+
+### Fixed — signer refusals were retried until the saga dead-lettered
+- **core-ledger read every signer refusal as transient.** `signerclient` now
+  returns typed errors for all three: `PolicyDeniedError` (403),
+  `CorrelationReusedError` (409 `CORRELATION_REUSED`) and `ResignLimitError`
+  (409 `RESIGN_LIMIT_REACHED`). `bridge.Classify` matches them with
+  `errors.As`, before the string rules, as `ClassRefused`, because a refusal
+  reason is free text that could contain "already minted".
+- **A refused saga is parked, never unwound**, at any stage: dead-lettered
+  with its status untouched, no ledger reversal, no compensating mint. A
+  refusal arrives before a tx hash is recorded, which is the one window where
+  an earlier attempt's signature may still land; unwinding there could put
+  value on two chains. Resolving the dead letter re-arms the saga. A
+  first-time over-ceiling MINT is therefore no longer refunded automatically;
+  an operator decides.
+
+### Added — a cap on re-signs per correlation id
+- The signer re-signs rebuilt bytes for an already-signed payload at most
+  `MAX_RESIGNS_PER_CORRELATION` times (default 5; 0 disables; negative fails
+  boot), then answers `409 RESIGN_LIMIT_REACHED` with a DENIED audit row and
+  never touches the key backend. Only one re-sign can land, but each other one
+  mined on Ethereum reverts at the relayer's expense. The count is taken in
+  the audit log's SERIALIZABLE append, so the cap holds across replicas;
+  byte-identical replays are unaffected.
+
+### Fixed — the frontend `build` script failed on `tsc -b`
+- **`tsc -b` is clean (76 errors → 0)** and `npm run build` succeeds.
+  `vite build` alone could fail too: `redux/store` imported `enableMapSet`
+  from `immer`, which isn't a direct dependency under pnpm's strict layout.
+  No Redux state holds a Map or Set, so the call is gone.
+- **Deleted unrouted, out-of-scope template pages**: trading, investments,
+  insurance, loans, budget/goals/savings/bills and the payments/online
+  merchant catalogue (none were in the sidebar menu that generates routes;
+  the UI PRD scopes them out), with their orphaned cards, slice and types.
+  Also removed `zod`-based validation modules and a `parseFloat` money helper
+  nothing imported, and an ambient `axios.d.ts` that shadowed axios's own types.
+- **conversionClient type-checks**: the `VITE_USE_MOCK_API` mocks reuse the
+  shared fixtures; the KYC error fallback reports zero limits; the WebSocket
+  fallback no longer hits a TDZ error when the socket constructor throws.
+- The send-money flow shares one `Recipient` type; ConvertHistory's loading
+  state is wired; ConvertWallets shows a real relative "updated" time.
+
+### Security — workflow trusted approver roles from the request body
+- **Maker-checker decisions were authorised against `roles` the caller sent
+  in the body**, so anyone holding `approvals:decide` could claim
+  `treasury`/`compliance`/`admin` and satisfy any policy, payouts and closures
+  included. Decider identity and roles now come only from the gateway's
+  `X-User-Id`/`X-Roles` (set by auth-proxy, forwarded unchanged by bff).
+- A body still carrying `roles` on propose/approve/reject is refused with
+  `400 ROLES_NOT_ACCEPTED` rather than silently ignored: a client sending it
+  believes the claim matters. Nothing on the platform sends it.
+- Proposal and decision audit events (DENIED included) record the gateway
+  roles the policy check actually used as `actor_roles`, beside the policy's
+  `approverRoles`.
+- kyc and compliance propose directly with a forwarded `X-User-Id`; that path
+  relies on network isolation, which the README now says plainly.
+
 ### Added — P2's browser half: issue and redeem USD-X from the portal
 - **bff routes for the saga.** `POST /wallets/usdx` opens the caller's USD-X
   wallet on a chain (idempotent; Solana still gets the platform custody
@@ -31,6 +180,237 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   backed by a new `issuance` slice. auth-proxy's route table gains
   `POST /wallets/usdx`.
 - Still to do: performing the browser DoD live against Sepolia.
+### Fixed — compose containers dialling their own `localhost`
+Each `.env.example` holds host-side addresses for `go run`/`pnpm start`; inside
+a container `localhost` is the container itself. Four of them broke silently:
+- **core-ledger worker `NATS_URL`** never connected, so outbox events
+  accumulated unpublished. Compose now sets `nats://nats:4222` and waits for
+  NATS (`WORKER_NATS_URL=` opts out).
+- **`SIGNER_URL`** (core-ledger, worker, reconcile) and **`INDEXER_URL`**
+  (worker) are opt-in features whose example values point at `localhost`.
+  Compose now leaves them off unless `CORE_LEDGER_SIGNER_URL` /
+  `WORKER_INDEXER_URL` say otherwise — remote signing additionally needs mTLS
+  certs that compose doesn't mount yet.
+- **notifications' WebSocket auth fetched Keycloak's keys from
+  `localhost:8080`**, so no socket ever authenticated. New
+  `KEYCLOAK_JWKS_URL` lets the keys come from `keycloak:8080` while `iss` is
+  still checked against the browser-facing issuer.
+- **notifications' identity lookup** fell back to the raw Keycloak subject,
+  pushing to a party id no wallet carries. Compose points it at
+  `host.docker.internal:3001`, where identity runs.
+### Changed — services/kyc presigns with the AWS SDK
+- **The hand-rolled SigV4 is gone.** Upload and download URLs are signed by
+  `@aws-sdk/s3-request-presigner` 3.1166.0, pinned exactly. Behaviour is
+  unchanged: path-style addressing (MinIO has no per-bucket DNS), the
+  configured endpoint, region, bucket and expiry, and only `host` signed —
+  the content type is still returned for the browser to send, not bound in.
+- **The SDK's default would have broken uploads to S3.** It adds a CRC32 of
+  an empty body to every presigned PUT; MinIO ignores it, S3 rejects every
+  non-empty file against it. The client sets
+  `requestChecksumCalculation: 'WHEN_REQUIRED'`, and the unit spec asserts no
+  checksum parameter reaches the URL.
+- **Storage is tested against a real backend for the first time.** A MinIO
+  integration spec PUTs on a presigned URL, reads the bytes back on a
+  presigned GET, and checks a wrong secret gets a 403. It skips unless
+  `KYC_TEST_S3_ENDPOINT` is set, the same opt-in core-ledger's
+  `LEDGER_TEST_DATABASE_URL` uses.
+### Fixed — P6 signer: what the bytes are bound to
+Branch `fix/p6-signer-binding`. The three items left open after the signer
+started decoding what it signs.
+- **The correlation id was not bound to the signed bytes.** Idempotency is
+  keyed on the caller's correlation id; the chain's replay guard on the id
+  *inside* the transaction. Unbound, an already-signed transaction presented
+  under a fresh correlation id found no record and was signed again. Both
+  chains carry `sha256(correlation_id)` (the `bytes32` on Ethereum, the
+  `[u8; 32]` and processed-marker seed on Solana); the signer now requires the
+  caller's id to hash to it, and refuses a bridge call that carries none.
+- **A retry could never be re-signed.** Same correlation id with different
+  bytes was refused outright — but a saga retry rebuilds its transaction, and
+  on Solana a fresh blockhash alone changes the bytes, so a signed attempt
+  that never landed dead-lettered its saga. Each correlation id is now bound to
+  one **payload** (chain, method, contract/program, mint, amount, destination,
+  on-chain id — no nonce, gas or blockhash): the same bytes replay the
+  original signature, rebuilt bytes for the same payload are signed again, a
+  different payload is `409 CORRELATION_REUSED`. Safe because the on-chain id
+  is in the payload and now verified, so the chain's replay guard lets at most
+  one land. Re-signs count once towards the daily limit. Migration `00002`
+  adds `payload_digest`, widens the unique index to include the digest, and
+  checks one-payload-per-correlation inside the SERIALIZABLE append so two
+  replicas cannot both bind; rows from before it still verify and still accept
+  only their exact bytes.
+- **The Solana mint was not allowlisted.** `usdx_bridge` does not pin its
+  mint, and anyone can create a mint whose authority is the program's PDA — a
+  `bridge_mint` against one would spend the correlation id's processed marker
+  on worthless tokens and block the real mint. The signer now refuses any mint
+  but the configured one, and refuses an ATA create for any account but the
+  one the bridge instruction touches (the relayer pays its rent).
+- **Which contracts are ours moved from the policy file to deployment
+  configuration**: `USDX_PROXY_ADDRESS`, `USDX_PROGRAM_ID`,
+  `USDX_MINT_ADDRESS` — the names and values core-ledger already uses.
+  Required and validated at boot outside `ENV=local` (the zero address the
+  example policy shipped with is refused); a policy file still carrying
+  `targets:` is refused at load rather than silently ignored. Documented in
+  `services/signer/.env.example`; `infra/k8s/signer-deployment.yaml` reads
+  them from a new `usdx-deployment` ConfigMap, left empty so an unfilled one
+  stops the signer at boot.
+
+### Notes
+- **Not verified live.** Signer suite under `-race` against a real Postgres
+  (`signer_test`), plus the audit suite run over a database first populated by
+  `main`'s signer, to check the `00002` upgrade keeps old rows verifying.
+- core-ledger is unchanged: it already derives both on-chain ids from the
+  correlation id it passes, compensation (`<id>-compensation`) included. It
+  still treats the signer's `409` as retryable, so a genuine payload conflict
+  dead-letters after the attempt budget rather than compensating.
+- Local development now needs `USDX_PROGRAM_ID`/`USDX_MINT_ADDRESS` (and
+  `USDX_PROXY_ADDRESS` for Ethereum) in `services/signer/.env` for the signer
+  to sign anything on that chain.
+Branch `feat/p4-payment-outbox-fanout`. The two P4 follow-ups deferred from
+the PR #17 review.
+
+### Added — payment events can no longer be lost to a notifications outage
+- **payments has a transactional outbox.** A settlement used to tell the
+  customer with a best-effort POST made *after* the intent was marked, so if
+  notifications was down at that moment the email and the toast were gone —
+  the money had moved and nothing remembered that somebody still needed
+  telling. `payment.settled`, `payment.failed` and `invoice.issued` are now
+  rows in `outbox`, written in the same transaction as the status change they
+  announce (migration `002_outbox.sql`).
+  - The invoice a payment settles is now marked PAID inside that transaction
+    too. Before, a crash between the two statements left an invoice OPEN
+    behind a SETTLED intent.
+  - `markFailed` only fires on a real transition. A rail repeating its
+    failure callback, or a late failure for money that already landed, used
+    to send the customer another "your payment failed".
+- **`OutboxRelay`** delivers to notifications' `/internal/events`: kicked
+  after each commit so the toast still arrives while the page is open, swept
+  every `OUTBOX_RELAY_SECONDS`, backing off 1s → 5 min, `DEAD` after
+  `OUTBOX_MAX_ATTEMPTS` (100, about eight hours) or at once on a 4xx that
+  isn't 408/429. Rows are claimed `FOR UPDATE SKIP LOCKED`, so every replica
+  runs one. An unset `NOTIFICATIONS_URL` queues rather than drops.
+- **notifications dedupes webhook fan-out on the event id.** The delivery log
+  was already UNIQUE on the producer's key, but the webhook queue behind it
+  wasn't, so every outbox replay — routine for an at-least-once relay —
+  queued another signed POST to every subscriber (migration
+  `002_webhook_dedupe.sql`).
+
+### Added — live pushes reach sockets on every notifications replica
+- With `NATS_URL` set, every in-app push is published on core NATS and every
+  replica (the publisher included) delivers it to its own sockets. With two
+  replicas, a customer on A used to miss every push produced on B.
+- **NATS, not Postgres `LISTEN/NOTIFY`.** NATS was already in compose and is
+  the bus the plan names; core-ledger already publishes to it. `NOTIFY` would
+  have avoided a client dependency, but caps a payload at 8000 bytes (so a
+  large message means every replica re-reading the row from the database) and
+  holds a dedicated connection per replica out of a pool sized for queries.
+  Unlike the indexer's advisory lock, nothing here needs to live in the same
+  database as the state it guards.
+- **Core pub/sub on `live.notifications.push.v1`, deliberately outside
+  `damp.>`.** core-ledger's DAMP stream captures `damp.>` with 30-day file
+  retention, and JetStream stores plain publishes to any subject a stream
+  covers — a push named `damp.notifications.*` would have kept every rendered
+  message for a month. A push is a latency optimisation over `deliveries`, not
+  a domain event.
+- **Unset or unreachable NATS falls back to in-process delivery**, exactly
+  the old behaviour. One replica (local dev) needs no broker; a broker outage
+  costs cross-replica reach, not the service. NATS is not a readiness check
+  for the same reason — pulling notifications out of rotation over a degraded
+  toast would also stop email.
+- compose sets `NATS_URL` for notifications so the path k8s relies on is the
+  one exercised locally; k8s points at `nats.default.svc` (like Postgres and
+  Keycloak, a backing service these manifests reference but don't deploy).
+  CI's Node job gains a NATS service container.
+
+### Fixed
+- **payments could not boot.** `InvoicesController` injects `IntentsService`
+  and `SettlementService`, which `IntentsModule` exports but doesn't make
+  global, and `InvoicesModule` never imported it. Found by booting the real
+  app for this change's smoke test; every earlier test constructed classes
+  directly and never resolved the module graph.
+
+### Notes
+- **Verified:** payments' outbox suite and notifications' dedupe suite against
+  real Postgres (`payments_test` / `notifications_test`), the fan-out suite
+  against a real NATS, and an end-to-end run of the built apps — payments plus
+  two notifications replicas sharing NATS: an invoice issued through replica
+  A's ingest reached a WebSocket held by replica B; with A killed, the next
+  invoice's event waited in the outbox and was delivered to B once A came
+  back.
+- A fanned-out push records `recipients: null` in its delivery row: each
+  replica delivers to its own sockets and nobody counts the total.
+- The NATS subject has no auth in front of it, the same trust model as
+  `/internal/*`: anything that can reach the broker can push to a socket.
+## 2026-11-12 — P7 follow-up: audit-trail producers
+
+Branch `feat/p7-audit-producers`. Closes the P7 note that
+`services/audit-trail` had no producers, with the delivery Qodo asked for:
+**transactional** — an outbox per producer, written in the same database
+transaction as the action it describes, relayed with retries, idempotent on
+an event id.
+
+### Added
+
+- **`shared/go/platform/audit`** and **`@damp/nest-platform`'s audit module** —
+  the same `audit_outbox` table, wire shape and rules in both languages.
+  - `Enqueue` / `enqueueAuditEvent` take the caller's transaction handle and
+    nothing else. An event committed separately from its action is evidence
+    of something that may have rolled back, which is worse than no event.
+  - The event id is minted at enqueue, so every redelivery carries the same
+    one.
+  - The relay claims with `FOR UPDATE SKIP LOCKED` (safe on every replica),
+    backs off with full jitter, and has **no attempt budget for transient
+    failures**: giving up because audit-trail was down for an afternoon would
+    put a hole in the trail exactly where an outage was. Only a 4xx refusal
+    is dead-lettered. `audit_outbox_pending_events` is the alarm.
+  - Request id, forwarded source IP, user agent and `X-Roles` reach the event
+    from a fiber middleware / `@AuditContext()` decorator.
+- **Producers wired:** core-ledger (every journal posting incl. bridge legs,
+  reversals, manual journals, wallet status changes, period closes,
+  dead-letter resolutions — actor from `X-User-Id` via `actor()`; the worker
+  runs the relay), workflow (proposals, each approval, rejections,
+  cancellations, expiries), compliance (enforcement proposal → approval →
+  execution, case assignment and closure, alert dismissal), kyc (review,
+  approval with the tier change, rejection). Refused approvals — a
+  self-approval, a digest or request-id mismatch — are recorded as `DENIED`.
+- **audit-trail dedupes on `id`**: 201 first time, 200 with the original
+  seq/hash on a redelivery, 409 for a different event under a recorded id.
+  Recording can be gated on `INGEST_TOKEN`; producers send it as
+  `AUDIT_TRAIL_TOKEN`.
+- New env: `AUDIT_TRAIL_URL`, `AUDIT_TRAIL_TOKEN` (core-ledger worker,
+  workflow, kyc, compliance), `INGEST_TOKEN` (audit-trail). Compose defaults
+  them to a dev token; k8s reads Secret `audit-trail-ingest` (key `token`),
+  which must be provided per deployment.
+
+### Fixed — found by the first tests of audit-trail against real Postgres
+
+- **Every read of an event failed.** `database/sql` can't scan `text[]` into
+  `[]string`, so `Verify` — which gates boot — the event list and proofs all
+  errored once a single event existed. The service would have refused to
+  restart after its first recorded event.
+- **An event with no `actor_roles` was a 500** (nil slice → `NULL` into a
+  `NOT NULL` column).
+- **`occurred_at` was hashed at nanosecond precision and stored at
+  microsecond**, so on Linux every event would fail `Verify` on read-back.
+  Both sides now truncate to microseconds before hashing.
+- workflow's `decide()` said it ran "inside one transaction"; it ran separate
+  queries. It now holds the request's row lock for the whole decision.
+- core-ledger's `POST /wallets/:id/status` recorded no actor at all;
+  compliance's case assignment didn't either.
+
+### Notes
+
+- **Not verified live.** Go suite under `-race` against real Postgres
+  (bridge_test, signer_test, audit_trail_test), every Node workspace suite,
+  workflow/kyc/compliance against their `*_test` databases. No relay has
+  delivered to a running audit-trail container.
+- There is still **no k8s manifest for audit-trail itself** (or reporting),
+  though the P7 entry below says there is. The producers' manifests point at
+  `audit-trail.default.svc.cluster.local:8085`.
+- workflow's policy check still trusts the `roles` a decider puts in the
+  request body. Not changed here; the audit event records those claimed
+  roles beside the gateway's `X-Roles`, so a gap between them is visible.
+- Not yet producers: identity (role grants), payments, rms, reporting,
+  signer, indexer, notifications.
 
 ## 2026-11-09
 

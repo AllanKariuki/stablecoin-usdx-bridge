@@ -17,7 +17,7 @@ func TestIntegrationListTransactionsPage_KeysetPaginationHasNoGapsOrOverlap(t *t
 	repo, svc, ctx := testRepo(t)
 	user := uniqueUser(t)
 
-	w, err := repo.EnsureWallet(ctx, user, "USD", "", "", "Main")
+	w, err := repo.EnsureWallet(ctx, user, "USD", "", "", "Main", "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet: %v", err)
 	}
@@ -79,11 +79,11 @@ func TestIntegrationListTransactionsPage_FiltersByUserID(t *testing.T) {
 	userA := uniqueUser(t)
 	userB := uniqueUser(t)
 
-	walletA, err := repo.EnsureWallet(ctx, userA, "USD", "", "", "A")
+	walletA, err := repo.EnsureWallet(ctx, userA, "USD", "", "", "A", "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet A: %v", err)
 	}
-	walletB, err := repo.EnsureWallet(ctx, userB, "USD", "", "", "B")
+	walletB, err := repo.EnsureWallet(ctx, userB, "USD", "", "", "B", "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet B: %v", err)
 	}

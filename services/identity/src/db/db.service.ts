@@ -1,7 +1,7 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { join } from 'node:path';
-import { Pool, QueryResultRow } from 'pg';
+import { Pool, PoolClient, QueryResultRow } from 'pg';
 import { runMigrations } from './migration-runner';
 
 /**
@@ -37,6 +37,27 @@ export class DbService implements OnModuleInit, OnModuleDestroy {
 
   query<T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]): Promise<{ rows: T[] }> {
     return this.pool.query<T>(text, params);
+  }
+
+  /**
+   * Runs fn inside one transaction on one connection. The audit outbox needs
+   * this: an audit event is only evidence if it commits or rolls back with
+   * the change it describes, which means being written on the same client,
+   * between the same BEGIN and COMMIT.
+   */
+  async transaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const out = await fn(client);
+      await client.query('COMMIT');
+      return out;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async ping(): Promise<void> {

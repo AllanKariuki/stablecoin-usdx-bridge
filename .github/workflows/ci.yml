@@ -45,13 +45,16 @@ jobs:
       - name: go vet
         run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/...
 
-      - name: Create signer's test database
+      - name: Create signer's and audit-trail's test databases
         # Service containers can't mount docker-entrypoint-initdb.d, so this is
-        # infra/postgres/init/05-p6-databases.sql run by hand.
+        # infra/postgres/init/05-p6-databases.sql and 06-p7-databases.sql run
+        # by hand.
         run: |
           PGPASSWORD=bridge psql -h localhost -p 55433 -U bridge -d bridge \
             -c "CREATE ROLE signer WITH LOGIN PASSWORD 'signer';" \
-            -c "CREATE DATABASE signer_test OWNER signer;"
+            -c "CREATE DATABASE signer_test OWNER signer;" \
+            -c "CREATE ROLE audit_trail WITH LOGIN PASSWORD 'audit_trail';" \
+            -c "CREATE DATABASE audit_trail_test OWNER audit_trail;"
 
       - name: go test (unit + integration)
         env:
@@ -60,6 +63,9 @@ jobs:
           # default version table, so sharing one makes signer skip its
           # migrations (see the Makefile's SIGNER_TEST_DATABASE_URL).
           SIGNER_TEST_DATABASE_URL: postgres://signer:signer@localhost:55433/signer_test?sslmode=disable
+          # audit-trail's store tests: the dedupe on event id is a unique
+          # index and the chain read is a text[] scan — database properties.
+          AUDIT_TRAIL_TEST_DATABASE_URL: postgres://audit_trail:audit_trail@localhost:55433/audit_trail_test?sslmode=disable
         run: |
           set -euo pipefail
           # -p 1: the core-ledger packages share this one database and assert
@@ -171,7 +177,49 @@ jobs:
             -c "CREATE DATABASE reporting OWNER reporting;" \
             -c "CREATE DATABASE reporting_test OWNER reporting;"
 
+      - name: Start NATS with JetStream
+        # A step rather than a `services:` entry, for the same reason as MinIO
+        # below: the image's default command has JetStream off, and a service
+        # container can't add `-js`. notifications' fan-out suite needs core
+        # pub/sub; its outbox-consumer suite needs JetStream (core-ledger's
+        # stream), and without it every JetStream request answers 503.
+        run: |
+          docker run -d --name nats -p 54222:4222 -p 58222:8222 \
+            nats:2.10-alpine -js -m 8222
+          for _ in $(seq 30); do
+            curl -fsS 'http://localhost:58222/healthz?js-enabled-only=true' >/dev/null && exit 0
+            sleep 1
+          done
+          docker logs nats
+          echo "::error::NATS with JetStream did not become healthy"
+          exit 1
+
+      - name: Start MinIO for kyc's storage spec
+        # A step rather than a `services:` entry: service containers can't
+        # override the image's command, and MinIO's default command is the
+        # bare `minio` binary, which prints usage and exits — it needs
+        # `server /data`. Same image and digest as docker-compose.yaml (see
+        # the comment there for why it is pgsty/minio).
+        run: |
+          docker run -d --name minio -p 59000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            --health-cmd "mc ready local" --health-interval 2s --health-retries 30 \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372 \
+            server /data
+          for _ in $(seq 60); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' minio)" = healthy ] && exit 0
+            sleep 1
+          done
+          docker logs minio
+          echo "::error::MinIO did not become healthy"
+          exit 1
+
       - name: pnpm -r test
+        env:
+          # Turns on services/kyc/test/storage-minio.integration.spec.ts,
+          # which otherwise skips: presigned PUT/GET round trip, a wrong
+          # secret refused, a mismatched Content-Type refused.
+          KYC_TEST_S3_ENDPOINT: http://localhost:59000
         run: pnpm -r --if-present run test
 
       - name: pnpm -r lint

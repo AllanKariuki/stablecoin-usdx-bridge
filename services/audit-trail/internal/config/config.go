@@ -28,6 +28,12 @@ type Config struct {
 	// Where roots go: "log" (the default, and deliberately weak — see
 	// internal/anchor/log_publisher.go) or "none".
 	AnchorPublisher string `env:"ANCHOR_PUBLISHER" default:"log"`
+
+	// IngestToken is the bearer token producers present on
+	// POST /internal/events (their AUDIT_TRAIL_TOKEN). Empty leaves recording
+	// open to anything that can reach the port, and the service says so at
+	// boot.
+	IngestToken string `env:"INGEST_TOKEN" default:""`
 }
 
 func Load() (Config, error) {

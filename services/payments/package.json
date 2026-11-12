@@ -1,7 +1,7 @@
 {
   "name": "@damp/payments",
   "version": "0.1.0",
-  "description": "Payment intents, invoices, payment links, beneficiaries and bank rails. Owns workflow state only: every intent that settles does so by calling core-ledger's POST /deposits, /withdrawals or /transfers, which already stamp entity_type=BANK_PAYMENT with the intent id \u2014 so the journal back-reference comes free. RailProvider seam with a StubRail (settles through its own callback, not inline) and M-Pesa Daraja sandbox.",
+  "description": "Payment intents, invoices, payment links, beneficiaries and bank rails. Owns workflow state only: every intent that settles does so by calling core-ledger's POST /deposits, /withdrawals or /transfers, which already stamp entity_type=BANK_PAYMENT with the intent id — so the journal back-reference comes free. RailProvider seam with a StubRail (settles through its own callback, not inline) and M-Pesa Daraja sandbox.",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
@@ -23,6 +23,7 @@
     "class-validator": "^0.15.1",
     "nestjs-pino": "^5.2.0",
     "pg": "^8.13.1",
+    "prom-client": "^15.1.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
   },

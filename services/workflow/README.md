@@ -44,9 +44,33 @@ than the day nothing can be approved any more.
 |---|---|
 | `exclude_initiator` | Defaults **TRUE**, and is TRUE on every seeded policy. The plan calls it non-negotiable for payouts, rebalances, blacklist, pause, role grants and reversals. It is the single most common way maker-checker is defeated in practice: the maker approves their own work because the UI let them. |
 | One decision per person | `UNIQUE (request_id, decided_by)`, in the database. A two-of-two policy that one person could satisfy by clicking twice is a one-of-one policy with extra steps. |
-| Approver roles | Checked against the roles auth-proxy resolved, not roles the caller asserts. |
+| Approver roles | Checked against `X-Roles`, which only auth-proxy can set (Traefik replaces ForwardAuth's response headers on every inbound request). A body carrying `roles` is refused with `400 ROLES_NOT_ACCEPTED` rather than ignored, so a client written against the old contract finds out. The decision's audit event records those same roles in `actor_roles`. |
 | Expiry | An approval granted against three-week-old context is not really an approval. |
 | Re-proposal | `ON CONFLICT (subject_type, subject_id, payload_digest)` — a double-submit returns the open request rather than creating a second one two approvers could each approve. |
+
+### Where identity comes from
+
+There are two kinds of caller, and neither gets to assert its own roles:
+
+- **People** — approvers and makers in the ops console — come through
+  Traefik → auth-proxy → bff. auth-proxy's route table requires
+  `approvals:decide` for approve/reject and `approvals:propose` for
+  propose/cancel; bff's `UpstreamProxy` forwards `X-User-Id`, `X-Roles` and
+  `X-Permissions` unchanged. The policy's role check runs against `X-Roles`.
+- **Services** — kyc and compliance — call `POST /approval-requests` directly
+  on the internal network, with `X-User-Id` set to the officer whose action
+  they are proposing (itself taken from that officer's gateway headers), or
+  to `system` when kyc opens one after a CLEAR screening. They
+  only ever propose; no service decides. They send no `X-Roles`, so their
+  proposals record an empty `requested_by_roles` — which authorizes nothing,
+  since a proposer's roles never do.
+
+Trusting a direct `X-User-Id` from a service rests on workflow being
+unreachable except through the gateway and from those services. That is a
+network property, not something this service verifies — and docker-compose
+currently publishes :3006 on the host, which is fine for local development
+and nowhere else. An authenticated service token is the stronger form and is
+not built yet.
 
 An action with **no policy is refused**, not waved through. Defaulting to "no
 approval needed" would make forgetting to write a policy the same as deciding

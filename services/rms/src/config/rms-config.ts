@@ -56,4 +56,13 @@ export class RmsConfig {
   @Type(() => Boolean)
   @IsBoolean()
   CUSTODIAN_POLL_ENABLED = true;
+
+  // services/audit-trail's base URL. The audit relay drains audit_outbox to
+  // its POST /internal/events; empty means events wait, durably, until set.
+  @IsString()
+  AUDIT_TRAIL_URL = '';
+
+  // Bearer token audit-trail's INGEST_TOKEN expects.
+  @IsString()
+  AUDIT_TRAIL_TOKEN = '';
 }

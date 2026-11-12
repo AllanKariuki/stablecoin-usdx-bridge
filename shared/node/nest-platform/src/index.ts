@@ -36,6 +36,29 @@ export { installGracefulShutdown, runShutdownSequence, ShutdownOptions } from '.
 // Aggregator module
 export { PlatformModule, PlatformModuleOptions } from './platform.module';
 
+// Audit producer (twin of shared/go/platform/audit)
+export {
+  AUDIT_OUTBOX_SCHEMA_SQL,
+  AuditEvent,
+  AuditOutcome,
+  AuditRequest,
+  InvalidAuditEventError,
+  Queryable,
+  auditPayload,
+  enqueueAuditEvent,
+} from './audit/audit-event';
+export { AuditContext, auditRequestFrom } from './audit/audit-request';
+export {
+  AuditPublisher,
+  AuditRelay,
+  AuditRelayLogger,
+  AuditRelayOptions,
+  HttpAuditPublisher,
+  PendingAuditEvent,
+  PermanentAuditError,
+  fullJitter,
+} from './audit/audit-relay';
+
 // Constants / tokens
 export {
   PLATFORM_SERVICE_NAME,

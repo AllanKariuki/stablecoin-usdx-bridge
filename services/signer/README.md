@@ -36,20 +36,45 @@ digests: **an amount ceiling against 32 bytes of hash is meaningless.**
 
 ## Idempotency
 
-Unique on `(chain, method, correlation_id)` for allowed signatures. A retried
-mint returns the *original* signature.
+Keyed on `(chain, method, correlation_id)` for allowed signatures, and each
+correlation id is **bound to one payload**: a hash of what the transaction
+authorises (chain, method, contract/program, mint, amount, destination,
+on-chain id) without its nonce, gas or blockhash.
 
-Without it, a saga retry after a timeout produces a **second valid signature
-for the same movement**. The chain's replay guard stops the second transaction
-landing — but the platform has now authorised the same money twice, and which
-signature is the real one is unanswerable.
+| A request under an already-signed correlation id with… | |
+|---|---|
+| the **same bytes** | returns the *original* signature (`replayed: true`) |
+| **rebuilt bytes, same payload** | is signed again, through policy as usual — up to `MAX_RESIGNS_PER_CORRELATION` (default 5) times |
+| rebuilt bytes **past that cap** | is refused — `409 RESIGN_LIMIT_REACHED`, recorded |
+| a **different payload** | is refused — `409 CORRELATION_REUSED`, recorded |
+
+Same bytes replay because a saga retry after a timeout must not produce a
+second valid signature for the same transaction. Rebuilt bytes are re-signed
+because a retry *rebuilds* its transaction — on Solana a fresh blockhash alone
+changes the bytes — and refusing them left a saga whose first signed attempt
+never landed unable to get another. That is safe only because the on-chain id
+is in the payload and is verified to *be* this correlation id (below): the
+chain's replay guard on that id lets at most one of the transactions land. A
+re-sign counts once towards the daily limit, not once per signature.
+
+One payload per correlation id cannot be a unique index (re-signs share the
+key), so it is checked inside the audit log's SERIALIZABLE append as well as
+before signing: two replicas that both pass the first check cannot both bind.
+
+"At most one lands" is not "the rest are free": on Ethereum each rebuilt
+transaction has its own nonce, and every one mined behind the winner reverts
+on the replay guard at the relayer's expense. So re-signs are capped per
+correlation id, counted in the same SERIALIZABLE append (and pre-checked, so a
+capped request never reaches the key backend). A byte-identical replay is not
+a re-sign and is still answered past the cap. core-ledger treats
+`RESIGN_LIMIT_REACHED`, `CORRELATION_REUSED` and `403 POLICY_DENIED` alike:
+never retried, never unwound — the saga is dead-lettered with its money where
+it is, because an earlier signature for the id may still land.
 
 A *denial* does not consume the slot: a request refused for being over a
-ceiling has to be retryable once the ceiling is raised.
-
-Same correlation id with a *different* digest is refused outright. Signing
-both would put two different valid transactions on the chain under one
-correlation id.
+ceiling has to be retryable once the ceiling is raised. Rows from before
+migration `00002` have no payload digest, so a correlation id signed then
+accepts only its exact bytes.
 
 ## The audit log
 
@@ -67,6 +92,16 @@ later cannot be dated, because every row after it is equally suspect.
 **Denials are recorded as carefully as approvals.** A burst of refusals is the
 first sign of a compromised caller probing what it can get through, and a log
 that only recorded successes would show that as silence.
+
+**Every row is also forwarded to services/audit-trail.** Append writes an
+`audit_outbox` event (`signer.signature.allowed` / `.denied` / `.error`, actor
+= the mTLS client) in the same SERIALIZABLE transaction as the signatures row,
+and a relay delivers it to `AUDIT_TRAIL_URL`. The table here stays the
+signer's own evidence and nothing reads the trail to sign; the forward exists
+so an auditor answering "who moved this money" has one place to look rather
+than a second database only this service can reach. Each event carries the
+row's `hash` and `prev_hash`, so the two records can be checked against each
+other — deleting a row from one leaves it in the other, which is also anchored.
 
 ## Backends
 
@@ -115,20 +150,31 @@ wrote next to them (`internal/decode`):
 
 - **Ethereum** requests carry the unsigned transaction (`tx`). The signer
   decodes it, proves the digest is its hash under the transaction's own chain
-  id, and reads method, amount and destination from the calldata. Contract
+  id, requires it to call `USDX_PROXY_ADDRESS`, and reads method, amount,
+  destination and the `bytes32` correlation id from the calldata. Contract
   creation, ETH value, a missing chain id and unknown selectors are refused.
 - **Solana** requests carry the serialised message as the digest. It must be a
   canonical legacy message containing only one `bridge_mint`/`bridge_burn` for
-  an allowed program (plus the idempotent ATA create), with the relayer as fee
-  payer and all eight program accounts present. The claimed wallet is bound by
-  deriving its associated token account and requiring it to be the account the
-  instruction actually touches.
+  `USDX_PROGRAM_ID`, acting on `USDX_MINT_ADDRESS` (plus an idempotent ATA
+  create for that same token account), with the relayer as fee payer and all
+  eight program accounts present. The claimed wallet is bound by deriving its
+  associated token account and requiring it to be the account the instruction
+  actually touches. The mint check matters on its own: `usdx_bridge` does not
+  pin its mint, so a `bridge_mint` against a look-alike mint whose authority is
+  the program's PDA would spend the correlation id's processed marker on
+  worthless tokens and block the real mint.
+- **The correlation id is bound to the bytes.** Both chains carry
+  `sha256(correlation_id)` (core-ledger's `bridge.CorrelationIDHash`) — as the
+  `bytes32` argument on Ethereum, and as the `[u8; 32]` argument and
+  processed-marker seed on Solana. The signer requires the caller's
+  correlation id to hash to it, and requires a bridge call to carry one.
+  Without this an already-signed transaction presented under a fresh
+  correlation id would find no idempotency record and be signed again.
 - The caller's claimed method/amount/destination are cross-checked; any
   disagreement is a recorded denial.
-- `targets:` in the policy file lists the contracts/programs that may be
-  called, per chain. A chain with no entry signs nothing — replace the
-  placeholder Ethereum address in `policy.example.yaml` per deployment.
 
-Not covered: the correlation id is not cross-checked against the bytes (it is
-a hash on Solana and a `bytes32` on Ethereum), and Solana `mint` is not
-allowlisted separately from the program.
+Which contracts are ours is **deployment configuration, not policy**:
+`USDX_PROXY_ADDRESS`, `USDX_PROGRAM_ID` and `USDX_MINT_ADDRESS`, the same
+names and values core-ledger is given. All three are required at boot outside
+`ENV=local`; under `ENV=local` a chain left unset signs nothing. A policy file
+still carrying the old `targets:` section is refused at load, not ignored.

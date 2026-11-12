@@ -50,6 +50,12 @@ export class PlatformModule {
   static forRoot(options: PlatformModuleOptions): DynamicModule {
     return {
       module: PlatformModule,
+      // Global, so a provider in any feature module can inject
+      // PlatformMetricsService. Without it only the root module sees the
+      // re-export, and an `@Optional()` injection elsewhere resolves to
+      // undefined without an error — the metric it would have registered
+      // simply never appears on /metrics.
+      global: true,
       imports: [
         PlatformLoggingModule.forRoot({ service: options.service, level: options.logLevel }),
         PlatformTracingModule.forRoot({ service: options.service }),

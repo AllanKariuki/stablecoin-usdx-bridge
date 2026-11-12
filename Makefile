@@ -1,5 +1,5 @@
 .PHONY: help up down logs up-app kill-worker logs-worker up-obs down-obs \
-	test test-unit test-integration test-eth eth-deps test-sol test-node \
+	test test-unit test-integration test-eth eth-deps test-sol test-node db-backfill \
 	build run run-worker run-indexer reconcile docker-build \
 	lint fmt fmt-check \
 	authz-gen keycloak-realm \
@@ -21,6 +21,9 @@ TEST_DATABASE_URL ?= postgres://bridge:bridge@localhost:55433/bridge_test?sslmod
 # a shared database goose sees core-ledger's version 6, skips signer's 00001,
 # and the signatures table never exists.
 SIGNER_TEST_DATABASE_URL ?= postgres://signer:signer@localhost:55433/signer_test?sslmode=disable
+# audit-trail's own test database (infra/postgres/init/06-p7-databases.sql),
+# for the same goose-version-table reason as signer's.
+AUDIT_TRAIL_TEST_DATABASE_URL ?= postgres://audit_trail:audit_trail@localhost:55433/audit_trail_test?sslmode=disable
 
 .DEFAULT_GOAL := help
 
@@ -96,15 +99,19 @@ test-unit:
 # services/signer's audit tests need their own database (the append-only
 # trigger and the hash chain are database properties, so a fake would confirm
 # the Go code and none of them). It gets signer_test, never a database another
-# service migrates — see SIGNER_TEST_DATABASE_URL above.
-test-integration: up
-	@docker exec usdx-postgres psql -U bridge -d postgres -tAc \
-		"SELECT 1 FROM pg_database WHERE datname = 'bridge_test'" | grep -q 1 \
-		|| docker exec usdx-postgres createdb -U bridge -O bridge bridge_test
+# service migrates — see SIGNER_TEST_DATABASE_URL above. audit-trail likewise
+# gets audit_trail_test; shared/go/platform/audit runs in a throwaway schema
+# inside bridge_test.
+#
+# The init scripts only run on a fresh volume, so an older volume is missing
+# whatever later phases added (bridge_test, signer_test, audit_trail_test);
+# db-backfill creates what is missing.
+test-integration: up db-backfill
 	@set -euo pipefail; \
 	LEDGER_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" \
 	SIGNER_TEST_DATABASE_URL="$(SIGNER_TEST_DATABASE_URL)" \
-		go test -p 1 ./core-ledger/... ./services/signer/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
+	AUDIT_TRAIL_TEST_DATABASE_URL="$(AUDIT_TRAIL_TEST_DATABASE_URL)" \
+		go test -p 1 ./core-ledger/... ./services/signer/... ./services/audit-trail/... ./shared/go/platform/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
 	if grep -q '^--- SKIP:' /tmp/usdx-go-test.log; then \
 		echo "a test was skipped — LEDGER_TEST_DATABASE_URL must be set and reachable"; \
 		grep '^--- SKIP:' /tmp/usdx-go-test.log; \
@@ -146,13 +153,32 @@ test-sol:
 	cd chains/solana && anchor build --arch v1 --ignore-keys && cargo test -p usdx_bridge
 
 ## Node workspace tests (nest-platform, bff, identity, rms, payments,
-## notifications). identity's suite needs real Postgres (see
-## services/identity/test/fixtures/bootstrap.ts) — depends on `up` the same
-## way test-integration does. --if-present skips frontend, which has no
+## notifications). identity's, payments' and notifications' suites need real
+## Postgres (their *_test databases, never the dev ones) and notifications'
+## fan-out suite needs compose's NATS — depends on `up` the same way
+## test-integration does. --if-present skips frontend, which has no
 ## test script yet.
-test-node: up
+#
+# workflow, kyc and compliance's audit-outbox specs run against their own
+# *_test databases too, as do payments', notifications', rms' and reporting's. A
+# volume older than any of those phases never ran their init scripts;
+# db-backfill creates whatever is missing.
+#
+# kyc's storage spec runs against compose's MinIO (started by `up`; waited on
+# here because its healthcheck is slower than Postgres'). KYC_TEST_S3_ENDPOINT
+# is what turns that spec on — unset, it skips.
+KYC_TEST_S3_ENDPOINT ?= http://localhost:59000
+test-node: up db-backfill
+	@until docker inspect --format '{{.State.Health.Status}}' usdx-minio 2>/dev/null | grep -q healthy; do sleep 1; done
 	pnpm --filter "./shared/node/**" run build
-	pnpm -r --if-present run test
+	KYC_TEST_S3_ENDPOINT="$(KYC_TEST_S3_ENDPOINT)" pnpm -r --if-present run test
+
+## Create any role/database from infra/postgres/init/ an existing volume lacks.
+# The init scripts run only against an empty data directory, and they are not
+# idempotent themselves; backfill.sh runs each statement only if what it
+# creates is missing. Safe to run any number of times.
+db-backfill:
+	@infra/postgres/backfill.sh usdx-postgres
 
 # ---------------------------------------------------------------------------
 # Build / run

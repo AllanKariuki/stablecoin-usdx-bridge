@@ -46,6 +46,7 @@ function getMethodTypeLabel(type: PaymentMethod['type']): string {
     bank_account: 'Bank Account',
     wallet: 'Digital Wallet',
     mobile_money: 'Mobile Money',
+    crypto_wallet: 'Crypto Wallet',
   };
   return labels[type] || 'Payment Method';
 }

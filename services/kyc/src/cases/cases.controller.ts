@@ -1,4 +1,5 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Query } from '@nestjs/common';
+import { AuditContext, AuditRequest } from '@damp/nest-platform';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { TiersRepository } from '../tiers/tiers.repository';
 import { StorageService } from '../storage/storage.service';
@@ -135,10 +136,11 @@ export class CasesController {
   @HttpCode(200)
   async review(
     @CurrentUser() reviewerId: string,
+    @AuditContext() audit: AuditRequest,
     @Param('caseId') caseId: string,
     @Body() body: { decision: 'APPROVE' | 'REJECT'; notes?: string },
   ) {
-    const updated = await this.cases.review(caseId, reviewerId, body.decision, body?.notes ?? '');
+    const updated = await this.cases.review(caseId, reviewerId, body.decision, body?.notes ?? '', audit);
     return render(updated!);
   }
 

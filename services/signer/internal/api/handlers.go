@@ -15,6 +15,7 @@
 package api
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -32,15 +33,29 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-type Handlers struct {
-	backend keystore.Backend
-	policy  policy.Policy
-	log     *audit.Log
-	logger  *slog.Logger
+// AuditLog is what the handlers need from internal/audit. An interface so the
+// refusal paths can be tested without Postgres; the database properties
+// behind it (the unique index, the payload check under SERIALIZABLE) are
+// tested in internal/audit against a real one.
+type AuditLog interface {
+	Existing(ctx context.Context, chain, method, correlationID, digest string) (*audit.Record, error)
+	ResignAllowed(ctx context.Context, chain, method, correlationID string) (bool, error)
+	DailyTotal(ctx context.Context, chain, method, exclude string) (*big.Int, error)
+	Append(ctx context.Context, r *audit.Record) error
+	Recent(ctx context.Context, limit int) ([]audit.Record, error)
+	Verify(ctx context.Context) (ok bool, brokenAt string, checked int, err error)
 }
 
-func New(backend keystore.Backend, p policy.Policy, log *audit.Log, logger *slog.Logger) *Handlers {
-	return &Handlers{backend: backend, policy: p, log: log, logger: logger}
+type Handlers struct {
+	backend    keystore.Backend
+	policy     policy.Policy
+	deployment decode.Deployment
+	log        AuditLog
+	logger     *slog.Logger
+}
+
+func New(backend keystore.Backend, p policy.Policy, dep decode.Deployment, log AuditLog, logger *slog.Logger) *Handlers {
+	return &Handlers{backend: backend, policy: p, deployment: dep, log: log, logger: logger}
 }
 
 func (h *Handlers) Register(app *fiber.App) {
@@ -88,7 +103,7 @@ type signResponse struct {
 
 // sign is the one endpoint that matters.
 //
-// The order is: idempotency, policy, sign, record. Recording last is
+// The order is: decode, idempotency, policy, sign, record. Recording last is
 // deliberate and is the one ordering that can lose information — a crash
 // between signing and recording leaves a signature nobody logged. The
 // alternative, recording first, leaves a log entry for a signature that was
@@ -115,53 +130,30 @@ func (h *Handlers) sign(c *fiber.Ctx) error {
 		return platform.WriteError(c, fiber.StatusBadRequest, "INVALID_DIGEST", "digest must be non-empty hex")
 	}
 
-	// ---- idempotency -----------------------------------------------------
-	//
-	// A retried mint must return the *original* signature. Producing a second
-	// valid one means the platform has authorised the same money twice, and
-	// which is the real one becomes unanswerable.
-	if existing, err := h.log.Existing(c.Context(), req.Chain, req.Method, req.CorrelationID); err != nil {
-		return platform.WriteError(c, fiber.StatusInternalServerError, "AUDIT_UNAVAILABLE",
-			"could not check the audit log; refusing to sign without it")
-	} else if existing != nil {
-		if existing.Digest != hex.EncodeToString(digest) {
-			// Same correlation id, different transaction. Either the caller
-			// rebuilt the transaction (a different nonce, a different gas
-			// price) or something is wrong. Refused either way: signing both
-			// would put two different valid transactions on the chain under
-			// one correlation id, and only the chain's replay guard would
-			// stop the second landing.
-			h.record(c, req, caller, digest, "", audit.OutcomeDenied,
-				"this correlation id was already signed for a different transaction")
-			return platform.WriteError(c, fiber.StatusConflict, "CORRELATION_REUSED",
-				"this correlation id has already been signed for a different transaction")
-		}
-		h.logger.Info("replaying an existing signature",
-			slog.String("correlation_id", req.CorrelationID), slog.String("caller", caller))
-		return c.JSON(signResponse{
-			Signature: existing.Signature,
-			KeyID:     existing.KeyID,
-			PublicKey: h.publicKeyFor(c, existing.KeyID),
-			AuditID:   existing.ID,
-			Replayed:  true,
-		})
-	}
+	// One spelling per chain, so "solana" and "SOLANA" are not two
+	// idempotency keys for the same movement.
+	req.Chain = strings.ToUpper(req.Chain)
 
 	// ---- decode ----------------------------------------------------------
 	//
 	// Policy runs against what the bytes say, not what the caller says. A
 	// compromised caller can describe a 10,000,000 mint as a 1 mint; it cannot
 	// make the transaction say so.
+	//
+	// Decoding comes before idempotency, because the idempotency key is only
+	// meaningful once the correlation id is proven to be the one the bytes
+	// carry: otherwise an already-signed transaction presented under a fresh
+	// correlation id finds no record and is signed again.
 	decoded, derr := h.decodeRequest(req, digest)
 	if derr == nil {
 		derr = decode.Reconcile(decoded, req.Method, req.Amount, req.Destination)
 	}
-	if derr == nil && !h.policy.TargetAllowed(req.Chain, decoded.Target) {
-		derr = fmt.Errorf("%s is not an allowed %s contract/program", decoded.Target, req.Chain)
+	if derr == nil {
+		derr = decode.BindCorrelation(decoded, req.CorrelationID)
 	}
 	if derr != nil {
 		reason := "unverifiable request: " + derr.Error()
-		h.record(c, req, caller, digest, "", audit.OutcomeDenied, reason)
+		h.record(c, req, caller, digest, "", "", audit.OutcomeDenied, reason)
 		h.logger.Warn("refused to sign", slog.String("caller", caller), slog.String("reason", reason))
 		return platform.WriteError(c, fiber.StatusForbidden, "POLICY_DENIED", reason)
 	}
@@ -171,6 +163,54 @@ func (h *Handlers) sign(c *fiber.Ctx) error {
 	if decoded.Amount != nil {
 		req.Amount = decoded.Amount.String()
 	}
+	payload := decoded.PayloadDigest(req.Chain)
+
+	// ---- idempotency -----------------------------------------------------
+	//
+	// A retried mint must return the *original* signature. Producing a second
+	// valid one for a different movement means the platform has authorised
+	// two things under one correlation id, and which is the real one becomes
+	// unanswerable.
+	existing, err := h.log.Existing(c.Context(), req.Chain, req.Method, req.CorrelationID, hex.EncodeToString(digest))
+	if err != nil {
+		return platform.WriteError(c, fiber.StatusInternalServerError, "AUDIT_UNAVAILABLE",
+			"could not check the audit log; refusing to sign without it")
+	}
+	switch idempotencyFor(existing, hex.EncodeToString(digest), payload) {
+	case replay:
+		h.logger.Info("replaying an existing signature",
+			slog.String("correlation_id", req.CorrelationID), slog.String("caller", caller))
+		return c.JSON(signResponse{
+			Signature: existing.Signature,
+			KeyID:     existing.KeyID,
+			PublicKey: h.publicKeyFor(c, existing.KeyID),
+			AuditID:   existing.ID,
+			Replayed:  true,
+		})
+	case conflict:
+		return h.correlationReused(c, req, caller, digest, payload)
+	case resign:
+		// Same authorisation, rebuilt transaction (new nonce, gas or
+		// blockhash). Signed again, through policy as usual: the on-chain id
+		// in the payload is this correlation id, so the chain's replay guard
+		// lets at most one of the two land.
+		//
+		// "At most one lands" is not "the rest are free": on Ethereum each
+		// rebuilt transaction carries its own nonce, and every one mined
+		// behind the winner reverts on the replay guard at the relayer's
+		// expense. So re-signs are capped, and checked here — before the key
+		// backend is asked — so a capped request costs no signature.
+		allowed, err := h.log.ResignAllowed(c.Context(), req.Chain, req.Method, req.CorrelationID)
+		if err != nil {
+			return platform.WriteError(c, fiber.StatusInternalServerError, "AUDIT_UNAVAILABLE",
+				"could not count this correlation's signatures; refusing to sign without it")
+		}
+		if !allowed {
+			return h.resignLimitReached(c, req, caller, digest, payload)
+		}
+		h.logger.Info("re-signing a rebuilt transaction for an existing correlation",
+			slog.String("correlation_id", req.CorrelationID), slog.String("caller", caller))
+	}
 
 	// ---- policy ----------------------------------------------------------
 	amount, hasAmount := new(big.Int).SetString(req.Amount, 10)
@@ -178,7 +218,9 @@ func (h *Handlers) sign(c *fiber.Ctx) error {
 		amount = nil
 	}
 
-	dailyTotal, err := h.log.DailyTotal(c.Context(), req.Chain, req.Method)
+	// Excluding this correlation id, so a re-sign is "everything else today
+	// plus this movement", not this movement counted twice.
+	dailyTotal, err := h.log.DailyTotal(c.Context(), req.Chain, req.Method, req.CorrelationID)
 	if err != nil {
 		return platform.WriteError(c, fiber.StatusInternalServerError, "AUDIT_UNAVAILABLE",
 			"could not read today's signing total; refusing to sign without it")
@@ -198,7 +240,7 @@ func (h *Handlers) sign(c *fiber.Ctx) error {
 		// the first sign of a compromised caller probing what it can get
 		// through, and a log that only records successes shows that as
 		// silence.
-		h.record(c, req, caller, digest, "", audit.OutcomeDenied, decision.Reason)
+		h.record(c, req, caller, digest, payload, "", audit.OutcomeDenied, decision.Reason)
 		h.logger.Warn("refused to sign",
 			slog.String("caller", caller), slog.String("chain", req.Chain),
 			slog.String("method", req.Method), slog.String("reason", decision.Reason))
@@ -208,7 +250,7 @@ func (h *Handlers) sign(c *fiber.Ctx) error {
 	// ---- sign ------------------------------------------------------------
 	signature, err := h.backend.Sign(c.Context(), req.KeyID, digest)
 	if err != nil {
-		h.record(c, req, caller, digest, "", audit.OutcomeError, err.Error())
+		h.record(c, req, caller, digest, payload, "", audit.OutcomeError, err.Error())
 		if errors.Is(err, keystore.ErrUnknownKey) {
 			return platform.WriteError(c, fiber.StatusNotFound, "UNKNOWN_KEY",
 				fmt.Sprintf("no key %q in the %s backend", req.KeyID, h.backend.Name()))
@@ -219,7 +261,17 @@ func (h *Handlers) sign(c *fiber.Ctx) error {
 	}
 
 	// ---- record ----------------------------------------------------------
-	record := h.record(c, req, caller, digest, hex.EncodeToString(signature), audit.OutcomeAllowed, decision.Reason)
+	record, err := h.record(c, req, caller, digest, payload, hex.EncodeToString(signature), audit.OutcomeAllowed, decision.Reason)
+	if errors.Is(err, audit.ErrPayloadMismatch) {
+		// Another replica bound this correlation id to a different payload
+		// between our Existing check and this append. The signature is
+		// withheld, exactly as if the check had caught it.
+		return h.correlationReused(c, req, caller, digest, payload)
+	}
+	if errors.Is(err, audit.ErrResignLimit) {
+		// Another replica's re-sign took the last slot after our pre-check.
+		return h.resignLimitReached(c, req, caller, digest, payload)
+	}
 	if record == nil {
 		// The signature exists and could not be recorded. Returning it anyway
 		// would mean authorising money with no audit trail, which is the one
@@ -244,24 +296,83 @@ func (h *Handlers) sign(c *fiber.Ctx) error {
 	})
 }
 
+// idempotency is what a request is, relative to what this correlation id has
+// already been signed for.
+type idempotency int
+
+const (
+	fresh    idempotency = iota // nothing signed yet
+	replay                      // these exact bytes were signed: return that signature
+	resign                      // same payload, rebuilt bytes: sign again
+	conflict                    // a different payload: refuse
+)
+
+// idempotencyFor decides it. Pure, so the table of cases is testable without
+// a database.
+//
+// A record with no payload digest predates migration 00002: nothing says what
+// it authorised beyond its bytes, so only those exact bytes may follow it.
+func idempotencyFor(existing *audit.Record, digest, payload string) idempotency {
+	switch {
+	case existing == nil:
+		return fresh
+	case existing.Digest == digest:
+		return replay
+	case existing.PayloadDigest != "" && existing.PayloadDigest == payload:
+		return resign
+	default:
+		return conflict
+	}
+}
+
+// correlationReused refuses a request whose correlation id is already bound
+// to a different payload. A conflict rather than a policy denial: nothing
+// about the request is out of policy, it is just not the movement this
+// correlation id already authorised.
+func (h *Handlers) correlationReused(c *fiber.Ctx, req signRequest, caller string, digest []byte, payload string) error {
+	const reason = "this correlation id was already signed for a different payload"
+	h.record(c, req, caller, digest, payload, "", audit.OutcomeDenied, reason)
+	h.logger.Warn("refused to sign", slog.String("caller", caller),
+		slog.String("correlation_id", req.CorrelationID), slog.String("reason", reason))
+	return platform.WriteError(c, fiber.StatusConflict, "CORRELATION_REUSED", reason)
+}
+
+// resignLimitReached refuses a rebuilt transaction for a movement already
+// re-signed as often as the cap allows. Its own code rather than
+// CORRELATION_REUSED, because the caller's right response differs: this
+// payload is the one bound, so a human checks which of its signatures landed
+// rather than looking for a second movement under the same id.
+func (h *Handlers) resignLimitReached(c *fiber.Ctx, req signRequest, caller string, digest []byte, payload string) error {
+	const reason = "this correlation id has been re-signed as many times as the signer allows; " +
+		"one of the existing signatures may still land"
+	h.record(c, req, caller, digest, payload, "", audit.OutcomeDenied, reason)
+	h.logger.Warn("refused to sign", slog.String("caller", caller),
+		slog.String("correlation_id", req.CorrelationID), slog.String("reason", reason))
+	return platform.WriteError(c, fiber.StatusConflict, "RESIGN_LIMIT_REACHED", reason)
+}
+
 func (h *Handlers) decodeRequest(req signRequest, digest []byte) (*decode.Decoded, error) {
-	switch strings.ToUpper(req.Chain) {
+	switch req.Chain {
 	case "ETHEREUM":
 		raw, err := hex.DecodeString(trimHexPrefix(req.Tx))
 		if err != nil {
 			return nil, errors.New("tx must be hex")
 		}
-		return decode.Ethereum(raw, digest)
+		return decode.Ethereum(raw, digest, h.deployment)
 	case "SOLANA":
-		return decode.Solana(digest, h.policy.TargetsFor("SOLANA"), req.Destination)
+		return decode.Solana(digest, h.deployment, req.Destination)
 	default:
 		return nil, fmt.Errorf("unsupported chain %q", req.Chain)
 	}
 }
 
+// record appends to the audit log. Its error matters only to the ALLOWED
+// path, which withholds the signature if it cannot be recorded; denials are
+// best-effort, since refusing is the safe outcome whether or not it was
+// logged.
 func (h *Handlers) record(
-	c *fiber.Ctx, req signRequest, caller string, digest []byte, signature, outcome, reason string,
-) *audit.Record {
+	c *fiber.Ctx, req signRequest, caller string, digest []byte, payload, signature, outcome, reason string,
+) (*audit.Record, error) {
 	record := &audit.Record{
 		Chain:         req.Chain,
 		Method:        req.Method,
@@ -272,6 +383,7 @@ func (h *Handlers) record(
 		Destination:   req.Destination,
 		CorrelationID: req.CorrelationID,
 		Digest:        hex.EncodeToString(digest),
+		PayloadDigest: payload,
 		Signature:     signature,
 		Outcome:       outcome,
 		Reason:        reason,
@@ -279,9 +391,9 @@ func (h *Handlers) record(
 	if err := h.log.Append(c.Context(), record); err != nil {
 		h.logger.Error("could not write the audit record",
 			slog.String("correlation_id", req.CorrelationID), slog.Any("error", err))
-		return nil
+		return nil, err
 	}
-	return record
+	return record, nil
 }
 
 func (h *Handlers) keys(c *fiber.Ctx) error {

@@ -59,4 +59,13 @@ export class ComplianceConfig {
   @IsInt()
   @Min(1)
   HISTORY_WINDOW_MINUTES = 1440;
+
+  // services/audit-trail's base URL. The audit relay drains audit_outbox to
+  // its POST /internal/events; empty means events wait, durably, until set.
+  @IsString()
+  AUDIT_TRAIL_URL = '';
+
+  // Bearer token audit-trail's INGEST_TOKEN expects.
+  @IsString()
+  AUDIT_TRAIL_TOKEN = '';
 }

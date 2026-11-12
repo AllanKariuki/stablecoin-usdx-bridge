@@ -17,6 +17,15 @@ import type {
   KYCData,
   TransactionHistory,
 } from '../types/conversion';
+import {
+  mockConfirmConversion,
+  mockGetCurrencies,
+  mockGetKYCStatus,
+  mockGetQuote,
+  mockGetTransactionHistory,
+  mockGetTransactionStatus,
+  mockGetWallets,
+} from '../lib/utils/conversionMocks';
 
 /**
  * Mocking is off by default, and is now a real flag rather than a constant.
@@ -227,10 +236,17 @@ export class ConversionClient {
       return response.data;
     } catch (error: any) {
       console.log(error);
+      // Status unknown: report the lowest tier with no headroom rather than
+      // inventing limits the user was never granted.
       return {
         status: 'pending',
         level: 1,
         documents: [],
+        limits: {
+          dailyLimit: 0,
+          monthlyLimit: 0,
+          singleTransactionLimit: 0,
+        },
       };
     }
   }
@@ -253,6 +269,30 @@ export class ConversionClient {
     let ws: WebSocket | null = null;
     let pollInterval: NodeJS.Timeout | null = null;
     let isActive = true;
+
+    // Fallback polling mechanism. Declared before the WebSocket setup: the
+    // synchronous catch below calls it, and a `const` arrow is not hoisted.
+    const startPolling = () => {
+      if (pollInterval) return; // Already polling
+      pollInterval = setInterval(async () => {
+        if (!isActive) return;
+        const status = await this.getTransactionStatus(transactionId);
+        if (status) {
+          onStatusUpdate(status);
+          // Stop polling when transaction is complete
+          if (
+            status.status === 'completed' ||
+            status.status === 'failed' ||
+            status.status === 'cancelled'
+          ) {
+            isActive = false;
+            if (pollInterval) {
+              clearInterval(pollInterval);
+            }
+          }
+        }
+      }, 2000); // Poll every 2 seconds
+    };
 
     // Try WebSocket first
     try {
@@ -285,29 +325,6 @@ export class ConversionClient {
       startPolling();
     }
 
-    // Fallback polling mechanism
-    const startPolling = () => {
-      if (pollInterval) return; // Already polling
-      pollInterval = setInterval(async () => {
-        if (!isActive) return;
-        const status = await this.getTransactionStatus(transactionId);
-        if (status) {
-          onStatusUpdate(status);
-          // Stop polling when transaction is complete
-          if (
-            status.status === 'completed' ||
-            status.status === 'failed' ||
-            status.status === 'cancelled'
-          ) {
-            isActive = false;
-            if (pollInterval) {
-              clearInterval(pollInterval);
-            }
-          }
-        }
-      }, 2000); // Poll every 2 seconds
-    };
-
     // Unsubscribe function
     return () => {
       isActive = false;
@@ -328,216 +345,38 @@ export class ConversionClient {
   }
 
   // ============ MOCK IMPLEMENTATIONS ============
+  //
+  // Only reached when VITE_USE_MOCK_API=true. These delegate to the shared
+  // fixtures in lib/utils/conversionMocks (the same ones conversionSlice falls
+  // back to) rather than keeping a second, hand-rolled copy here that had
+  // drifted out of step with the `types/conversion` contract.
 
   private mockGetCurrencies(): Currency[] {
-    return [
-      {
-        code: 'USD',
-        name: 'US Dollar',
-        symbol: '$',
-        flagEmoji: '🇺🇸',
-      },
-      {
-        code: 'EUR',
-        name: 'Euro',
-        symbol: '€',
-        flagEmoji: '🇪🇺',
-      },
-      {
-        code: 'GBP',
-        name: 'British Pound',
-        symbol: '£',
-        flagEmoji: '🇬🇧',
-      },
-      {
-        code: 'JPY',
-        name: 'Japanese Yen',
-        symbol: '¥',
-        flagEmoji: '🇯🇵',
-      },
-      {
-        code: 'AUD',
-        name: 'Australian Dollar',
-        symbol: 'A$',
-        flagEmoji: '🇦🇺',
-      },
-      {
-        code: 'CAD',
-        name: 'Canadian Dollar',
-        symbol: 'C$',
-        flagEmoji: '🇨🇦',
-      },
-      {
-        code: 'CHF',
-        name: 'Swiss Franc',
-        symbol: 'CHF',
-        flagEmoji: '🇨🇭',
-      },
-    ];
+    return mockGetCurrencies();
   }
 
   private mockGetQuote(request: QuoteRequest): QuoteResponse {
-    // Simulate realistic exchange rates
-    const rates: Record<string, number> = {
-      USD: 1,
-      EUR: 0.92,
-      GBP: 0.79,
-      JPY: 149.5,
-      AUD: 1.52,
-      CAD: 1.36,
-      CHF: 0.88,
-    };
-
-    const fromRate = rates[request.fromCurrency] || 1;
-    const toRate = rates[request.toCurrency] || 1;
-    const exchangeRate = toRate / fromRate;
-
-    const toAmount = Number((request.amount * exchangeRate).toFixed(2));
-    const processingFee = request.amount * 0.015; // 1.5%
-    const bankFee = 2.5; // flat $2.50
-
-    return {
-      success: true,
-      data: {
-        quoteId: `QT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        fromCurrency: request.fromCurrency,
-        toCurrency: request.toCurrency,
-        fromAmount: request.amount,
-        toAmount,
-        exchangeRate: Number(exchangeRate.toFixed(4)),
-        fees: {
-          processingFee: 1.5,
-          conversionFee: 0.5,
-          bankFee,
-          total: 2.0,
-        },
-        totalFees: processingFee + toAmount * 0.005 + bankFee,
-        netAmount: toAmount - toAmount * 0.005 - bankFee,
-        expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-        createdAt: new Date().toISOString(),
-      },
-    };
+    return mockGetQuote(request);
   }
 
   private mockConfirmConversion(request: ConversionRequest): ConversionResponse {
-    return {
-      success: true,
-      data: {
-        transactionId: `TX-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        quoteId: request.quoteId,
-        fromCurrency: 'USD',
-        toCurrency: 'EUR',
-        fromAmount: 1000,
-        toAmount: 920,
-        fees: {
-          processingFee: 1.5,
-          conversionFee: 0.5,
-          bankFee: 2.5,
-          total: 2.0,
-        },
-        paymentMethod: {
-          id: 'pm-001',
-          type: 'bank_account',
-          name: 'Main Bank Account',
-          lastFour: '4242',
-          isDefault: true,
-        },
-        status: 'processing',
-        createdAt: new Date().toISOString(),
-      },
-    };
+    return mockConfirmConversion(request);
   }
 
-  private mockGetTransactionStatus(
-    transactionId: string
-  ): TransactionStatusUpdate {
-    const statuses: TransactionStatusUpdate['status'][] = [
-      'pending',
-      'processing',
-      'completed',
-    ];
-    const randomStatus = statuses[Math.floor(Math.random() * statuses.length)];
-
-    return {
-      transactionId,
-      status: randomStatus,
-      updatedAt: new Date().toISOString(),
-      message:
-        randomStatus === 'completed'
-          ? 'Transaction completed successfully'
-          : 'Transaction is processing',
-    };
+  private mockGetTransactionStatus(transactionId: string): TransactionStatusUpdate {
+    return mockGetTransactionStatus(transactionId);
   }
 
-  private mockGetTransactionHistory(
-    limit: number,
-    offset: number
-  ): TransactionHistory[] {
-    const history: TransactionHistory[] = [];
-    for (let i = offset; i < offset + limit; i++) {
-      history.push({
-        transactionId: `TX-${1000 + i}`,
-        fromCurrency: i % 2 === 0 ? 'USD' : 'EUR',
-        toCurrency: i % 2 === 0 ? 'EUR' : 'USD',
-        fromAmount: 500 + i * 10,
-        toAmount: 450 + i * 9,
-        status: 'completed',
-        createdAt: new Date(Date.now() - i * 86400000).toISOString(),
-        completedAt: new Date(Date.now() - i * 86400000 + 3600000).toISOString(),
-        direction: i % 2 === 0 ? 'sent' : 'received',
-      });
-    }
-    return history;
+  private mockGetTransactionHistory(limit: number, offset: number): TransactionHistory[] {
+    return mockGetTransactionHistory(limit, offset);
   }
 
   private mockGetWallets(): Wallet[] {
-    return [
-      {
-        id: 'wallet-usd',
-        currency: 'USD',
-        balance: 5000,
-        available: 4500,
-        lastUpdated: new Date().toISOString(),
-      },
-      {
-        id: 'wallet-eur',
-        currency: 'EUR',
-        balance: 2000,
-        available: 1800,
-        lastUpdated: new Date().toISOString(),
-      },
-      {
-        id: 'wallet-gbp',
-        currency: 'GBP',
-        balance: 1500,
-        available: 1400,
-        lastUpdated: new Date().toISOString(),
-      },
-    ];
+    return mockGetWallets();
   }
 
   private mockGetKYCStatus(): KYCData {
-    return {
-      status: 'approved',
-      level: 2,
-      verificationDate: new Date(Date.now() - 30 * 86400000).toISOString(),
-      nextReviewDate: new Date(Date.now() + 330 * 86400000).toISOString(),
-      documents: [
-        {
-          id: 'doc-1',
-          type: 'passport',
-          status: 'verified',
-          uploadDate: new Date(Date.now() - 30 * 86400000).toISOString(),
-          expiryDate: new Date(Date.now() + 3650 * 86400000).toISOString(),
-        },
-        {
-          id: 'doc-2',
-          type: 'address_proof',
-          status: 'verified',
-          uploadDate: new Date(Date.now() - 25 * 86400000).toISOString(),
-        },
-      ],
-    };
+    return mockGetKYCStatus();
   }
 }
 

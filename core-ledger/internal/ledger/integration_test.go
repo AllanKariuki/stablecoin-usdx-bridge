@@ -60,7 +60,7 @@ func TestIntegrationDepositAndWithdraw(t *testing.T) {
 	repo, svc, ctx := testRepo(t)
 	user := uniqueUser(t)
 
-	w, err := repo.EnsureWallet(ctx, user, "USD", "", "", "Main")
+	w, err := repo.EnsureWallet(ctx, user, "USD", "", "", "Main", "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestIntegrationIdempotency(t *testing.T) {
 	repo, svc, ctx := testRepo(t)
 	user := uniqueUser(t)
 
-	w, err := repo.EnsureWallet(ctx, user, "USD", "", "", "Main")
+	w, err := repo.EnsureWallet(ctx, user, "USD", "", "", "Main", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,11 +120,11 @@ func TestIntegrationIssuanceLifecycle(t *testing.T) {
 	repo, svc, ctx := testRepo(t)
 	user := uniqueUser(t)
 
-	fiat, err := repo.EnsureWallet(ctx, user, "USD", "", "", "USD")
+	fiat, err := repo.EnsureWallet(ctx, user, "USD", "", "", "USD", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	usdxWallet, err := repo.EnsureWallet(ctx, user, USDXCode, "ETHEREUM", "0x00000000000000000000000000000000000000E1", "USD-X on Ethereum")
+	usdxWallet, err := repo.EnsureWallet(ctx, user, USDXCode, "ETHEREUM", "0x00000000000000000000000000000000000000E1", "USD-X on Ethereum", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,11 +175,11 @@ func TestIntegrationBridgeMovesValueThroughSuspense(t *testing.T) {
 	repo, svc, ctx := testRepo(t)
 	user := uniqueUser(t)
 
-	eth, err := repo.EnsureWallet(ctx, user, USDXCode, "ETHEREUM", "0x00000000000000000000000000000000000000E1", "")
+	eth, err := repo.EnsureWallet(ctx, user, USDXCode, "ETHEREUM", "0x00000000000000000000000000000000000000E1", "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sol, err := repo.EnsureWallet(ctx, user, USDXCode, "SOLANA", "So11111111111111111111111111111111111111112", "")
+	sol, err := repo.EnsureWallet(ctx, user, USDXCode, "SOLANA", "So11111111111111111111111111111111111111112", "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,11 +213,11 @@ func TestIntegrationFXConversion(t *testing.T) {
 	repo, svc, ctx := testRepo(t)
 	user := uniqueUser(t)
 
-	kesWallet, err := repo.EnsureWallet(ctx, user, "KES", "", "", "")
+	kesWallet, err := repo.EnsureWallet(ctx, user, "KES", "", "", "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	usdWallet, err := repo.EnsureWallet(ctx, user, "USD", "", "", "")
+	usdWallet, err := repo.EnsureWallet(ctx, user, "USD", "", "", "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,11 +263,11 @@ func TestIntegrationRedemption(t *testing.T) {
 	repo, svc, ctx := testRepo(t)
 	user := uniqueUser(t)
 
-	usdWallet, err := repo.EnsureWallet(ctx, user, "USD", "", "", "")
+	usdWallet, err := repo.EnsureWallet(ctx, user, "USD", "", "", "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	usdxWallet, err := repo.EnsureWallet(ctx, user, USDXCode, "SOLANA", "So11111111111111111111111111111111111111112", "")
+	usdxWallet, err := repo.EnsureWallet(ctx, user, USDXCode, "SOLANA", "So11111111111111111111111111111111111111112", "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestIntegrationReversal(t *testing.T) {
 	repo, svc, ctx := testRepo(t)
 	user := uniqueUser(t)
 
-	w, err := repo.EnsureWallet(ctx, user, "USD", "", "", "")
+	w, err := repo.EnsureWallet(ctx, user, "USD", "", "", "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestIntegrationJournalIsAppendOnly(t *testing.T) {
 	repo, svc, ctx := testRepo(t)
 	user := uniqueUser(t)
 
-	w, err := repo.EnsureWallet(ctx, user, "USD", "", "", "")
+	w, err := repo.EnsureWallet(ctx, user, "USD", "", "", "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestIntegrationClosedPeriodRejectsBackdatedPostings(t *testing.T) {
 	repo, svc, ctx := testRepo(t)
 	user := uniqueUser(t)
 
-	w, err := repo.EnsureWallet(ctx, user, "GBP", "", "", "")
+	w, err := repo.EnsureWallet(ctx, user, "GBP", "", "", "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +413,7 @@ func seedUSDX(t *testing.T, repo *Repository, ctx context.Context, user string, 
 	t.Helper()
 
 	free := NewService(repo, FeeSchedule{})
-	fiat, err := repo.EnsureWallet(ctx, user, PegCurrency, "", "", "")
+	fiat, err := repo.EnsureWallet(ctx, user, PegCurrency, "", "", "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}

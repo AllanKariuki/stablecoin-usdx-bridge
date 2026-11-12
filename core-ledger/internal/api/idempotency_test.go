@@ -104,7 +104,7 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) wallet(t *testing.T, currency, chain, address string) *ledger.Wallet {
 	t.Helper()
-	w, err := h.repo.EnsureWallet(h.ctx, h.user, currency, chain, address, currency)
+	w, err := h.repo.EnsureWallet(h.ctx, h.user, currency, chain, address, currency, "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet %s/%s: %v", currency, chain, err)
 	}
@@ -113,7 +113,7 @@ func (h *harness) wallet(t *testing.T, currency, chain, address string) *ledger.
 
 func (h *harness) payeeWallet(t *testing.T) *ledger.Wallet {
 	t.Helper()
-	w, err := h.repo.EnsureWallet(h.ctx, h.user+"-payee", "USD", "", "", "Payee")
+	w, err := h.repo.EnsureWallet(h.ctx, h.user+"-payee", "USD", "", "", "Payee", "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet payee: %v", err)
 	}

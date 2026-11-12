@@ -1,15 +1,6 @@
 import React, { useState } from 'react';
 import { Plus } from 'lucide-react';
-
-interface Recipient {
-  id: string;
-  name: string;
-  type: 'individual' | 'business' | 'account' | 'crypto-wallet';
-  account: string;
-  avatar?: string;
-  walletType?: 'fiat' | 'crypto' | 'stablecoin';
-  currency?: string;
-}
+import type { Recipient } from '../../types/payments/payments';
 
 interface RecipientSelectionProps {
   selectedRecipient: string;

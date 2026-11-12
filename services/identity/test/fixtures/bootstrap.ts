@@ -42,7 +42,7 @@ export async function bootstrapIdentityApp(
 async function resetSchema(): Promise<void> {
   const pool = new Pool({ connectionString: TEST_DATABASE_URL });
   try {
-    await pool.query('DROP TABLE IF EXISTS memberships, orgs, parties, schema_migrations CASCADE');
+    await pool.query('DROP TABLE IF EXISTS memberships, orgs, parties, audit_outbox, schema_migrations CASCADE');
   } finally {
     await pool.end();
   }

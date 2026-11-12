@@ -1,0 +1,246 @@
+# P7's two services: audit-trail and reporting.
+#
+# Every producer's manifest already points at
+# audit-trail.default.svc.cluster.local:8085 (core-ledger-worker, and
+# workflow / kyc / compliance in p5-services.yaml); until this file existed
+# that name resolved to nothing and every relay retried into the void. Their
+# outboxes held the events, so nothing was lost — but nothing was recorded
+# either.
+#
+# Needs, created out of band:
+#   - Secret `audit-trail-ingest` (key: token) — the bearer token producers
+#     send as AUDIT_TRAIL_TOKEN and audit-trail checks as INGEST_TOKEN. The
+#     same Secret the producers already read.
+#   - Secret `audit-trail-secrets` (key: database-url) — the audit database's
+#     credentials, kept out of this file the way the signer's are.
+#   - Secret `reporting-secrets` — SUPERSET_ADMIN_USERNAME /
+#     SUPERSET_ADMIN_PASSWORD. Empty is allowed: guest tokens are then refused
+#     and every other report still runs.
+
+
+# ---------------------------------------------------------------------------
+# audit-trail
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-trail
+  labels:
+    app: audit-trail
+spec:
+  # One replica, and Recreate rather than a rolling update, so there is never
+  # a moment with two. Recording is safe on any number (the chain append is
+  # SERIALIZABLE), but the anchoring loop is not: it has no leader election,
+  # and two replicas reading the unanchored tail a moment apart can close
+  # overlapping windows — (1..10) and (1..12) both pass UNIQUE (from_seq,
+  # to_seq), and the second root then covers events the first already
+  # claimed. The gap while a pod is replaced costs nothing: every producer
+  # writes to its own audit_outbox first and the relays retry without an
+  # attempt budget. Scale out only after anchoring takes an advisory lock.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: audit-trail
+  template:
+    metadata:
+      labels:
+        app: audit-trail
+    spec:
+      # Calls no Kubernetes API; see signer-deployment.yaml.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: audit-trail
+          # TODO: point at the real registry once CI publishes an image.
+          image: <Image>
+          ports:
+            - containerPort: 8085
+          env:
+            - name: PORT
+              value: "8085"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: audit-trail-secrets, key: database-url }
+            # Not `optional`. An empty INGEST_TOKEN leaves recording open to
+            # any pod that can reach the port — the NetworkPolicy below
+            # narrows who that is, but the readers it admits (bff, reporting)
+            # could then write evidence as any actor, permanently.
+            - name: INGEST_TOKEN
+              valueFrom:
+                secretKeyRef: { name: audit-trail-ingest, key: token }
+            - name: ANCHOR_INTERVAL
+              value: "1h"
+            # "log": roots go to this service's structured log and from there
+            # to Loki. Deliberately weak and said so in the README; the
+            # on-chain publisher is not built.
+            - name: ANCHOR_PUBLISHER
+              value: "log"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { memory: "128Mi", cpu: "100m" }
+            limits: { memory: "256Mi", cpu: "500m" }
+          # /healthz is dependency-free. /readyz checks the database. Note the
+          # chain is verified at boot, before the listener starts — a large
+          # trail makes that slower, hence the longer initial delay.
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8085 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8085 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: audit-trail
+  labels: { app: audit-trail }
+spec:
+  selector: { app: audit-trail }
+  ports:
+    - { name: http, protocol: TCP, port: 8085, targetPort: 8085 }
+---
+# Four producers and two readers, nothing else — not the ingress controller:
+# none of these routes is on the gateway.
+#
+# A NetworkPolicy cannot tell POST /internal/events from GET /audit/*, so the
+# readers can reach the ingest route at the network layer too. INGEST_TOKEN is
+# what stops them using it; this policy is what stops every *other* pod in
+# the namespace from trying.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: audit-trail-ingress
+spec:
+  podSelector: { matchLabels: { app: audit-trail } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        # Producers: each one's audit_outbox relay.
+        - podSelector: { matchLabels: { app: core-ledger-worker } }
+        - podSelector: { matchLabels: { app: workflow } }
+        - podSelector: { matchLabels: { app: kyc } }
+        - podSelector: { matchLabels: { app: compliance } }
+        # Readers: bff's audit routes, reporting's audit extract.
+        - podSelector: { matchLabels: { app: bff } }
+        - podSelector: { matchLabels: { app: reporting } }
+        - namespaceSelector: { matchLabels: { name: observability } }
+      ports:
+        - { protocol: TCP, port: 8085 }
+  # Egress is its database and DNS, as for the signer: an evidence store has
+  # no reason to reach anything else. When on-chain anchoring is built this
+  # grows one rule — to services/signer, not to an RPC endpoint.
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app: postgres } }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: UDP, port: 53 }
+
+---
+# ---------------------------------------------------------------------------
+# reporting
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reporting
+  labels:
+    app: reporting
+spec:
+  # Safe to scale: a run is one request that reads the owning services and
+  # writes one row. There is no scheduler in this process to run twice.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: reporting
+  template:
+    metadata:
+      labels:
+        app: reporting
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: reporting
+          # TODO: point at the real registry once CI publishes an image.
+          image: <Image>
+          ports:
+            - containerPort: 3008
+          envFrom:
+            - secretRef:
+                name: reporting-secrets   # SUPERSET_ADMIN_USERNAME / SUPERSET_ADMIN_PASSWORD
+          env:
+            - name: PORT
+              value: "3008"
+            - name: DATABASE_URL
+              value: "postgres://reporting:reporting@postgres.default.svc.cluster.local:5432/reporting?sslmode=disable"
+            # Every figure is read from the service that owns it at run time
+            # and frozen into the run. This service owns no numbers.
+            - name: CORE_LEDGER_URL
+              value: "http://core-ledger.default.svc.cluster.local:8081"
+            - name: AUDIT_TRAIL_URL
+              value: "http://audit-trail.default.svc.cluster.local:8085"
+            # Guest tokens are minted here with the admin credential above,
+            # never in the browser. Like Postgres and NATS, Superset is a
+            # backing service these manifests point at rather than deploy.
+            - name: SUPERSET_URL
+              value: "http://superset.default.svc.cluster.local:8088"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { memory: "160Mi", cpu: "100m" }
+            limits: { memory: "320Mi", cpu: "500m" }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3008 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3008 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reporting
+  labels: { app: reporting }
+spec:
+  selector: { app: reporting }
+  ports:
+    - { name: http, protocol: TCP, port: 3008, targetPort: 3008 }
+---
+# bff is the only caller: the permissions guard reads X-Permissions, which is
+# trustworthy only on a request that came through auth-proxy and the bff.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: reporting-ingress
+spec:
+  podSelector: { matchLabels: { app: reporting } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: bff } }
+        - namespaceSelector: { matchLabels: { name: observability } }
+      ports:
+        - { protocol: TCP, port: 3008 }

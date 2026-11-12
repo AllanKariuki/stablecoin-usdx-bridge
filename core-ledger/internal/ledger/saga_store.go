@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/outbox"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -298,7 +299,7 @@ func (r *Repository) ResolveDeadLetter(ctx context.Context, correlationID, by, r
 			return postErr("NO_OPEN_DEAD_LETTER", "no open dead letter for saga %s", correlationID)
 		}
 
-		return tx.Model(&BridgeTransfer{}).
+		requeue := tx.Model(&BridgeTransfer{}).
 			Where("correlation_id = ?", correlationID).
 			Where("status IN ?", []TransferStatus{StatusPending, StatusBurnConfirmed, StatusMintSubmitted}).
 			Updates(map[string]any{
@@ -306,7 +307,22 @@ func (r *Repository) ResolveDeadLetter(ctx context.Context, correlationID, by, r
 				"next_attempt_at":  time.Now().UTC(),
 				"lease_owner":      "",
 				"lease_expires_at": nil,
-			}).Error
+			})
+		if requeue.Error != nil {
+			return requeue.Error
+		}
+
+		// Resolving is also "try again" — it hands money movement back to the
+		// workers — so it is evidence, and whether it re-armed the saga is
+		// part of what happened.
+		return enqueueAudit(ctx, tx, audit.Event{
+			Actor:       by,
+			Action:      AuditDeadLetterResolved,
+			SubjectType: auditSubjectSaga,
+			SubjectID:   correlationID,
+			AfterState:  map[string]any{"resolved": true, "saga_requeued": requeue.RowsAffected > 0},
+			Metadata:    map[string]any{"resolution": resolution},
+		})
 	})
 }
 

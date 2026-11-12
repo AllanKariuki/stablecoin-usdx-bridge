@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gagliardetto/solana-go"
 	"github.com/google/uuid"
@@ -19,7 +21,10 @@ import (
 // on-chain currencies), creating it and its LIABILITY account on first use.
 // It is idempotent: two concurrent first-time requests both end up with the
 // same wallet rather than two.
-func (r *Repository) EnsureWallet(ctx context.Context, userID, currency, chain, address, label string) (*Wallet, error) {
+//
+// by is the actor, recorded in the audit trail with the creation — only with
+// a creation; returning an existing wallet changes nothing.
+func (r *Repository) EnsureWallet(ctx context.Context, userID, currency, chain, address, label, by string) (*Wallet, error) {
 	if userID == "" {
 		return nil, postErr("MISSING_USER", "a wallet needs an owner")
 	}
@@ -68,14 +73,42 @@ func (r *Repository) EnsureWallet(ctx context.Context, userID, currency, chain, 
 		// DoNothing rather than an error: if another request created this
 		// user's wallet for this currency a millisecond ago, the unique index
 		// on (user_id, currency, chain) catches it and we return theirs.
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(w).Error
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(w)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			// Lost the race. Roll back: the account above belongs to a wallet
+			// id that will never exist, and committing it would leave the
+			// orphan in the trial balance this function's header promises
+			// never to leave — and an audit event for a wallet nobody made.
+			return errLostWalletRace
+		}
+		return enqueueAudit(ctx, tx, audit.Event{
+			Actor:       by,
+			Action:      AuditWalletCreated,
+			SubjectType: auditSubjectWallet,
+			SubjectID:   w.ID,
+			AfterState: map[string]any{
+				"user_id":    w.UserID,
+				"currency":   w.Currency,
+				"chain":      w.Chain,
+				"address":    w.Address,
+				"status":     string(w.Status),
+				"account_id": w.AccountID,
+			},
+			Metadata: map[string]any{"label": w.Label},
+		})
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errLostWalletRace) {
 		return nil, err
 	}
 
 	return r.WalletFor(ctx, userID, currency, chain)
 }
+
+// errLostWalletRace rolls back a wallet creation another request beat.
+var errLostWalletRace = errors.New("wallet created concurrently")
 
 // validateAddress rejects an on-chain wallet the saga could never settle.
 //
@@ -130,7 +163,11 @@ func (r *Repository) WalletsOf(ctx context.Context, userID string) ([]Wallet, er
 // through to its account so the posting engine enforces it. Doing it in one
 // database transaction is what stops a wallet from reading FROZEN to the
 // customer while its account still accepts postings.
-func (r *Repository) SetWalletStatus(ctx context.Context, walletID string, status WalletStatus) error {
+//
+// by is the actor, recorded in the audit trail in the same transaction: a
+// freeze is a compliance decision, and one nobody can attribute is not one
+// anybody can defend.
+func (r *Repository) SetWalletStatus(ctx context.Context, walletID string, status WalletStatus, by string) error {
 	w, err := r.Wallet(ctx, walletID)
 	if err != nil {
 		return err
@@ -164,6 +201,21 @@ func (r *Repository) SetWalletStatus(ctx context.Context, walletID string, statu
 		if err := tx.Model(&Wallet{}).Where("id = ?", walletID).Update("status", status).Error; err != nil {
 			return err
 		}
-		return tx.Model(&Account{}).Where("id = ?", w.AccountID).Update("status", acctStatus).Error
+		if err := tx.Model(&Account{}).Where("id = ?", w.AccountID).Update("status", acctStatus).Error; err != nil {
+			return err
+		}
+		return enqueueAudit(ctx, tx, audit.Event{
+			Actor:       by,
+			Action:      AuditWalletStatusChanged,
+			SubjectType: auditSubjectWallet,
+			SubjectID:   walletID,
+			// w was read before the transaction; a concurrent change between
+			// the two would make this "before" stale, which is a reason to
+			// read it again rather than a reason to leave it out — an
+			// auditor's first question is what it was.
+			BeforeState: map[string]any{"status": string(w.Status)},
+			AfterState:  map[string]any{"status": string(status)},
+			Metadata:    map[string]any{"user_id": w.UserID, "currency": w.Currency, "account_id": w.AccountID},
+		})
 	})
 }

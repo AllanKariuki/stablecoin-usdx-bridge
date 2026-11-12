@@ -165,11 +165,11 @@ func newFixture(t *testing.T) *fixture {
 	saga := bridge.NewSaga(repo, svc, router, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	user := "saga-" + t.Name() + "-" + time.Now().UTC().Format("20060102150405.000000000")
-	usd, err := repo.EnsureWallet(ctx, user, "USD", "", "", "Main")
+	usd, err := repo.EnsureWallet(ctx, user, "USD", "", "", "Main", "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet USD: %v", err)
 	}
-	usdx, err := repo.EnsureWallet(ctx, user, "USDX", "ETHEREUM", "0x00000000000000000000000000000000000000E1", "USD-X")
+	usdx, err := repo.EnsureWallet(ctx, user, "USDX", "ETHEREUM", "0x00000000000000000000000000000000000000E1", "USD-X", "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet USDX: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestSagaBridgeUsesEachChainsOwnAddress(t *testing.T) {
 		t.Fatalf("seeding mint failed: %+v", res)
 	}
 
-	solana, err := f.repo.EnsureWallet(f.ctx, f.user, "USDX", "SOLANA", "So11111111111111111111111111111111111111112", "USD-X Solana")
+	solana, err := f.repo.EnsureWallet(f.ctx, f.user, "USDX", "SOLANA", "So11111111111111111111111111111111111111112", "USD-X Solana", "test")
 	if err != nil {
 		t.Fatalf("EnsureWallet SOLANA: %v", err)
 	}

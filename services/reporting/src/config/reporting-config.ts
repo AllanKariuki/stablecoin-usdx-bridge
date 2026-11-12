@@ -43,4 +43,9 @@ export class ReportingConfig {
   @IsOptional()
   @IsString()
   SUPERSET_ADMIN_PASSWORD = '';
+
+  // Bearer token audit-trail's INGEST_TOKEN expects. AUDIT_TRAIL_URL (above)
+  // doubles as where this service's own audit relay delivers.
+  @IsString()
+  AUDIT_TRAIL_TOKEN = '';
 }

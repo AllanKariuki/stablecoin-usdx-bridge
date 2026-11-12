@@ -3,13 +3,16 @@ package ledger
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"math/big"
 	"time"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/outbox"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -36,6 +39,9 @@ type ChainSupplySnapshot struct {
 	TotalSupply *big.Int
 	Source      string
 	CapturedAt  time.Time
+	// RecordedBy is the caller (services/indexer's X-User-Id), for the audit
+	// trail. Source says where the number came from; this says who wrote it.
+	RecordedBy string
 }
 
 // CustodianSnapshot is a statement balance as of a point in time. It is
@@ -49,6 +55,8 @@ type CustodianSnapshot struct {
 	Balance      *big.Int
 	Source       string
 	StatementRef string
+	// RecordedBy is the caller (services/rms's X-User-Id), for the audit trail.
+	RecordedBy string
 }
 
 var ErrUnknownChain = errors.New("unknown chain")
@@ -65,35 +73,86 @@ func (r *Repository) SaveChainSupplySnapshot(ctx context.Context, s ChainSupplyS
 		s.CapturedAt = time.Now().UTC()
 	}
 
-	switch s.Chain {
-	case "ETHEREUM":
-		row := EthSupplySnapshot{
-			BlockNumber: s.Height,
-			BlockHash:   s.BlockHash,
-			TotalSupply: s.TotalSupply,
-			Source:      s.Source,
-			CapturedAt:  s.CapturedAt,
-		}
-		return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "block_number"}},
-			DoUpdates: clause.AssignmentColumns([]string{"total_supply", "block_hash", "source", "captured_at"}),
-		}).Create(&row).Error
+	// Each write and its audit event commit together. A reconciliation
+	// input is exactly what someone faking the peg would change, so an
+	// overwrite records the value it replaced: a reorg correction and a
+	// tampered snapshot look the same in the table and different here.
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var before map[string]any
+		switch s.Chain {
+		case "ETHEREUM":
+			var prior EthSupplySnapshot
+			found := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Limit(1).Find(&prior, "block_number = ?", s.Height)
+			if found.Error != nil {
+				return found.Error
+			}
+			if found.RowsAffected > 0 {
+				before = supplyState(prior.TotalSupply, prior.BlockHash, prior.Source)
+			}
+			row := EthSupplySnapshot{
+				BlockNumber: s.Height,
+				BlockHash:   s.BlockHash,
+				TotalSupply: s.TotalSupply,
+				Source:      s.Source,
+				CapturedAt:  s.CapturedAt,
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "block_number"}},
+				DoUpdates: clause.AssignmentColumns([]string{"total_supply", "block_hash", "source", "captured_at"}),
+			}).Create(&row).Error; err != nil {
+				return err
+			}
 
-	case "SOLANA":
-		row := SolSupplySnapshot{
-			Slot:        s.Height,
-			TotalSupply: s.TotalSupply,
-			Source:      s.Source,
-			CapturedAt:  s.CapturedAt,
-		}
-		return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "slot"}},
-			DoUpdates: clause.AssignmentColumns([]string{"total_supply", "source", "captured_at"}),
-		}).Create(&row).Error
+		case "SOLANA":
+			var prior SolSupplySnapshot
+			found := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Limit(1).Find(&prior, "slot = ?", s.Height)
+			if found.Error != nil {
+				return found.Error
+			}
+			if found.RowsAffected > 0 {
+				before = supplyState(prior.TotalSupply, "", prior.Source)
+			}
+			row := SolSupplySnapshot{
+				Slot:        s.Height,
+				TotalSupply: s.TotalSupply,
+				Source:      s.Source,
+				CapturedAt:  s.CapturedAt,
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "slot"}},
+				DoUpdates: clause.AssignmentColumns([]string{"total_supply", "source", "captured_at"}),
+			}).Create(&row).Error; err != nil {
+				return err
+			}
 
-	default:
-		return postErr("UNKNOWN_CHAIN", "chain %q is not one this ledger tracks supply for", s.Chain)
+		default:
+			return postErr("UNKNOWN_CHAIN", "chain %q is not one this ledger tracks supply for", s.Chain)
+		}
+
+		return enqueueAudit(ctx, tx, audit.Event{
+			Actor:       s.RecordedBy,
+			Action:      AuditChainSupplyRecorded,
+			SubjectType: auditSubjectChainSupply,
+			SubjectID:   s.Chain + ":" + strconv.FormatUint(s.Height, 10),
+			BeforeState: before,
+			AfterState:  supplyState(s.TotalSupply, s.BlockHash, s.Source),
+			Metadata:    map[string]any{"chain": s.Chain, "height": s.Height, "captured_at": s.CapturedAt.UTC().Format(time.RFC3339Nano)},
+		})
+	})
+}
+
+// supplyState is a snapshot's audited state. Base units as a string, for the
+// reason auditTransactionPosted gives: audit-trail hashes it, and a float64
+// through JSONB is not the same bytes on the way back.
+func supplyState(supply *big.Int, blockHash, source string) map[string]any {
+	out := map[string]any{"source": source}
+	if supply != nil {
+		out["total_supply"] = supply.String()
 	}
+	if blockHash != "" {
+		out["block_hash"] = blockHash
+	}
+	return out
 }
 
 // LatestChainSupply reads back the highest-block snapshot for a chain. The
@@ -150,10 +209,44 @@ func (r *Repository) SaveCustodianSnapshot(ctx context.Context, s CustodianSnaps
 		Source:       s.Source,
 		StatementRef: s.StatementRef,
 	}
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "custodian_id"}, {Name: "currency"}, {Name: "as_of"}},
-		DoUpdates: clause.AssignmentColumns([]string{"balance", "source", "statement_ref"}),
-	}).Create(&row).Error
+	// With its audit event, and with the value an overwrite replaced — Leg C
+	// compares against this row, so a restated balance is the change an
+	// auditor most needs to see.
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var prior TrustBankSnapshot
+		found := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Limit(1).
+			Find(&prior, "custodian_id = ? AND currency = ? AND as_of = ?", row.CustodianID, row.Currency, row.AsOf)
+		if found.Error != nil {
+			return found.Error
+		}
+		var before map[string]any
+		if found.RowsAffected > 0 {
+			before = custodianState(prior.Balance, prior.Source, prior.StatementRef)
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "custodian_id"}, {Name: "currency"}, {Name: "as_of"}},
+			DoUpdates: clause.AssignmentColumns([]string{"balance", "source", "statement_ref"}),
+		}).Create(&row).Error; err != nil {
+			return err
+		}
+		return enqueueAudit(ctx, tx, audit.Event{
+			Actor:       s.RecordedBy,
+			Action:      AuditCustodianRecorded,
+			SubjectType: auditSubjectCustodian,
+			SubjectID:   row.CustodianID + ":" + row.Currency + ":" + row.AsOf.Format(time.RFC3339Nano),
+			BeforeState: before,
+			AfterState:  custodianState(row.Balance, row.Source, row.StatementRef),
+			Metadata:    map[string]any{"custodian_id": row.CustodianID, "currency": row.Currency, "as_of": row.AsOf.Format(time.RFC3339Nano)},
+		})
+	})
+}
+
+func custodianState(balance *big.Int, source, statementRef string) map[string]any {
+	out := map[string]any{"source": source, "statement_ref": statementRef}
+	if balance != nil {
+		out["balance"] = balance.String()
+	}
+	return out
 }
 
 // CustodianBalance sums the latest snapshot of every custodian holding the

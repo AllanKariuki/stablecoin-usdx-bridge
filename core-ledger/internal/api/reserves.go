@@ -65,6 +65,7 @@ func (h *Handlers) postChainSupplySnapshot(c *fiber.Ctx) error {
 		TotalSupply: supply,
 		Source:      defaultString(req.Source, actor(c)),
 		CapturedAt:  capturedAt,
+		RecordedBy:  actor(c),
 	})
 	if err != nil {
 		return fail(c, err)
@@ -115,6 +116,7 @@ func (h *Handlers) postCustodianSnapshot(c *fiber.Ctx) error {
 		AsOf:         asOf,
 		Source:       defaultString(req.Source, actor(c)),
 		StatementRef: req.StatementRef,
+		RecordedBy:   actor(c),
 	})
 	if err != nil {
 		return fail(c, err)

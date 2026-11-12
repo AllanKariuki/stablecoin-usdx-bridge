@@ -15,7 +15,7 @@ interface BillPayment {
   status: 'completed' | 'pending' | 'failed' | 'processing';
   paymentMethod: 'card' | 'bank_transfer' | 'mobile_money' | 'wallet';
   reference: string;
-  paidAt: string;
+  paidAt: string | null; // null until the payment settles
   createdAt: string;
 }
 

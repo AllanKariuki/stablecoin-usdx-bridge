@@ -43,6 +43,15 @@ spec:
                 secretKeyRef:
                   name: core-ledger-secrets
                   key: database_uri
+            # The worker drains audit_outbox; the API only writes it, inside
+            # each change's own transaction. Token = audit-trail's INGEST_TOKEN.
+            - name: AUDIT_TRAIL_URL
+              value: "http://audit-trail.default.svc.cluster.local:8085"
+            - name: AUDIT_TRAIL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audit-trail-ingest
+                  key: token
           resources:
             requests:
               memory: "64Mi"

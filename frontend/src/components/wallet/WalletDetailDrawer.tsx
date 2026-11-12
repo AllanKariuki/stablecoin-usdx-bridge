@@ -122,7 +122,7 @@ const WalletDetailDrawer: React.FC<WalletDetailDrawerProps> = ({ wallet, onClose
   };
 
   const getTypeIcon = (type: string) => {
-    const icons: Record<string, JSX.Element> = {
+    const icons: Record<string, React.JSX.Element> = {
       deposit: <Download className="w-4 h-4 text-green-600" />,
       withdrawal: <Upload className="w-4 h-4 text-blue-600" />,
       sweep: <TrendingUp className="w-4 h-4 text-purple-600" />,
