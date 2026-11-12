@@ -450,9 +450,22 @@ services:
   # MinIO holds KYC documents. They never pass through services/kyc — the
   # browser PUTs straight here on a presigned URL, which keeps passport scans
   # out of that process's memory, its logs and its request traces.
+  #
+  # Not behind the `app` profile: kyc's storage integration spec runs against
+  # it, and `make test-node` should not have to start nine app containers to
+  # get one bucket.
+  #
+  # pgsty/minio, not minio/minio. Upstream stopped distributing community
+  # images: every minio/minio tag (pinned or :latest) is now "pull access
+  # denied" on Docker Hub, and quay.io/minio/minio answers 401. pgsty/minio is
+  # Pigsty's rebuild of the AGPL source with the same entrypoint, `minio
+  # server` command line and bundled `mc` (so the healthcheck below is
+  # unchanged), still releasing. bitnamilegacy/minio also pulls, but Bitnami
+  # froze it in 2025 and it takes no security fixes. Pinned by tag *and*
+  # digest: a third-party publisher re-pushing a tag should not change what
+  # runs here silently.
   minio:
-    profiles: ["app"]
-    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
     container_name: usdx-minio
     command: ["server", "/data", "--console-address", ":9001"]
     ports:
