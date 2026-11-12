@@ -38,6 +38,23 @@ type memLog struct {
 	// appendErr, when set, is returned for the next ALLOWED append — the
 	// race where another replica bound the correlation id first.
 	appendErr error
+	// maxResigns is the re-sign cap; zero means audit.DefaultMaxResigns, so
+	// tests that are not about the cap need not think about it.
+	maxResigns int
+}
+
+func (m *memLog) ResignAllowed(_ context.Context, chain, method, correlationID string) (bool, error) {
+	limit := m.maxResigns
+	if limit == 0 {
+		limit = audit.DefaultMaxResigns
+	}
+	signed := 0
+	for _, r := range m.records {
+		if r.Chain == chain && r.Method == method && r.CorrelationID == correlationID && r.Outcome == audit.OutcomeAllowed {
+			signed++
+		}
+	}
+	return signed <= limit, nil
 }
 
 func (m *memLog) Existing(_ context.Context, chain, method, correlationID, digest string) (*audit.Record, error) {

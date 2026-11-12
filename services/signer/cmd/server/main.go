@@ -97,6 +97,13 @@ func main() {
 	}
 	defer auditLog.Close()
 
+	resignCap, err := cfg.ResignCap()
+	if err != nil {
+		logger.Error("invalid re-sign cap", slog.Any("error", err))
+		os.Exit(1)
+	}
+	auditLog.LimitResigns(resignCap)
+
 	// The chain is verified at boot. If the log has been tampered with, that
 	// is something to know before signing anything else into it — a break
 	// discovered later cannot be dated, because every row after the break is

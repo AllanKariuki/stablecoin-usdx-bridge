@@ -44,7 +44,8 @@ on-chain id) without its nonce, gas or blockhash.
 | A request under an already-signed correlation id with… | |
 |---|---|
 | the **same bytes** | returns the *original* signature (`replayed: true`) |
-| **rebuilt bytes, same payload** | is signed again, through policy as usual |
+| **rebuilt bytes, same payload** | is signed again, through policy as usual — up to `MAX_RESIGNS_PER_CORRELATION` (default 5) times |
+| rebuilt bytes **past that cap** | is refused — `409 RESIGN_LIMIT_REACHED`, recorded |
 | a **different payload** | is refused — `409 CORRELATION_REUSED`, recorded |
 
 Same bytes replay because a saga retry after a timeout must not produce a
@@ -59,6 +60,16 @@ re-sign counts once towards the daily limit, not once per signature.
 One payload per correlation id cannot be a unique index (re-signs share the
 key), so it is checked inside the audit log's SERIALIZABLE append as well as
 before signing: two replicas that both pass the first check cannot both bind.
+
+"At most one lands" is not "the rest are free": on Ethereum each rebuilt
+transaction has its own nonce, and every one mined behind the winner reverts
+on the replay guard at the relayer's expense. So re-signs are capped per
+correlation id, counted in the same SERIALIZABLE append (and pre-checked, so a
+capped request never reaches the key backend). A byte-identical replay is not
+a re-sign and is still answered past the cap. core-ledger treats
+`RESIGN_LIMIT_REACHED`, `CORRELATION_REUSED` and `403 POLICY_DENIED` alike:
+never retried, never unwound — the saga is dead-lettered with its money where
+it is, because an earlier signature for the id may still land.
 
 A *denial* does not consume the slot: a request refused for being over a
 ceiling has to be retryable once the ceiling is raised. Rows from before

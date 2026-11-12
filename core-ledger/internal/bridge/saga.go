@@ -228,6 +228,12 @@ func (s *Saga) runIssuanceOrBridge(ctx context.Context, t *ledger.BridgeTransfer
 			_ = s.repo.DeadLetter(ctx, t, StageMintChain,
 				"minted on chain under this correlation id before the tx hash was recorded; backfill dest_tx_hash from the chain")
 
+		case Classify(err) == ClassRefused:
+			// Not compensated, even on a BRIDGE whose source burn is final:
+			// re-minting on the source chain while an earlier signature for
+			// this mint may still confirm would put the value on both chains.
+			return s.park(ctx, t, StageMintChain, err)
+
 		case Classify(err) == ClassTerminal:
 			s.recoverTerminal(ctx, t, StageMintChain, err)
 			return settled(StageMintChain, err)
@@ -304,6 +310,12 @@ func (s *Saga) burnSourceLeg(ctx context.Context, t *ledger.BridgeTransfer, sour
 			_ = s.repo.DeadLetter(ctx, t, StageBurnChain,
 				"burned on chain under this correlation id before the tx hash was recorded; backfill source_tx_hash from the chain")
 
+		case Classify(err) == ClassRefused:
+			// The reservation stays posted: releasing it while an earlier
+			// signed burn may still land would let the user spend value the
+			// chain has destroyed.
+			return s.park(ctx, t, StageBurnChain, err)
+
 		case Classify(err) == ClassTerminal:
 			s.recoverTerminal(ctx, t, StageBurnChain, err)
 			return settled(StageBurnChain, err)
@@ -360,6 +372,12 @@ func (s *Saga) runRedeem(ctx context.Context, t *ledger.BridgeTransfer) Result {
 					slog.String("correlation_id", t.CorrelationID), slog.Any("error", err))
 				_ = s.repo.DeadLetter(ctx, t, StageBurnChain,
 					"redemption burned on chain before the tx hash was recorded; backfill source_tx_hash from the chain")
+
+			case Classify(err) == ClassRefused:
+				// Same reasoning as a bridge's burn: the USD-X stays in
+				// suspense rather than going back to a wallet whose tokens an
+				// earlier signed burn may yet destroy.
+				return s.park(ctx, t, StageBurnChain, err)
 
 			case Classify(err) == ClassTerminal:
 				s.recoverTerminal(ctx, t, StageBurnChain, err)
@@ -562,6 +580,37 @@ func (s *Saga) Abandon(ctx context.Context, correlationID, stage string, cause e
 		slog.Int("attempts", t.Attempts),
 		slog.Any("error", cause))
 	return s.repo.DeadLetter(ctx, t, stage, cause.Error())
+}
+
+// park stops a saga for an operator after the signer refused it, moving no
+// money and leaving its status exactly as it was.
+//
+// A refusal is not retried — it would refuse again — and not unwound,
+// because nothing here can prove that an earlier attempt's signature for
+// this correlation id is not about to land (see ClassRefused). An open dead
+// letter is what keeps ClaimTransfer from picking the saga up again, and
+// resolving it is the operator's "try again": once a limit is raised, or the
+// chain has been checked and a hash backfilled, the saga resumes from the
+// same status with a fresh budget.
+func (s *Saga) park(ctx context.Context, t *ledger.BridgeTransfer, stage string, cause error) Result {
+	s.logger.Error("the signer refused this saga; parked for an operator with no money moved",
+		slog.String("correlation_id", t.CorrelationID),
+		slog.String("kind", string(t.Kind)),
+		slog.String("status", string(t.Status)),
+		slog.String("stage", stage),
+		slog.Any("error", cause))
+
+	if err := s.repo.DeadLetter(ctx, t, stage, cause.Error()); err != nil {
+		// Unparked, a refused saga would be dropped by the worker as settled
+		// while nothing settled it. Retrying is safe — the signer refuses the
+		// same way next time — and gives the dead letter another chance.
+		return retryable(stage, fmt.Errorf("parking a refused saga: %w (refusal: %v)", err, cause))
+	}
+	if err := s.repo.ReleaseTransfer(ctx, t.CorrelationID, 0, cause.Error()); err != nil {
+		s.logger.Error("could not release a parked saga's lease",
+			slog.String("correlation_id", t.CorrelationID), slog.Any("error", err))
+	}
+	return settled(stage, cause)
 }
 
 func isPostingRejection(err error) bool {

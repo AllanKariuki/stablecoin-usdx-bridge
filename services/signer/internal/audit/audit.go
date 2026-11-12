@@ -80,8 +80,32 @@ func scan(row scanner) (Record, error) {
 	return r, err
 }
 
+// DefaultMaxResigns is how many times one movement may be re-signed as
+// rebuilt bytes after its first signature — so at most six signatures exist
+// for any (chain, method, correlation_id).
+//
+// Five, because a saga only re-signs when an attempt lost its tx hash: the
+// broadcast errored, or the worker died before recording it. That is rare
+// enough that five covers an ordinary run of RPC trouble, and small enough
+// that the worst case — every other signature mined behind the one that
+// landed, each reverting on the replay guard — is five reverts of relayer
+// gas, not one per attempt in a twelve-attempt budget.
+const DefaultMaxResigns = 5
+
 type Log struct {
 	db *sql.DB
+
+	// maxResigns caps re-signs per correlation; see DefaultMaxResigns.
+	maxResigns int
+}
+
+// LimitResigns sets the re-sign cap. Called once at boot, before serving;
+// zero allows no re-signs at all (a byte-identical replay is still returned).
+func (l *Log) LimitResigns(n int) {
+	if n < 0 {
+		n = 0
+	}
+	l.maxResigns = n
 }
 
 func Open(dsn string) (*Log, error) {
@@ -100,7 +124,7 @@ func Open(dsn string) (*Log, error) {
 	if err := goose.Up(db, "migrations"); err != nil {
 		return nil, fmt.Errorf("running signer migrations: %w", err)
 	}
-	return &Log{db: db}, nil
+	return &Log{db: db, maxResigns: DefaultMaxResigns}, nil
 }
 
 func (l *Log) Ping(ctx context.Context) error { return l.db.PingContext(ctx) }
@@ -115,6 +139,28 @@ var ErrAlreadySigned = errors.New("already signed")
 // signed for a different payload. Checked again inside Append because two
 // replicas can both pass the handler's Existing check concurrently.
 var ErrPayloadMismatch = errors.New("correlation id already signed for a different payload")
+
+// ErrResignLimit means this (chain, method, correlation_id) already carries
+// the first signature plus every re-sign the cap allows. Checked inside
+// Append for the same reason as ErrPayloadMismatch: replicas can both pass
+// the handler's pre-check, and only the SERIALIZABLE append sees them both.
+var ErrResignLimit = errors.New("re-sign limit reached for this correlation id")
+
+// ResignAllowed reports whether one more signature may be added for this
+// correlation. It is the handler's early answer, so a capped request is
+// refused before the key backend is asked for a signature it would only
+// have to throw away; Append re-checks it under SERIALIZABLE and is the one
+// that cannot be raced.
+func (l *Log) ResignAllowed(ctx context.Context, chain, method, correlationID string) (bool, error) {
+	var signed int
+	if err := l.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM signatures
+		 WHERE chain = $1 AND method = $2 AND correlation_id = $3 AND outcome = 'ALLOWED'`,
+		chain, method, correlationID).Scan(&signed); err != nil {
+		return false, err
+	}
+	return signed <= l.maxResigns, nil
+}
 
 // Existing returns a previous ALLOWED signature for this correlation, if one
 // exists — the one over exactly digest if there is one, otherwise the
@@ -170,32 +216,42 @@ func (l *Log) Append(ctx context.Context, r *Record) error {
 	// re-signs of the same payload legitimately share the key — so it is
 	// checked here, where SERIALIZABLE makes the read and the insert one step
 	// against a concurrent Append on another replica.
+	//
+	// The re-sign cap is counted in the same read, for the same reason: two
+	// replicas each one short of the cap would otherwise both read "room for
+	// one more" and both insert. Under SERIALIZABLE each has read the rows
+	// the other inserts, so one of them fails to commit instead.
 	if r.Outcome == OutcomeAllowed && r.CorrelationID != "" {
-		var bound string
-		err = tx.QueryRowContext(ctx, `
-			SELECT payload_digest FROM signatures
-			 WHERE chain = $1 AND method = $2 AND correlation_id = $3 AND outcome = 'ALLOWED'
-			 ORDER BY seq LIMIT 1`, r.Chain, r.Method, r.CorrelationID).Scan(&bound)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-		case err != nil:
+		var (
+			bound     string
+			signed    int
+			sameBytes bool
+		)
+		if err := tx.QueryRowContext(ctx, `
+			SELECT coalesce((array_agg(payload_digest ORDER BY seq))[1], ''),
+			       count(*),
+			       coalesce(bool_or(digest = $4), false)
+			  FROM signatures
+			 WHERE chain = $1 AND method = $2 AND correlation_id = $3 AND outcome = 'ALLOWED'`,
+			r.Chain, r.Method, r.CorrelationID, r.Digest).Scan(&bound, &signed, &sameBytes); err != nil {
 			return err
+		}
+		switch {
+		case signed == 0:
+			// The first signature binds the payload.
+		case sameBytes:
+			// Exact bytes are a replay, whichever way the payload compares
+			// and however full the cap is: nothing new is being authorised.
+			return ErrAlreadySigned
 		case bound == "" || bound != r.PayloadDigest:
 			// An empty bound payload is a pre-00002 row: nothing records what
 			// it authorised beyond its bytes, so nothing but those exact bytes
-			// may follow it. Exact bytes are ErrAlreadySigned (a replay), not
-			// a mismatch, whichever way the payload compares.
-			var sameBytes bool
-			if err := tx.QueryRowContext(ctx, `
-				SELECT EXISTS (SELECT 1 FROM signatures
-				 WHERE chain = $1 AND method = $2 AND correlation_id = $3 AND outcome = 'ALLOWED'
-				   AND digest = $4)`, r.Chain, r.Method, r.CorrelationID, r.Digest).Scan(&sameBytes); err != nil {
-				return err
-			}
-			if sameBytes {
-				return ErrAlreadySigned
-			}
+			// may follow it.
 			return ErrPayloadMismatch
+		case signed > l.maxResigns:
+			// signed is the first signature plus signed-1 re-signs; this
+			// would be re-sign number signed.
+			return ErrResignLimit
 		}
 	}
 
