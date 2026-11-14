@@ -34,6 +34,9 @@ services:
       # infra/keycloak/realms/damp-realm.json on every fresh start anyway.
     volumes:
       - ./infra/keycloak/realms:/opt/keycloak/data/import:ro
+      # The DAMP login theme (login, register, OTP, reset, errors). start-dev
+      # disables theme caching, so edits show on a page reload.
+      - ./infra/keycloak/themes/damp:/opt/keycloak/themes/damp:ro
       - kcdata:/opt/keycloak/data
 
   redis:
@@ -372,7 +375,7 @@ services:
     # resolve on Linux engines too.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # 3000 is fixed by frontend/public/runtime-config.js, which declares
+    # 3000 is fixed by frontend/portal/public/runtime-config.js, which declares
     # VITE_APP_WEBSOCKET_URL = ws://localhost:3000/ws. That is also why
     # Grafana is on 53000.
     ports:

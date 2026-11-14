@@ -277,10 +277,17 @@ authz-gen:
 ## Compose the importable realm JSON from the template + the generated roles
 ## fragment. Run after authz-gen (or `make authz-gen keycloak-realm` together)
 ## whenever permissions.yaml or the template changes.
+##
+## The template's defaultRole is also appended to roles.realm. On import,
+## Keycloak reads the default role's composites (which hold `customer`, the
+## role self-registered users get) from that role's entry in roles.realm and
+## ignores the copy in the defaultRole field. The built-in roles it
+## composes (offline_access, uma_authorization) must be listed too, or the
+## import fails with "Unable to find composite realm role".
 keycloak-realm: authz-gen
 	@jq \
 		--slurpfile roles shared/authz/generated/keycloak-roles.json \
-		'(walk(if type == "object" then with_entries(select(.key | startswith("_comment") | not)) else . end)) | .roles.realm = $$roles[0]' \
+		'(walk(if type == "object" then with_entries(select(.key | startswith("_comment") | not)) else . end)) | .roles.realm = $$roles[0] + (if .defaultRole then ([.defaultRole.composites.realm[] | select(. as $$n | ($$roles[0] | map(.name) | index($$n)) == null) | {name: .}] + [.defaultRole]) else [] end)' \
 		infra/keycloak/templates/damp-realm.template.json > infra/keycloak/realms/damp-realm.json
 	@jq empty infra/keycloak/realms/damp-realm.json && echo "wrote infra/keycloak/realms/damp-realm.json"
 
@@ -303,3 +310,9 @@ secrets-scan:
 clean:
 	rm -rf bin/
 	docker compose down -v
+
+.PHONY: frontend-dev
+# Each port is a Keycloak redirect URI and a gateway CORS origin, so they are fixed.
+## Run both web apps: Self-Service portal on :5173, Ops Console on :5174.
+frontend-dev:
+	pnpm --parallel --filter portal --filter ops-console run dev

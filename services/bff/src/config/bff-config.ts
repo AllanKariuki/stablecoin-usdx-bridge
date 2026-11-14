@@ -64,4 +64,10 @@ export class BffConfig {
 
   @IsString()
   AUDIT_TRAIL_URL = '';
+
+  // P3's services/rms (reserve status, targets, custodians, attestations),
+  // for the Ops Console's treasury workspace. rms listens on 3005 (see
+  // services/rms/src/config). Empty answers 503 like the others.
+  @IsString()
+  RMS_URL = '';
 }

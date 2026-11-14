@@ -1,0 +1,45 @@
+{
+  "name": "@damp/web-shared",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Shared design system, auth, API client and app shell for the DAMP web apps (portal, ops-console). Source-only: apps compile it through Vite.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./api": "./src/api/index.ts",
+    "./auth": "./src/auth/index.ts",
+    "./ui": "./src/ui/index.ts",
+    "./layout": "./src/layout/index.ts",
+    "./pages": "./src/pages/index.ts",
+    "./lib": "./src/lib/index.ts",
+    "./styles/theme.css": "./src/styles/theme.css",
+    "./api/*": "./src/api/*.ts",
+    "./notifications": "./src/notifications/index.ts",
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "axios": "1.11.0",
+    "lucide-react": "0.542.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.6.3"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "axios": "1.11.0",
+    "jsdom": "^25.0.1",
+    "lucide-react": "0.542.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.6.3",
+    "typescript": "~5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

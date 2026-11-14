@@ -1,0 +1,144 @@
+/*
+ * DAMP design tokens — one system for the Self-Service portal, the Ops
+ * Console and (copied by hand, it can't import this) the Keycloak login
+ * theme in infra/keycloak/themes/damp/login/resources/css/damp.css.
+ *
+ * Each app's index.css does:
+ *   @import "tailwindcss";
+ *   @import "@damp/web-shared/styles/theme.css";
+ *   @source "../../shared/src";
+ * so shared components' utility classes are generated in every app.
+ *
+ * Palette rules (keep them when adding screens):
+ *  - navy is structure (sidebar, headings, "human/final" marks);
+ *    action blue is the only colour that means "click me".
+ *  - cyan is a fill, never text on white (it fails contrast); its readable
+ *    ink is --color-cyan-ink.
+ *  - credits/for read blue, debits/against/warnings read orange — they differ
+ *    in lightness, not hue alone, and always carry a sign or icon too.
+ *  - mono marks anything verifiable: ids, hashes, tx refs, amounts in tables.
+ */
+/*
+ * Fonts are NOT imported here: an @import inside this file ends up after
+ * Tailwind's own rules, where browsers ignore it. Each app's index.css puts
+ * the Google Fonts @import (Plus Jakarta Sans 400–800, JetBrains Mono
+ * 400–600) as its very first line instead.
+ */
+
+@theme {
+  --font-sans: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+
+  --color-navy: #0e2463;
+  --color-navy-800: #172f75;
+  --color-navy-700: #22398a;
+  --color-ink: #0f1b3d;
+  --color-muted: #56627a;
+  --color-subtle: #6b7790;
+  --color-line: #e2e8f2;
+  --color-line-strong: #c9d3e3;
+  --color-canvas: #f4f7fc;
+  --color-shell: #eef2f8;
+  --color-surface: #ffffff;
+
+  --color-action: #1463d6;
+  --color-action-hover: #0e4fb0;
+  --color-action-tint: #e8f1fe;
+  --color-action-ink: #0e4fb0;
+
+  --color-cyan: #1fd3e6;
+  --color-cyan-tint: #ddf9fc;
+  --color-cyan-ink: #0b6b78;
+
+  --color-warn: #b4530a;
+  --color-warn-tint: #fff1e6;
+  --color-warn-bg: #fff8f1;
+  --color-warn-line: #f3c9a8;
+  --color-warn-ink: #8a3d05;
+  --color-warn-deep: #6b2f04;
+
+  --color-danger: #b42318;
+  --color-danger-tint: #feeceb;
+  --color-danger-line: #f5c2bd;
+  --color-danger-ink: #8f1d14;
+
+  --color-neutral-tint: #eef1f6;
+  --color-neutral-ink: #3e4a60;
+
+  --color-on-navy: #ffffff;
+  --color-on-navy-muted: #c9d6f2;
+  --color-on-navy-subtle: #afc0e6;
+
+  --radius-control: 12px;
+  --radius-card: 18px;
+  --radius-panel: 24px;
+  --radius-shell: 32px;
+
+  --shadow-card: 0 1px 2px rgb(15 27 61 / 0.04), 0 1px 1px rgb(15 27 61 / 0.03);
+  --shadow-pop: 0 12px 32px -8px rgb(15 27 61 / 0.18), 0 2px 6px rgb(15 27 61 / 0.06);
+
+  --animate-rise: rise 0.45s ease-out both;
+  --animate-pop: pop 0.18s ease-out both;
+  --animate-live: live 1.8s ease-out infinite;
+  --animate-shimmer: shimmer 1.4s linear infinite;
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(12px); }
+  }
+  @keyframes pop {
+    from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  }
+  @keyframes live {
+    0% { box-shadow: 0 0 0 0 rgb(31 211 230 / 0.55); }
+    100% { box-shadow: 0 0 0 8px rgb(31 211 230 / 0); }
+  }
+  @keyframes shimmer {
+    from { background-position: -200% 0; }
+    to { background-position: 200% 0; }
+  }
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    margin: 0;
+    background: var(--color-shell);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+  }
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 3px solid rgb(20 99 214 / 0.35);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--color-cyan-tint);
+    color: var(--color-ink);
+  }
+}
+
+@layer components {
+  .skeleton {
+    background: linear-gradient(90deg, var(--color-neutral-tint) 25%, #f7f9fc 50%, var(--color-neutral-tint) 75%);
+    background-size: 200% 100%;
+    animation: var(--animate-shimmer);
+    border-radius: 10px;
+  }
+  .eyebrow {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
