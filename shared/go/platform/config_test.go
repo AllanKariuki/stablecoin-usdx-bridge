@@ -87,3 +87,77 @@ func asConfigError(err error, target **ConfigError) bool {
 	}
 	return false
 }
+
+type numericTestConfig struct {
+	// 2^32 does not fit an int32, so a default that comes through this field
+	// proves the unsigned branch parsed at full width.
+	WithDefault uint64 `env:"TEST_UINT64_DEFAULT" default:"4294967296"`
+	Uint64      uint64 `env:"TEST_UINT64"`
+	Int32       int32  `env:"TEST_INT32"`
+}
+
+func TestLoadConfig_NumericTypes(t *testing.T) {
+	cases := []struct {
+		name       string
+		uint64Val  string
+		int32Val   string
+		wantErrIn  string
+		wantUint64 uint64
+	}{
+		{
+			name:       "uint64 parses",
+			uint64Val:  "18446744073709551615",
+			wantUint64: 18446744073709551615,
+		},
+		{
+			// 4294967296 comes from WithDefault's tag; the shared check at the
+			// end of the success path asserts it.
+			name:      "default tag applies to uint64",
+			uint64Val: "",
+		},
+		{
+			name:      "negative uint64 is a config error",
+			uint64Val: "-1",
+			wantErrIn: "TEST_UINT64",
+		},
+		{
+			name:      "int32 overflow is a config error",
+			int32Val:  "3000000000",
+			wantErrIn: "TEST_INT32",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TEST_UINT64", tc.uint64Val)
+			t.Setenv("TEST_INT32", tc.int32Val)
+
+			var cfg numericTestConfig
+			err := LoadConfig(&cfg)
+
+			if tc.wantErrIn != "" {
+				if err == nil {
+					t.Fatalf("expected an error for %s, got nil", tc.wantErrIn)
+				}
+				var cErr *ConfigError
+				if !asConfigError(err, &cErr) {
+					t.Fatalf("expected *ConfigError, got %T: %v", err, err)
+				}
+				if !strings.Contains(err.Error(), tc.wantErrIn) {
+					t.Fatalf("expected %s named in error, got: %v", tc.wantErrIn, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.Uint64 != tc.wantUint64 {
+				t.Errorf("expected Uint64 %d, got %d", tc.wantUint64, cfg.Uint64)
+			}
+			if cfg.WithDefault != 4294967296 {
+				t.Errorf("expected default WithDefault 4294967296, got %d", cfg.WithDefault)
+			}
+		})
+	}
+}

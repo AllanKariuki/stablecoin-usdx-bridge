@@ -311,8 +311,22 @@ clean:
 	rm -rf bin/
 	docker compose down -v
 
-.PHONY: frontend-dev
+.PHONY: frontend-dev stack-up stack-down stack-status
 # Each port is a Keycloak redirect URI and a gateway CORS origin, so they are fixed.
 ## Run both web apps: Self-Service portal on :5173, Ops Console on :5174.
 frontend-dev:
 	pnpm --parallel --filter portal --filter ops-console run dev
+
+# The stack targets only start things — they never build images. If the
+# core-ledger image is missing, stack-up skips the API and worker and says so.
+## Start infra + every host service (never builds images; logs in .logs/stack/).
+stack-up:
+	scripts/stack.sh up
+
+## Stop the host services (infra containers keep running; use --infra on the script).
+stack-down:
+	scripts/stack.sh down
+
+## Show host services, ports, container state and the local URLs.
+stack-status:
+	scripts/stack.sh status
