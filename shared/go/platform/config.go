@@ -16,8 +16,8 @@ import (
 // bad env vars should see all five in one error, not fail five times in a
 // row across five redeploys.
 //
-// Supported field types: string, bool, int, int32, int64, float64,
-// time.Duration, and []string (comma-separated).
+// Supported field types: string, bool, int, int32, int64, uint, uint64,
+// float64, time.Duration, and []string (comma-separated).
 func LoadConfig(target any) error {
 	v := reflect.ValueOf(target)
 	if v.Kind() != reflect.Ptr || v.Elem().Kind() != reflect.Struct {
@@ -102,14 +102,20 @@ func setField(field reflect.Value, raw string) error {
 			return fmt.Errorf("must be a boolean, got %q", raw)
 		}
 		field.SetBool(b)
-	case reflect.Int, reflect.Int32, reflect.Int64:
-		n, err := strconv.ParseInt(raw, 10, 64)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n, err := strconv.ParseInt(raw, 10, field.Type().Bits())
 		if err != nil {
 			return fmt.Errorf("must be an integer, got %q", raw)
 		}
 		field.SetInt(n)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		n, err := strconv.ParseUint(raw, 10, field.Type().Bits())
+		if err != nil {
+			return fmt.Errorf("must be a non-negative integer, got %q", raw)
+		}
+		field.SetUint(n)
 	case reflect.Float64, reflect.Float32:
-		f, err := strconv.ParseFloat(raw, 64)
+		f, err := strconv.ParseFloat(raw, field.Type().Bits())
 		if err != nil {
 			return fmt.Errorf("must be a number, got %q", raw)
 		}

@@ -274,13 +274,20 @@ services:
       NATS_URL: ${WORKER_NATS_URL-nats://nats:4222}
       # The worker, not the API, drains audit_outbox: the API writes each
       # audit event in the same transaction as the change it describes.
-      AUDIT_TRAIL_URL: http://audit-trail:8085
+      # The default targets the compose audit-trail. When audit-trail runs on
+      # the host instead (scripts/stack.sh), set
+      # WORKER_AUDIT_TRAIL_URL=http://host.docker.internal:8085.
+      AUDIT_TRAIL_URL: ${WORKER_AUDIT_TRAIL_URL:-http://audit-trail:8085}
       # Dev default; real deployments must override (shared with audit-trail's INGEST_TOKEN).
       AUDIT_TRAIL_TOKEN: ${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
     volumes:
       - ${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-./chains/solana/deploy/relayer.json}:/app/solana-relayer.json:ro
     ports:
       - "${WORKER_HOST_PORT:-8181}:8181"
+    # host.docker.internal is built in on Docker Desktop; this makes it
+    # resolve on Linux engines too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # No graceful stop on `docker kill` is the point of the exercise: leases
     # lapse and another worker — or this one, restarted — picks the saga up.
     stop_grace_period: 30s
