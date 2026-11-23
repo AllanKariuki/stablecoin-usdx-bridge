@@ -1,6 +1,6 @@
 import { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
-import { bootstrapIdentityApp } from './fixtures/bootstrap';
+import { bootstrapIdentityApp, closeIdentityIssuer, identityToken } from './fixtures/bootstrap';
 import { FakeCoreLedger } from './fixtures/fake-core-ledger';
 import { FakeKeycloak } from './fixtures/fake-keycloak';
 
@@ -37,51 +37,81 @@ describe('identity (e2e, against a fake Keycloak + fake core-ledger, real Postgr
 
   afterAll(async () => {
     await app.close();
+    await closeIdentityIssuer();
     await keycloak.close();
     await coreLedger.close();
   });
 
+  /** A request as the caller that holds identity.resolve (auth-proxy). */
+  const asResolver = async () => `Bearer ${await identityToken(['identity.resolve'], 'svc-auth-proxy')}`;
+  /** A request as bff (identity.user-proxy) for the user-facing routes. */
+  const asUserProxy = async () => `Bearer ${await identityToken(['identity.user-proxy'])}`;
+
   it('provisions a PERSON party on first resolve and ensures a default wallet', async () => {
-    const res = await request(app.getHttpServer()).get('/internal/parties/by-subject/kc-alice').expect(200);
+    const res = await request(app.getHttpServer())
+      .get('/internal/parties/by-subject/kc-alice')
+      .set('Authorization', await asResolver())
+      .expect(200);
 
     expect(res.body.party_id).toMatch(/^party_/);
     expect(res.body.org_id).toBe('');
     expect(coreLedger.walletRequests).toContainEqual({ user_id: res.body.party_id, currency: 'USD' });
 
-    const party = await request(app.getHttpServer()).get(`/parties/${res.body.party_id}`).expect(200);
+    const party = await request(app.getHttpServer())
+      .get(`/parties/${res.body.party_id}`)
+      .set('Authorization', await asUserProxy())
+      .expect(200);
     expect(party.body.type).toBe('PERSON');
     expect(party.body.email).toBe('alice@damp.local');
   });
 
   it('is idempotent: a second resolve returns the same party id with no repeat wallet-ensure call', async () => {
-    const first = await request(app.getHttpServer()).get('/internal/parties/by-subject/kc-alice').expect(200);
+    const first = await request(app.getHttpServer())
+      .get('/internal/parties/by-subject/kc-alice')
+      .set('Authorization', await asResolver())
+      .expect(200);
     const walletCallsBefore = coreLedger.walletRequests.length;
 
-    const second = await request(app.getHttpServer()).get('/internal/parties/by-subject/kc-alice').expect(200);
+    const second = await request(app.getHttpServer())
+      .get('/internal/parties/by-subject/kc-alice')
+      .set('Authorization', await asResolver())
+      .expect(200);
 
     expect(second.body.party_id).toBe(first.body.party_id);
     expect(coreLedger.walletRequests.length).toBe(walletCallsBefore);
   });
 
   it('provisions an ORGANIZATION party with an org membership when Keycloak reports org_id', async () => {
-    const res = await request(app.getHttpServer()).get('/internal/parties/by-subject/kc-bob').expect(200);
+    const res = await request(app.getHttpServer())
+      .get('/internal/parties/by-subject/kc-bob')
+      .set('Authorization', await asResolver())
+      .expect(200);
 
     expect(res.body.party_id).toMatch(/^party_/);
     expect(res.body.org_id).toMatch(/^org_/);
 
-    const party = await request(app.getHttpServer()).get(`/parties/${res.body.party_id}`).expect(200);
+    const party = await request(app.getHttpServer())
+      .get(`/parties/${res.body.party_id}`)
+      .set('Authorization', await asUserProxy())
+      .expect(200);
     expect(party.body.type).toBe('ORGANIZATION');
   });
 
   it('GET /parties/:id 404s for an unknown id', async () => {
-    await request(app.getHttpServer()).get('/parties/does-not-exist').expect(404);
+    await request(app.getHttpServer())
+      .get('/parties/does-not-exist')
+      .set('Authorization', await asUserProxy())
+      .expect(404);
   });
 
   it('carries identity-service bearer authorization on the core-ledger wallet call (H2)', async () => {
     // The provisioning calls above already minted and cached the token via
     // the shared ServiceTokenClient (the fake Keycloak issues
     // 'fake-token'); assert the wire shape on a fresh resolve.
-    await request(app.getHttpServer()).get('/internal/parties/by-subject/kc-alice').expect(200);
+    await request(app.getHttpServer())
+      .get('/internal/parties/by-subject/kc-alice')
+      .set('Authorization', await asResolver())
+      .expect(200);
     expect(coreLedger.lastAuth).toBe('Bearer fake-token');
   });
 });

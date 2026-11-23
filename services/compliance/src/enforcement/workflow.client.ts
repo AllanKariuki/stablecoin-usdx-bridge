@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ServiceTokenClient } from '@damp/nest-platform';
 import { createHash } from 'node:crypto';
 
 export interface ProposedRequest {
@@ -28,7 +29,10 @@ export class WorkflowClient {
   private readonly logger = new Logger(WorkflowClient.name);
   private readonly baseUrl: string;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    private readonly serviceTokens: ServiceTokenClient,
+  ) {
     this.baseUrl = config.get<string>('WORKFLOW_URL', { infer: true }) ?? '';
   }
 
@@ -48,7 +52,15 @@ export class WorkflowClient {
     try {
       const res = await fetch(new URL('/approval-requests', this.baseUrl), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-User-Id': input.requestedBy },
+        headers: {
+          'Content-Type': 'application/json',
+          // The officer's gateway identity, forwarded for the audit trail.
+          // H3: the call itself is authenticated with compliance's own token
+          // (workflow.propose) — the header is audit-only and authorizes
+          // nothing on workflow's side.
+          'X-User-Id': input.requestedBy,
+          Authorization: `Bearer ${await this.serviceTokens.accessToken()}`,
+        },
         body: JSON.stringify({
           ...input,
           // Where the decision comes back. workflow retries until it lands.

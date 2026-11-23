@@ -1,5 +1,6 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import { PlatformConfigModule, PlatformModule, ServiceTokenClient } from '@damp/nest-platform';
+import { APP_GUARD } from '@nestjs/core';
+import { PlatformConfigModule, PlatformModule, ServiceAuthGuard, ServiceTokenClient } from '@damp/nest-platform';
 import { CasesController } from './cases/cases.controller';
 import { AuditRelayService } from './audit/audit-relay.service';
 import { ComplianceConfig } from './config/compliance-config';
@@ -30,7 +31,15 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
     // In the root module because that is where PlatformModule's exports
     // (the metrics registry the relay's backlog gauge registers on) are
     // visible.
-    providers: [AuditRelayService],
+    providers: [
+      AuditRelayService,
+      // H3: every route carries a Keycloak service-account JWT whose audience
+      // is the `compliance` resource client. Default role is
+      // compliance.user-proxy (svc-bff); POST /internal/outbox declares
+      // compliance.ingest (svc-core-ledger-worker); the workflow decision
+      // callback is @HmacAuthenticated.
+      { provide: APP_GUARD, useClass: ServiceAuthGuard },
+    ],
   };
 }
 

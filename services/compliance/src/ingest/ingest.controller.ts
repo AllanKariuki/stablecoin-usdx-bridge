@@ -1,12 +1,14 @@
 import { Body, Controller, Headers, HttpCode, Post } from '@nestjs/common';
+import { RequireServiceRole } from '@damp/nest-platform';
 import { IngestService } from './ingest.service';
 
 /**
  * Where core-ledger's outbox delivers.
  *
- * Cluster-internal and unauthenticated, like every `/internal/*` route on
- * this platform, and absent from the gateway's route table — whose default is
- * deny.
+ * Cluster-internal and absent from the gateway's route table — whose default
+ * is deny. Since H3 it is also authenticated: the caller must carry a
+ * service-account JWT with compliance.ingest (svc-core-ledger-worker), which
+ * is what @RequireServiceRole declares below.
  *
  * Always 2xx once handled, including for event types this service does not
  * care about. The relay treats a non-2xx as "not delivered" and retries until
@@ -18,6 +20,7 @@ export class IngestController {
   constructor(private readonly ingest: IngestService) {}
 
   @Post('outbox')
+  @RequireServiceRole('compliance.ingest')
   @HttpCode(200)
   async outbox(@Headers('x-event-type') eventType: string, @Body() payload: Record<string, unknown>) {
     if (eventType !== 'damp.ledger.transaction_posted.v1') {

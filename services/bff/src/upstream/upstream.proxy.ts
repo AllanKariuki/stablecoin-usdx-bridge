@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PlatformException } from '@damp/nest-platform';
+import { PlatformException, ServiceTokenClient } from '@damp/nest-platform';
 import type { Request, Response } from 'express-serve-static-core';
 
 /**
@@ -18,10 +18,18 @@ import type { Request, Response } from 'express-serve-static-core';
  * Nothing is aggregated or reshaped here. The upstream services already emit
  * camelCase and the Money shape (see services/payments/src/money/money.ts),
  * so a translation layer would be a second place for the two to disagree.
+ *
+ * Since H3 every forward also carries bff's own service-account bearer — one
+ * token, many audiences, and the user-proxy role on every receiver. The
+ * user's gateway token is deliberately not forwarded: a service-to-service
+ * boundary authenticates the *service*, and the identity the service then
+ * asserts is the header set below.
  */
 @Injectable()
 export class UpstreamProxy {
   private readonly logger = new Logger(UpstreamProxy.name);
+
+  constructor(private readonly serviceTokens: ServiceTokenClient) {}
 
   async forward(
     baseUrl: string,
@@ -40,7 +48,14 @@ export class UpstreamProxy {
 
     const target = new URL(pathOverride ?? req.originalUrl.replace(/^\/api/, ''), baseUrl);
 
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      // H3: bff's own service-account token. The identity auth-proxy resolved
+      // is forwarded in the headers below, and an upstream may trust those
+      // only because the token carries its user-proxy role (see the shared
+      // ServiceAuthGuard / serviceIdentityFrom).
+      Authorization: `Bearer ${await this.serviceTokens.accessToken()}`,
+    };
     // The identity auth-proxy resolved. Forwarding it is the entire reason
     // the upstream can trust its own X-User-Id — see the CurrentUser
     // decorator's note on why Traefik strips these from inbound requests.
@@ -48,10 +63,9 @@ export class UpstreamProxy {
       const value = req.headers[name];
       if (typeof value === 'string') headers[name] = value;
     }
-    // extraHeaders are bff's own additions — e.g. its service-account
-    // Authorization for the one upstream that authenticates every call
-    // (core-ledger, H2). Never read from req: the user's gateway token is
-    // deliberately not forwarded to a service-to-service boundary.
+    // extraHeaders are bff's own additions. Never read from req: the user's
+    // gateway token is deliberately not forwarded to a service-to-service
+    // boundary.
     for (const [name, value] of Object.entries(extraHeaders ?? {})) {
       headers[name] = value;
     }

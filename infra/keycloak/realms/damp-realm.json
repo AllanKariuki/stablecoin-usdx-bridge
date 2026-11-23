@@ -121,6 +121,116 @@
           "composite": false,
           "clientRole": true
         }
+      ],
+      "payments": [
+        {
+          "name": "payments.user-proxy",
+          "description": "services/bff: every user-facing payments route (banks, payment-intents, invoices)",
+          "composite": false,
+          "clientRole": true
+        }
+      ],
+      "workflow": [
+        {
+          "name": "workflow.user-proxy",
+          "description": "services/bff: the approval surface the browser reaches",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "workflow.propose",
+          "description": "services/kyc + services/compliance: POST /approval-requests on their own behalf (the X-User-Id they send is audit-only)",
+          "composite": false,
+          "clientRole": true
+        }
+      ],
+      "kyc": [
+        {
+          "name": "kyc.user-proxy",
+          "description": "services/bff: every user-facing kyc route",
+          "composite": false,
+          "clientRole": true
+        }
+      ],
+      "compliance": [
+        {
+          "name": "compliance.user-proxy",
+          "description": "services/bff: every user-facing compliance route",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "compliance.ingest",
+          "description": "svc-core-ledger-worker: POST /internal/outbox (ledger events)",
+          "composite": false,
+          "clientRole": true
+        }
+      ],
+      "reporting": [
+        {
+          "name": "reporting.user-proxy",
+          "description": "services/bff: every user-facing reporting route",
+          "composite": false,
+          "clientRole": true
+        }
+      ],
+      "rms": [
+        {
+          "name": "rms.user-proxy",
+          "description": "services/bff: every user-facing rms route",
+          "composite": false,
+          "clientRole": true
+        }
+      ],
+      "notifications": [
+        {
+          "name": "notifications.user-proxy",
+          "description": "services/bff: notifications, preferences and webhooks for the signed-in user",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "notifications.ingest",
+          "description": "svc-payments (POST /internal/events) + svc-core-ledger-worker (POST /internal/outbox): cluster-internal event ingestion",
+          "composite": false,
+          "clientRole": true
+        }
+      ],
+      "identity": [
+        {
+          "name": "identity.user-proxy",
+          "description": "services/bff: user-facing identity routes (no bff proxy mounts them yet; granted for when one does)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "identity.resolve",
+          "description": "svc-auth-proxy + svc-notifications: GET /internal/parties/by-subject/:subject",
+          "composite": false,
+          "clientRole": true
+        }
+      ],
+      "audit-trail": [
+        {
+          "name": "audit-trail.user-proxy",
+          "description": "services/bff + services/reporting: the read surface (GET /audit/*)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "audit-trail.ingest",
+          "description": "every producer's service client: POST /internal/events (accepted alongside INGEST_TOKEN until producers migrate)",
+          "composite": false,
+          "clientRole": true
+        }
+      ],
+      "indexer": [
+        {
+          "name": "indexer.finality",
+          "description": "svc-core-ledger-worker: GET /finality/:chain/:txHash (the saga's finality check)",
+          "composite": false,
+          "clientRole": true
+        }
       ]
     }
   },
@@ -243,7 +353,7 @@
     {
       "clientId": "identity-service",
       "name": "services/identity (confidential)",
-      "description": "Service account with Keycloak Admin API access, scoped to exactly the realm-management roles services/identity needs (fullScopeAllowed off). Also carries ledger.wallet-provision for its core-ledger POST /wallets call (H2).",
+      "description": "Service account with Keycloak Admin API access, scoped to exactly the realm-management roles services/identity needs (fullScopeAllowed off). Also carries ledger.wallet-provision for its core-ledger POST /wallets call (H2) and audit-trail.ingest (H3).",
       "enabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
@@ -263,6 +373,17 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "aud-mapper-audit-trail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "audit-trail",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
         }
       ]
     },
@@ -279,9 +400,129 @@
       "serviceAccountsEnabled": false
     },
     {
+      "clientId": "payments",
+      "name": "payments API (resource)",
+      "description": "Bearer-only resource client for services/payments: holds payments.user-proxy.",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "workflow",
+      "name": "workflow API (resource)",
+      "description": "Bearer-only resource client for services/workflow: holds workflow.user-proxy and workflow.propose.",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "kyc",
+      "name": "kyc API (resource)",
+      "description": "Bearer-only resource client for services/kyc: holds kyc.user-proxy. (Its /internal/approvals/callback is HMAC-authenticated, not JWT.)",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "compliance",
+      "name": "compliance API (resource)",
+      "description": "Bearer-only resource client for services/compliance: holds compliance.user-proxy and compliance.ingest.",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "reporting",
+      "name": "reporting API (resource)",
+      "description": "Bearer-only resource client for services/reporting: holds reporting.user-proxy.",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "rms",
+      "name": "rms API (resource)",
+      "description": "Bearer-only resource client for services/rms: holds rms.user-proxy.",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "notifications",
+      "name": "notifications API (resource)",
+      "description": "Bearer-only resource client for services/notifications: holds notifications.user-proxy and notifications.ingest.",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "identity",
+      "name": "identity API (resource)",
+      "description": "Bearer-only resource client for services/identity: holds identity.user-proxy and identity.resolve.",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "audit-trail",
+      "name": "audit-trail API (resource)",
+      "description": "Bearer-only resource client for services/audit-trail: holds audit-trail.user-proxy (reads) and audit-trail.ingest (recording, alongside INGEST_TOKEN).",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "indexer",
+      "name": "indexer API (resource)",
+      "description": "Bearer-only resource client for services/indexer: holds indexer.finality (the saga's finality check).",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
       "clientId": "svc-bff",
       "name": "services/bff (confidential)",
-      "description": "Service account for services/bff: client-credentials only, carrying ledger.user-proxy for its core-ledger calls (H2).",
+      "description": "Service account for services/bff: client-credentials only, carrying ledger.user-proxy for core-ledger and every H3 receiver's user-proxy role (payments, workflow, kyc, compliance, reporting, rms, notifications, audit-trail) — the one caller allowed to assert end-user identity headers.",
       "enabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
@@ -301,13 +542,101 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "aud-mapper-payments",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "payments",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-workflow",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "workflow",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-kyc",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "kyc",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-compliance",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "compliance",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-reporting",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "reporting",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-rms",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "rms",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-notifications",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "notifications",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-audit-trail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "audit-trail",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
         }
       ]
     },
     {
       "clientId": "svc-payments",
       "name": "services/payments (confidential)",
-      "description": "Service account for services/payments: client-credentials only, carrying ledger.settlement (POST /wallets, /deposits, /withdrawals, /transfers).",
+      "description": "Service account for services/payments: client-credentials only, carrying ledger.settlement (core-ledger) and notifications.ingest + audit-trail.ingest (H3).",
       "enabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
@@ -327,13 +656,35 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "aud-mapper-notifications",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "notifications",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-audit-trail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "audit-trail",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
         }
       ]
     },
     {
       "clientId": "svc-kyc",
       "name": "services/kyc (confidential)",
-      "description": "Service account for services/kyc: client-credentials only, carrying ledger.wallet-status (list a party's wallets, freeze/thaw).",
+      "description": "Service account for services/kyc: client-credentials only, carrying ledger.wallet-status (core-ledger) and workflow.propose + audit-trail.ingest (H3).",
       "enabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
@@ -353,13 +704,35 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "aud-mapper-workflow",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "workflow",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-audit-trail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "audit-trail",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
         }
       ]
     },
     {
       "clientId": "svc-compliance",
       "name": "services/compliance (confidential)",
-      "description": "Service account for services/compliance: client-credentials only, carrying ledger.wallet-status (list a party's wallets, freeze/thaw).",
+      "description": "Service account for services/compliance: client-credentials only, carrying ledger.wallet-status (core-ledger) and workflow.propose + audit-trail.ingest (H3).",
       "enabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
@@ -379,13 +752,35 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "aud-mapper-workflow",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "workflow",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-audit-trail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "audit-trail",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
         }
       ]
     },
     {
       "clientId": "svc-rms",
       "name": "services/rms (confidential)",
-      "description": "Service account for services/rms: client-credentials only, carrying ledger.reserves.custodian (POST /reserves/custodian-snapshots, GET /reserves/status).",
+      "description": "Service account for services/rms: client-credentials only, carrying ledger.reserves.custodian (core-ledger) and audit-trail.ingest (H3).",
       "enabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
@@ -405,13 +800,24 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "aud-mapper-audit-trail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "audit-trail",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
         }
       ]
     },
     {
       "clientId": "svc-reporting",
       "name": "services/reporting (confidential)",
-      "description": "Service account for services/reporting: client-credentials only, carrying ledger.reports.read (the GET surface a report run assembles).",
+      "description": "Service account for services/reporting: client-credentials only, carrying ledger.reports.read (core-ledger), audit-trail.user-proxy (its audit extract reads GET /audit/events) and audit-trail.ingest (H3).",
       "enabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
@@ -428,6 +834,17 @@
           "consentRequired": false,
           "config": {
             "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-audit-trail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "audit-trail",
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
@@ -454,6 +871,154 @@
           "consentRequired": false,
           "config": {
             "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "svc-core-ledger-worker",
+      "name": "core-ledger worker (confidential)",
+      "description": "Service account for core-ledger's worker binary (H3): client-credentials only, carrying notifications.ingest + compliance.ingest (outbox relay) and indexer.finality (the saga's finality check). The API server and reconcile do not use this client.",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-core-ledger-worker-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-notifications",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "notifications",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-compliance",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "compliance",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-indexer",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "indexer",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-audit-trail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "audit-trail",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "svc-auth-proxy",
+      "name": "services/auth-proxy (confidential)",
+      "description": "Service account for services/auth-proxy (H3): client-credentials only, carrying identity.resolve for its GET /internal/parties/by-subject/:subject lookup.",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-auth-proxy-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-identity",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "identity",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "svc-workflow",
+      "name": "services/workflow (confidential)",
+      "description": "Service account for services/workflow (H3): client-credentials only, carrying audit-trail.ingest for when its audit relay migrates off INGEST_TOKEN. Its decision callbacks stay HMAC-authenticated.",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-workflow-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-audit-trail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "audit-trail",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "svc-notifications",
+      "name": "services/notifications (confidential)",
+      "description": "Service account for services/notifications (H3): client-credentials only, carrying identity.resolve (its WebSocket auth resolves subjects to party ids) and audit-trail.ingest (future audit relay).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-notifications-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-identity",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "identity",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-mapper-audit-trail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "audit-trail",
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
@@ -522,6 +1087,183 @@
           "ledger.reserves.chain-supply"
         ]
       }
+    ],
+    "payments": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "payments.user-proxy"
+        ]
+      }
+    ],
+    "workflow": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "workflow.user-proxy"
+        ]
+      },
+      {
+        "client": "svc-kyc",
+        "roles": [
+          "workflow.propose"
+        ]
+      },
+      {
+        "client": "svc-compliance",
+        "roles": [
+          "workflow.propose"
+        ]
+      }
+    ],
+    "kyc": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "kyc.user-proxy"
+        ]
+      }
+    ],
+    "compliance": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "compliance.user-proxy"
+        ]
+      },
+      {
+        "client": "svc-core-ledger-worker",
+        "roles": [
+          "compliance.ingest"
+        ]
+      }
+    ],
+    "reporting": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "reporting.user-proxy"
+        ]
+      }
+    ],
+    "rms": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "rms.user-proxy"
+        ]
+      }
+    ],
+    "notifications": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "notifications.user-proxy"
+        ]
+      },
+      {
+        "client": "svc-payments",
+        "roles": [
+          "notifications.ingest"
+        ]
+      },
+      {
+        "client": "svc-core-ledger-worker",
+        "roles": [
+          "notifications.ingest"
+        ]
+      }
+    ],
+    "identity": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "identity.user-proxy"
+        ]
+      },
+      {
+        "client": "svc-auth-proxy",
+        "roles": [
+          "identity.resolve"
+        ]
+      },
+      {
+        "client": "svc-notifications",
+        "roles": [
+          "identity.resolve"
+        ]
+      }
+    ],
+    "audit-trail": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "audit-trail.user-proxy"
+        ]
+      },
+      {
+        "client": "svc-reporting",
+        "roles": [
+          "audit-trail.user-proxy",
+          "audit-trail.ingest"
+        ]
+      },
+      {
+        "client": "svc-payments",
+        "roles": [
+          "audit-trail.ingest"
+        ]
+      },
+      {
+        "client": "svc-kyc",
+        "roles": [
+          "audit-trail.ingest"
+        ]
+      },
+      {
+        "client": "svc-compliance",
+        "roles": [
+          "audit-trail.ingest"
+        ]
+      },
+      {
+        "client": "svc-rms",
+        "roles": [
+          "audit-trail.ingest"
+        ]
+      },
+      {
+        "client": "identity-service",
+        "roles": [
+          "audit-trail.ingest"
+        ]
+      },
+      {
+        "client": "svc-core-ledger-worker",
+        "roles": [
+          "audit-trail.ingest"
+        ]
+      },
+      {
+        "client": "svc-workflow",
+        "roles": [
+          "audit-trail.ingest"
+        ]
+      },
+      {
+        "client": "svc-notifications",
+        "roles": [
+          "audit-trail.ingest"
+        ]
+      }
+    ],
+    "indexer": [
+      {
+        "client": "svc-core-ledger-worker",
+        "roles": [
+          "indexer.finality"
+        ]
+      }
     ]
   },
   "users": [
@@ -538,6 +1280,9 @@
         ],
         "core-ledger": [
           "ledger.wallet-provision"
+        ],
+        "audit-trail": [
+          "audit-trail.ingest"
         ]
       }
     },
@@ -548,6 +1293,33 @@
       "clientRoles": {
         "core-ledger": [
           "ledger.user-proxy"
+        ],
+        "payments": [
+          "payments.user-proxy"
+        ],
+        "workflow": [
+          "workflow.user-proxy"
+        ],
+        "kyc": [
+          "kyc.user-proxy"
+        ],
+        "compliance": [
+          "compliance.user-proxy"
+        ],
+        "reporting": [
+          "reporting.user-proxy"
+        ],
+        "rms": [
+          "rms.user-proxy"
+        ],
+        "notifications": [
+          "notifications.user-proxy"
+        ],
+        "identity": [
+          "identity.user-proxy"
+        ],
+        "audit-trail": [
+          "audit-trail.user-proxy"
         ]
       }
     },
@@ -558,6 +1330,12 @@
       "clientRoles": {
         "core-ledger": [
           "ledger.settlement"
+        ],
+        "notifications": [
+          "notifications.ingest"
+        ],
+        "audit-trail": [
+          "audit-trail.ingest"
         ]
       }
     },
@@ -568,6 +1346,12 @@
       "clientRoles": {
         "core-ledger": [
           "ledger.wallet-status"
+        ],
+        "workflow": [
+          "workflow.propose"
+        ],
+        "audit-trail": [
+          "audit-trail.ingest"
         ]
       }
     },
@@ -578,6 +1362,12 @@
       "clientRoles": {
         "core-ledger": [
           "ledger.wallet-status"
+        ],
+        "workflow": [
+          "workflow.propose"
+        ],
+        "audit-trail": [
+          "audit-trail.ingest"
         ]
       }
     },
@@ -588,6 +1378,9 @@
       "clientRoles": {
         "core-ledger": [
           "ledger.reserves.custodian"
+        ],
+        "audit-trail": [
+          "audit-trail.ingest"
         ]
       }
     },
@@ -598,6 +1391,10 @@
       "clientRoles": {
         "core-ledger": [
           "ledger.reports.read"
+        ],
+        "audit-trail": [
+          "audit-trail.user-proxy",
+          "audit-trail.ingest"
         ]
       }
     },
@@ -608,6 +1405,58 @@
       "clientRoles": {
         "core-ledger": [
           "ledger.reserves.chain-supply"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-core-ledger-worker",
+      "enabled": true,
+      "serviceAccountClientId": "svc-core-ledger-worker",
+      "clientRoles": {
+        "notifications": [
+          "notifications.ingest"
+        ],
+        "compliance": [
+          "compliance.ingest"
+        ],
+        "indexer": [
+          "indexer.finality"
+        ],
+        "audit-trail": [
+          "audit-trail.ingest"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-auth-proxy",
+      "enabled": true,
+      "serviceAccountClientId": "svc-auth-proxy",
+      "clientRoles": {
+        "identity": [
+          "identity.resolve"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-workflow",
+      "enabled": true,
+      "serviceAccountClientId": "svc-workflow",
+      "clientRoles": {
+        "audit-trail": [
+          "audit-trail.ingest"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-notifications",
+      "enabled": true,
+      "serviceAccountClientId": "svc-notifications",
+      "clientRoles": {
+        "identity": [
+          "identity.resolve"
+        ],
+        "audit-trail": [
+          "audit-trail.ingest"
         ]
       }
     },

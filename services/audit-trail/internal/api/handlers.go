@@ -12,22 +12,36 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/audit-trail/internal/chain"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/audit-trail/internal/store"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/oidcverify"
 
 	"github.com/gofiber/fiber/v2"
+)
+
+// The client roles the `audit-trail` bearer-only resource client defines
+// (infra/keycloak/templates/damp-realm.template.json, synced by
+// scripts/keycloak-sync.sh). Recording accepts roleIngest beside the shared
+// INGEST_TOKEN; the read surface requires roleUserProxy.
+const (
+	roleIngest    = "audit-trail.ingest"
+	roleUserProxy = "audit-trail.user-proxy"
 )
 
 type Handlers struct {
 	store       *store.Store
 	logger      *slog.Logger
 	ingestToken string
+	// verifier is the H3 JWT path: nil disables it (only in tests).
+	verifier *oidcverify.Verifier
 }
 
-// New takes the shared ingest token producers present as a bearer token.
-// Empty leaves recording open to anything that can reach the port, a state
-// main.go permits only when ENV=local; every accepted unauthenticated request
-// is warned about.
-func New(st *store.Store, logger *slog.Logger, ingestToken string) *Handlers {
-	return &Handlers{store: st, logger: logger, ingestToken: ingestToken}
+// New takes the shared ingest token producers present as a bearer token, and
+// the H3 verifier whose audience is the `audit-trail` resource client. A nil
+// verifier leaves recording on INGEST_TOKEN alone and refuses every read —
+// main.go always passes a real one. Empty ingest token leaves recording open
+// to anything that can reach the port, a state main.go permits only when
+// ENV=local; every accepted unauthenticated request is warned about.
+func New(st *store.Store, logger *slog.Logger, ingestToken string, verifier *oidcverify.Verifier) *Handlers {
+	return &Handlers{store: st, logger: logger, ingestToken: ingestToken, verifier: verifier}
 }
 
 func (h *Handlers) Register(app *fiber.App) {
@@ -35,22 +49,41 @@ func (h *Handlers) Register(app *fiber.App) {
 	// from the gateway's route table, whose default is deny.
 	app.Post("/internal/events", h.authenticateProducer, h.record)
 
-	app.Get("/audit/events", h.events)
-	app.Get("/audit/events/:eventId/proof", h.proof)
-	app.Get("/audit/anchors", h.anchors)
-	app.Get("/audit/verify", h.verify)
+	// Reads are an operator surface (bff proxies them, reporting extracts
+	// from them). H3: they require a service token carrying
+	// audit-trail.user-proxy.
+	app.Get("/audit/events", h.authenticateReader, h.events)
+	app.Get("/audit/events/:eventId/proof", h.authenticateReader, h.proof)
+	app.Get("/audit/anchors", h.authenticateReader, h.anchors)
+	app.Get("/audit/verify", h.authenticateReader, h.verify)
 }
 
-// authenticateProducer gates recording on INGEST_TOKEN.
+// authenticateProducer gates recording on EITHER the shared INGEST_TOKEN or
+// a Keycloak service-account JWT carrying audit-trail.ingest.
 //
 // Absence from the gateway keeps browsers out; it does nothing about any
 // other pod on the cluster network, and recording is the one write on this
 // service — an unauthenticated one lets anything that can reach it put words
 // in any actor's mouth, permanently, in a log built so nobody can take them
-// back out. A shared token is the floor rather than the ceiling (mTLS, as
-// services/signer does it, is the ceiling), and it is what every producer's
-// relay already sends.
+// back out. INGEST_TOKEN is the floor every producer's relay already sends;
+// the service JWT is H3's second door, and the path producers migrate onto.
 func (h *Handlers) authenticateProducer(c *fiber.Ctx) error {
+	presented, ok := strings.CutPrefix(c.Get(fiber.HeaderAuthorization), "Bearer ")
+	if ok && h.ingestToken != "" &&
+		subtle.ConstantTimeCompare([]byte(strings.TrimSpace(presented)), []byte(h.ingestToken)) == 1 {
+		return c.Next()
+	}
+
+	// The JWT door. A token this verifier rejects is refused whether or not
+	// INGEST_TOKEN is set — same 401 either way, so a caller cannot probe
+	// which door is open.
+	if h.verifier != nil {
+		if claims, err := h.verifier.Verify(c.Context(), strings.TrimSpace(presented)); err == nil &&
+			claims.HasClientRole("audit-trail", roleIngest) {
+			return c.Next()
+		}
+	}
+
 	if h.ingestToken == "" {
 		// Only reachable in local development — main.go refuses to start with
 		// an empty token otherwise. Warn on every accepted call rather than
@@ -60,10 +93,31 @@ func (h *Handlers) authenticateProducer(c *fiber.Ctx) error {
 			slog.String("remote_ip", c.IP()))
 		return c.Next()
 	}
-	presented, ok := strings.CutPrefix(c.Get(fiber.HeaderAuthorization), "Bearer ")
-	if !ok || subtle.ConstantTimeCompare([]byte(presented), []byte(h.ingestToken)) != 1 {
-		return platform.WriteError(c, fiber.StatusUnauthorized, "UNAUTHENTICATED",
-			"recording an audit event needs the producer ingest token")
+	return platform.WriteError(c, fiber.StatusUnauthorized, "UNAUTHENTICATED",
+		"recording an audit event needs the producer ingest token or a service token with audit-trail.ingest")
+}
+
+// authenticateReader gates the read surface on a service JWT carrying
+// audit-trail.user-proxy (svc-bff's forwarded reads, svc-reporting's
+// extract). A nil verifier refuses everything: reads are an operator
+// surface, and "the cluster is friendly" is not an answer for a log of
+// everything anybody did.
+func (h *Handlers) authenticateReader(c *fiber.Ctx) error {
+	if h.verifier == nil {
+		return platform.WriteError(c, fiber.StatusServiceUnavailable, "AUTH_NOT_CONFIGURED",
+			"AUTH_ISSUER_URL is not configured; refusing to serve audit reads")
+	}
+	token := oidcverify.BearerToken(c.Get(fiber.HeaderAuthorization))
+	if token == "" {
+		return platform.WriteError(c, fiber.StatusUnauthorized, "UNAUTHENTICATED", "missing bearer token")
+	}
+	claims, err := h.verifier.Verify(c.Context(), token)
+	if err != nil {
+		return platform.WriteError(c, fiber.StatusUnauthorized, "UNAUTHENTICATED", "invalid or expired token")
+	}
+	if !claims.HasClientRole("audit-trail", roleUserProxy) {
+		return platform.WriteError(c, fiber.StatusForbidden, "FORBIDDEN",
+			"caller lacks the client role for this route")
 	}
 	return c.Next()
 }

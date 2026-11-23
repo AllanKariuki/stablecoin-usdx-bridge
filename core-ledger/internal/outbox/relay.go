@@ -22,7 +22,11 @@ type Publisher interface {
 }
 
 // HTTPPublisher POSTs the event payload to a single endpoint. One producer,
-// one consumer, no broker: exactly what P2 needs and no more.
+// one consumer, no broker: exactly what P2 needs and no more. Since H3 the
+// caller hands in an authenticated client (internal/serviceauth) — the
+// receivers (notifications, compliance) refuse a call without a service
+// token, and a failed grant surfaces as a failed post, never as a silently
+// unauthenticated one.
 type HTTPPublisher struct {
 	URL    string
 	Client *http.Client
@@ -30,6 +34,15 @@ type HTTPPublisher struct {
 
 func NewHTTPPublisher(url string) *HTTPPublisher {
 	return &HTTPPublisher{URL: url, Client: &http.Client{Timeout: 10 * time.Second}}
+}
+
+// NewHTTPPublisherWithClient is NewHTTPPublisher with the caller's own
+// client — the worker passes the serviceauth client so every delivery
+// carries svc-core-ledger-worker's token.
+func NewHTTPPublisherWithClient(url string, client *http.Client) *HTTPPublisher {
+	p := NewHTTPPublisher(url)
+	p.Client = client
+	return p
 }
 
 func (p *HTTPPublisher) Target() string { return p.URL }

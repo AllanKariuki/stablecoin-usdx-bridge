@@ -1,6 +1,8 @@
 import { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { APP_GUARD, Reflector } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
+import { FakeIssuer, ServiceAuthGuard } from '@damp/nest-platform';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import { DbService } from '../src/db/db.service';
@@ -16,6 +18,11 @@ import { AUDIT, RequestsService } from '../src/requests/requests.service';
  * caller could approve anything by claiming a role. What is asserted here is
  * where identity comes from — X-User-Id and X-Roles, which only auth-proxy
  * can set — and that nothing a body says changes it.
+ *
+ * Since H3 the guard sits on this module too (as it does in app.module.ts),
+ * and `as()` mints a real svc-bff token (workflow.user-proxy) against an
+ * in-process issuer — so the identity headers are exactly as trustworthy
+ * here as they are in production.
  */
 const TEST_DATABASE_URL =
   process.env.WORKFLOW_TEST_DATABASE_URL ??
@@ -24,8 +31,11 @@ const TEST_DATABASE_URL =
 describe('workflow gateway identity (HTTP, real Postgres)', () => {
   let app: INestApplication;
   let db: DbService;
+  let issuer: FakeIssuer;
 
   beforeAll(async () => {
+    issuer = await FakeIssuer.start({ audience: 'workflow' });
+
     // Not initialised here: app.init() runs DbService's lifecycle hooks on the
     // instance it is handed (opening the pool and migrating), and app.close()
     // ends it. Calling either by hand as well opens a second pool or ends one
@@ -33,7 +43,18 @@ describe('workflow gateway identity (HTTP, real Postgres)', () => {
     db = new DbService({ get: () => TEST_DATABASE_URL } as unknown as ConfigService);
     const moduleRef = await Test.createTestingModule({
       controllers: [RequestsController],
-      providers: [RequestsService, { provide: DbService, useValue: db }],
+      providers: [
+        RequestsService,
+        { provide: DbService, useValue: db },
+        { provide: APP_GUARD, useClass: ServiceAuthGuard },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: (key: string) => ({ AUTH_ISSUER_URL: issuer.issuerUrl, AUTH_AUDIENCE: 'workflow' })[key],
+          },
+        },
+        Reflector,
+      ],
     }).compile();
     app = moduleRef.createNestApplication();
     await app.init();
@@ -41,18 +62,24 @@ describe('workflow gateway identity (HTTP, real Postgres)', () => {
 
   afterAll(async () => {
     await app.close();
+    await issuer.close();
   });
 
-  /** What auth-proxy would set for this person, via Traefik and bff. */
-  function as(userId: string, roles: string[] = []) {
-    return { 'X-User-Id': userId, 'X-Roles': roles.join(',') };
+  /** What auth-proxy would set for this person, via Traefik and bff — plus
+   * bff's own service token, which is what lets the headers be trusted. */
+  async function as(userId: string, roles: string[] = []) {
+    const token = await issuer.mint({
+      azp: 'svc-bff',
+      resource_access: { workflow: { roles: ['workflow.user-proxy'] } },
+    });
+    return { Authorization: `Bearer ${token}`, 'X-User-Id': userId, 'X-Roles': roles.join(',') };
   }
 
   /** A one-of-one, treasury-only, exclude_initiator policy. */
   async function proposeReversal(maker = 'maker-1') {
     const res = await request(app.getHttpServer())
       .post('/approval-requests')
-      .set(as(maker, ['treasury']))
+      .set(await as(maker, ['treasury']))
       .send({
         action: 'ledger.reversal',
         subjectType: 'JOURNAL_TX',
@@ -81,7 +108,7 @@ describe('workflow gateway identity (HTTP, real Postgres)', () => {
     const req = await proposeReversal();
     const res = await request(app.getHttpServer())
       .post(`/approval-requests/${req.id}/approve`)
-      .set(as('checker-1', ['treasury']))
+      .set(await as('checker-1', ['treasury']))
       .send({ comment: 'matches the ticket' })
       .expect(200);
     expect(res.body.status).toBe('APPROVED');
@@ -97,7 +124,7 @@ describe('workflow gateway identity (HTTP, real Postgres)', () => {
     const req = await proposeReversal();
     await request(app.getHttpServer())
       .post(`/approval-requests/${req.id}/approve`)
-      .set(as('checker-1', ['compliance']))
+      .set(await as('checker-1', ['compliance']))
       .send({})
       .expect(403);
 
@@ -113,11 +140,22 @@ describe('workflow gateway identity (HTTP, real Postgres)', () => {
 
   it('refuses a decider with no roles at all', async () => {
     const req = await proposeReversal();
+    // A real svc-bff token with an identity header but no X-Roles: the guard
+    // lets it through, and the controller's own role check is what refuses.
+    await request(app.getHttpServer())
+      .post(`/approval-requests/${req.id}/approve`)
+      .set(await as('checker-1'))
+      .send({})
+      .expect(403);
+    expect(await approvalsFor(req.id)).toHaveLength(0);
+
+    // Without any service token the guard refuses first — the same 401 the
+    // real boundary returns, before any decision can be attempted.
     await request(app.getHttpServer())
       .post(`/approval-requests/${req.id}/approve`)
       .set({ 'X-User-Id': 'checker-1' })
       .send({})
-      .expect(403);
+      .expect(401);
     expect(await approvalsFor(req.id)).toHaveLength(0);
   });
 
@@ -127,7 +165,7 @@ describe('workflow gateway identity (HTTP, real Postgres)', () => {
     // gateway, `treasury` asserted in the body.
     const res = await request(app.getHttpServer())
       .post(`/approval-requests/${req.id}/approve`)
-      .set(as('checker-1', ['customer']))
+      .set(await as('checker-1', ['customer']))
       .send({ roles: ['treasury'] })
       .expect(400);
     expect(JSON.stringify(res.body)).toContain('ROLES_NOT_ACCEPTED');
@@ -142,13 +180,13 @@ describe('workflow gateway identity (HTTP, real Postgres)', () => {
     const req = await proposeReversal();
     await request(app.getHttpServer())
       .post(`/approval-requests/${req.id}/reject`)
-      .set(as('checker-1', ['treasury']))
+      .set(await as('checker-1', ['treasury']))
       .send({ roles: ['treasury'] })
       .expect(400);
 
     await request(app.getHttpServer())
       .post('/approval-requests')
-      .set(as('maker-1', ['treasury']))
+      .set(await as('maker-1', ['treasury']))
       .send({
         action: 'ledger.reversal',
         subjectType: 'JOURNAL_TX',
@@ -185,7 +223,7 @@ describe('workflow gateway identity (HTTP, real Postgres)', () => {
     const req = await proposeReversal('maker-7');
     await request(app.getHttpServer())
       .post(`/approval-requests/${req.id}/approve`)
-      .set(as('maker-7', ['treasury']))
+      .set(await as('maker-7', ['treasury']))
       .send({})
       .expect(403);
     expect(await approvalsFor(req.id)).toHaveLength(0);
@@ -207,7 +245,7 @@ describe('workflow gateway identity (HTTP, real Postgres)', () => {
     const req = await proposeReversal();
     await request(app.getHttpServer())
       .post(`/approval-requests/${req.id}/approve`)
-      .set({ 'X-User-Id': 'checker-1', 'X-Roles': 'customer, treasury,' })
+      .set(await as('checker-1', ['customer', 'treasury', ' ']))
       .send({})
       .expect(200);
     expect((await auditFor(req.id))[1].payload.actor_roles).toEqual(['customer', 'treasury']);

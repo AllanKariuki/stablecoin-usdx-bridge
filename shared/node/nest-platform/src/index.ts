@@ -5,6 +5,21 @@ export { createConfigValidator, flattenValidationErrors, ClassConstructor } from
 
 // Auth (service-to-service)
 export { ServiceTokenClient } from './auth/service-token.client';
+export {
+  HmacAuthenticated,
+  Public,
+  RequireServiceRole,
+  ServiceAuthGuard,
+  ServiceAuthRequest,
+  VerifiedServiceClaims,
+  bearerToken,
+  normalizeClaims,
+} from './auth/service-auth.guard';
+export { CurrentUser } from './auth/current-user.decorator';
+export { ServiceIdentity, ServiceIdentityOptions, serviceIdentityFrom } from './auth/service-identity';
+
+// Testing
+export { FakeIssuer } from './testing/fake-issuer';
 
 // Logging
 export { PlatformLoggingModule, PlatformLoggingOptions } from './logging/logging.module';

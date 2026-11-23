@@ -903,6 +903,53 @@ async function stepNegatives() {
     all &= subcheck('direct core-ledger POST /deposits with customer token (wrong audience) → 401', r2.status === 401, `status ${r2.status}`);
   }
 
+  // (h) the H3 boundaries on the other services. Same idea as (g): the
+  // service ports are reachable from the host, so a forged X-User-Id without
+  // a service token must 401 on a user-facing route, an ingest route must
+  // refuse a caller with no token, and a caller's OWN token against another
+  // service (right issuer, wrong audience) must 401 — none of these may
+  // reach a handler.
+  {
+    const PAYMENTS = process.env.E2E_PAYMENTS || 'http://localhost:13003';
+    const NOTIFICATIONS = process.env.E2E_NOTIFICATIONS || 'http://localhost:13000';
+
+    const forged = await fetch(`${PAYMENTS}/payment-intents`, {
+      method: 'GET',
+      headers: { 'x-user-id': 'forged-party' },
+    });
+    all &= subcheck('direct payments GET /payment-intents with forged X-User-Id and no token → 401', forged.status === 401, `status ${forged.status}`);
+
+    const ingest = await fetch(`${NOTIFICATIONS}/internal/events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ event: 'e2e.forged', partyId: ctx.customer.partyId, payload: {} }),
+    });
+    all &= subcheck('direct notifications POST /internal/events without token → 401', ingest.status === 401, `status ${ingest.status}`);
+
+    // svc-payments' own token against payments: the token's audiences are
+    // core-ledger/notifications/audit-trail — payments is not one of them,
+    // so the verifier rejects it as wrong-audience 401.
+    const mintRes = await fetch(`${process.env.KEYCLOAK_BASE_URL ?? 'http://localhost:8080'}/realms/damp/protocol/openid-connect/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: 'svc-payments',
+        client_secret: process.env.E2E_SVC_PAYMENTS_SECRET ?? 'dev-svc-payments-secret',
+      }),
+    });
+    let wrongAudience = 401;
+    if (mintRes.ok) {
+      const { access_token } = await mintRes.json();
+      const r = await fetch(`${PAYMENTS}/payment-intents`, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${access_token}`, 'x-user-id': 'forged-party' },
+      });
+      wrongAudience = r.status;
+    }
+    all &= subcheck('direct payments with svc-payments token (wrong audience) → 401', wrongAudience === 401, `status ${wrongAudience}`);
+  }
+
   assert(all, 'one or more negative checks failed');
   return { note: 'all negative checks passed' };
 }

@@ -1,5 +1,6 @@
 import { Body, Controller, Headers, HttpCode, Logger, Post, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { HmacAuthenticated } from '@damp/nest-platform';
 import { SIGNATURE_HEADER, verifyCallback } from '../workflow/callback-signature';
 import { CasesService } from './cases.service';
 
@@ -8,9 +9,11 @@ import { CasesService } from './cases.service';
  *
  * Cluster-internal, but not trusted on the network: the body is signed with
  * WORKFLOW_CALLBACK_SECRET and an unsigned or mis-signed call is refused with
- * 401. Past that, the body is still re-verified against the case as it
- * stands — the request id must be the one this case recorded and the digest
- * must match its payload.
+ * 401. @HmacAuthenticated tells the H3 service guard to skip its JWT check
+ * here — the HMAC below is the authentication, and demanding a service token
+ * on top would be a second, wrong requirement. Past that, the body is still
+ * re-verified against the case as it stands — the request id must be the one
+ * this case recorded and the digest must match its payload.
  */
 @Controller('internal/approvals')
 export class ApprovalsController {
@@ -22,6 +25,7 @@ export class ApprovalsController {
   ) {}
 
   @Post('callback')
+  @HmacAuthenticated()
   @HttpCode(200)
   async callback(
     @Headers(SIGNATURE_HEADER) signature: string | undefined,

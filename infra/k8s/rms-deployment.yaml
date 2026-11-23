@@ -48,6 +48,12 @@ spec:
               value: "http://keycloak.default.svc.cluster.local:8080"
             - name: KEYCLOAK_REALM
               value: "damp"
+            # H3: every request must carry a service-account JWT with
+            # audience `rms`.
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "rms"
             - name: CUSTODIAN_POLL_ENABLED
               value: "true"
             - name: CUSTODIAN_POLL_SECONDS

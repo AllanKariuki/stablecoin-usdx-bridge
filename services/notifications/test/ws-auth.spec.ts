@@ -31,7 +31,12 @@ describe('WsAuth', () => {
   });
 
   const auth = (env: Record<string, string>) =>
-    new WsAuth({ get: (key: string) => env[key] } as unknown as ConfigService);
+    new WsAuth(
+      { get: (key: string) => env[key] } as unknown as ConfigService,
+      // H3: the identity lookup carries the service token; these tests
+      // resolve without IDENTITY_SERVICE_URL, so the client is never used.
+      { accessToken: jest.fn(async () => 'tok') } as never,
+    );
 
   const upgrade = (token: string) => ({ url: `/ws?token=${token}` }) as IncomingMessage;
 

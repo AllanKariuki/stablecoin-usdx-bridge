@@ -40,6 +40,17 @@ export class ReportingConfig {
   @IsString()
   KEYCLOAK_REALM = 'damp';
 
+  // --- Inbound service-to-service auth (H3). Every request must carry a
+  // service-account JWT whose audience is the `reporting` resource client.
+  // Both required — there is no unauthenticated mode.
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  AUTH_ISSUER_URL!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  AUTH_AUDIENCE = 'reporting';
+
   @IsOptional()
   @IsString()
   AUDIT_TRAIL_URL = '';

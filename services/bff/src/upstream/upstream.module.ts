@@ -6,6 +6,9 @@ import { AuditTrailProxyController, ReportingProxyController } from './p7.contro
 import { CoreLedgerOperationsProxyController, RmsProxyController } from './operations.controller';
 import { UpstreamProxy } from './upstream.proxy';
 
+// ServiceTokenClient is not listed here: core-ledger.module.ts is @Global
+// and exports the one shared instance (same cached token for the
+// core-ledger client and every upstream proxy).
 @Module({
   controllers: [
     PaymentsProxyController,

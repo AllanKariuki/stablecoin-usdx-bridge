@@ -64,8 +64,11 @@ describe('payments outbox (real Postgres)', () => {
     deposit: jest.fn(async () => ({ id: 'tx_1', type: 'FIAT_DEPOSIT', status: 'POSTED', created_at: '' })),
   };
 
+  /** H3: the relay attaches its service token; tests stub the mint. */
+  const tokens = { accessToken: jest.fn(async () => 'tok') } as never;
+
   function relayTo(url: string, maxAttempts = 100): OutboxRelay {
-    return new OutboxRelay(outbox, config({ NOTIFICATIONS_URL: url, OUTBOX_MAX_ATTEMPTS: maxAttempts }));
+    return new OutboxRelay(outbox, config({ NOTIFICATIONS_URL: url, OUTBOX_MAX_ATTEMPTS: maxAttempts }), tokens);
   }
 
   function settlement(relay: OutboxRelay, events: Pick<OutboxRepository, 'enqueue'> = outbox): SettlementService {
@@ -318,7 +321,12 @@ describe('payments outbox metrics', () => {
       .mockResolvedValueOnce(new Response('{}', { status: 200 }))
       .mockResolvedValueOnce(new Response('{}', { status: 422 }));
     try {
-      const relay = new OutboxRelay(outbox as never, config({ NOTIFICATIONS_URL: 'http://notifications' }), metrics);
+      const relay = new OutboxRelay(
+        outbox as never,
+        config({ NOTIFICATIONS_URL: 'http://notifications' }),
+        { accessToken: jest.fn(async () => 'tok') } as never,
+        metrics,
+      );
       await relay.drain();
     } finally {
       fetchSpy.mockRestore();

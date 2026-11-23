@@ -42,6 +42,22 @@ spec:
               value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
             - name: IDENTITY_SERVICE_URL
               value: "http://identity.default.svc.cluster.local:3001"
+            # H3: every HTTP request must carry a service-account JWT with
+            # audience `notifications`; the WS identity lookup goes out as
+            # svc-notifications (identity.resolve).
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "notifications"
+            - name: SERVICE_CLIENT_ID
+              value: "svc-notifications"
+            - name: SERVICE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: notifications-secrets, key: service-client-secret }
+            - name: KEYCLOAK_BASE_URL
+              value: "http://keycloak.default.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "damp"
             # Two uses: core pub/sub on live.notifications.push.v1 for the
             # cross-replica push, and a durable JetStream consumer
             # (notifications-outbox) on core-ledger's DAMP stream, which both

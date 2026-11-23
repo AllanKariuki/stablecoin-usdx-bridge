@@ -28,7 +28,7 @@ describe('kyc audit producer (real Postgres)', () => {
     const config = { get: (k: string) => (k === 'DATABASE_URL' ? TEST_DATABASE_URL : '') } as unknown as ConfigService;
     db = new DbService(config);
     await db.onModuleInit();
-    workflow = new WorkflowClient(config);
+    workflow = new WorkflowClient(config, { accessToken: jest.fn(async () => 'tok') } as never);
     jest.spyOn(workflow, 'propose').mockImplementation(async () => ({ id: `req_${randomUUID()}` }) as never);
     const ledger = { setWalletsActive: async () => true } as unknown as CoreLedgerClient;
     cases = new CasesService(db, new TiersRepository(db), {} as StubKycProvider, workflow, ledger);

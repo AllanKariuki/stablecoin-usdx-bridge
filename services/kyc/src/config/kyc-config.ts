@@ -42,6 +42,18 @@ export class KycConfig {
   @IsString()
   KEYCLOAK_REALM = 'damp';
 
+  // --- Inbound service-to-service auth (H3). Every request must carry a
+  // service-account JWT whose audience is the `kyc` resource client. Both
+  // required — there is no unauthenticated mode (the approval callback is
+  // @HmacAuthenticated, not public).
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  AUTH_ISSUER_URL!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  AUTH_AUDIENCE = 'kyc';
+
   // Maker-checker. Unset means nothing can be approved in this environment —
   // cases reach PENDING_APPROVAL and stop, which is the correct failure for a
   // gate whose approval service is missing.

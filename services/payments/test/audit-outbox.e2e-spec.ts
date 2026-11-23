@@ -54,7 +54,7 @@ describe('payments audit producer (real Postgres)', () => {
     invoices = new InvoicesRepository(db);
     banks = new BanksRepository(db);
     outbox = new OutboxRepository(db);
-    relay = new OutboxRelay(outbox, config({ NOTIFICATIONS_URL: '' }));
+    relay = new OutboxRelay(outbox, config({ NOTIFICATIONS_URL: '' }), { accessToken: jest.fn(async () => 'tok') } as never);
     service = new IntentsService(intents, banks, ledger as never, rails as never, db);
   });
 

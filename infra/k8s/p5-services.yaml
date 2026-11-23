@@ -44,6 +44,12 @@ spec:
             - name: CALLBACK_SECRET
               valueFrom:
                 secretKeyRef: { name: workflow-callback, key: secret }
+            # H3: every request must carry a service-account JWT with
+            # audience `workflow`.
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "workflow"
             # services/audit-trail. audit_outbox rows are written in the same
             # transaction as each decision; this relay delivers them. The
             # token is audit-trail's INGEST_TOKEN — one Secret, shared by
@@ -140,6 +146,12 @@ spec:
               value: "http://keycloak.default.svc.cluster.local:8080"
             - name: KEYCLOAK_REALM
               value: "damp"
+            # H3: every request must carry a service-account JWT with
+            # audience `kyc` (the approval callback is HMAC-authenticated).
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "kyc"
             - name: WORKFLOW_URL
               value: "http://workflow.default.svc.cluster.local:3006"
             # Where workflow posts decisions back. Must be the Service name,
@@ -241,6 +253,13 @@ spec:
               value: "http://keycloak.default.svc.cluster.local:8080"
             - name: KEYCLOAK_REALM
               value: "damp"
+            # H3: every request must carry a service-account JWT with
+            # audience `compliance` (the approval callback is
+            # HMAC-authenticated; /internal/outbox needs compliance.ingest).
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "compliance"
             - name: WORKFLOW_URL
               value: "http://workflow.default.svc.cluster.local:3006"
             - name: SELF_URL

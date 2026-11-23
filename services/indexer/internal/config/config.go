@@ -26,6 +26,13 @@ type Config struct {
 	KeycloakBaseURL     string `env:"KEYCLOAK_BASE_URL" default:"http://localhost:8080"`
 	KeycloakRealm       string `env:"KEYCLOAK_REALM" default:"damp"`
 
+	// H3 inbound auth: the indexer's own read surface verifies every call
+	// against the `indexer` resource client (core-ledger's worker carries
+	// indexer.finality for GET /finality). Required — no unauthenticated
+	// mode.
+	AuthIssuerURL string `env:"AUTH_ISSUER_URL" required:"true"`
+	AuthAudience  string `env:"AUTH_AUDIENCE" default:"indexer"`
+
 	EthRPCURL        string `env:"ETH_RPC_URL" required:"true"`
 	USDXProxyAddress string `env:"USDX_PROXY_ADDRESS" required:"true"`
 	// USDXABIPath is read at runtime rather than embedded: the file lives at

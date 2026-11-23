@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"log/slog"
+	"net/http"
 )
 
 // Choose picks the one destination the relay drains to.
@@ -14,11 +15,14 @@ import (
 // ever genuinely wanted, it is a second consumer *of the bus*, which is what
 // the bus is for.
 //
+// authClient is the H3 bearer-minting client for the HTTP path (nil keeps
+// the plain transport, which only tests use).
+//
 // Returns nil when nothing is configured. That is a supported state, not a
 // degraded one: events accumulate durably in the outbox and are delivered
 // whenever a destination appears, which is the entire reason the table was
 // built before there was anything to publish to.
-func Choose(ctx context.Context, logger *slog.Logger, natsURL, natsStream, httpURL string) (Publisher, func()) {
+func Choose(ctx context.Context, logger *slog.Logger, natsURL, natsStream, httpURL string, authClient *http.Client) (Publisher, func()) {
 	if natsURL != "" {
 		p, err := NewNATSPublisher(ctx, natsURL, natsStream)
 		if err != nil {
@@ -35,7 +39,7 @@ func Choose(ctx context.Context, logger *slog.Logger, natsURL, natsStream, httpU
 
 	if httpURL != "" {
 		logger.Info("outbox publishing over HTTP", slog.String("target", httpURL))
-		return NewHTTPPublisher(httpURL), func() {}
+		return NewHTTPPublisherWithClient(httpURL, authClient), func() {}
 	}
 
 	logger.Info("outbox relay disabled (neither NATS_URL nor OUTBOX_RELAY_URL is set); events accumulate durably")

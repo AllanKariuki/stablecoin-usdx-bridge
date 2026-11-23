@@ -1,5 +1,6 @@
 import { Body, Controller, Headers, HttpCode, Post } from '@nestjs/common';
 import { Logger } from '@nestjs/common';
+import { RequireServiceRole } from '@damp/nest-platform';
 import { DeliveryService } from '../delivery/delivery.service';
 import { OutboxHandler } from './outbox-handler';
 
@@ -26,10 +27,11 @@ import { OutboxHandler } from './outbox-handler';
  *    instead, and OutboxConsumer picks the same events up from there. Both
  *    land in OutboxHandler with the same dedupe key.
  *
- * Both are unauthenticated and both are cluster-internal only (see the
- * NetworkPolicy). Neither can be reached through the gateway: there is no
- * rule for `/internal/*` in auth-proxy's route table, and its default is
- * deny.
+ * Since H3 both doors require a service-account JWT carrying
+ * notifications.ingest (svc-payments, svc-core-ledger-worker) — what
+ * @RequireServiceRole declares below. Neither can be reached through the
+ * gateway: there is no rule for `/internal/*` in auth-proxy's route table,
+ * and its default is deny.
  */
 @Controller('internal')
 export class IngestController {
@@ -41,6 +43,7 @@ export class IngestController {
   ) {}
 
   @Post('events')
+  @RequireServiceRole('notifications.ingest')
   @HttpCode(202)
   async event(@Body() body: { event: string; partyId?: string; payload?: Record<string, unknown>; dedupeKey?: string }) {
     if (!body?.event) return { accepted: false, reason: 'event is required' };
@@ -69,6 +72,7 @@ export class IngestController {
    * not the exception.
    */
   @Post('outbox')
+  @RequireServiceRole('notifications.ingest')
   @HttpCode(200)
   async outbox(
     @Headers('x-event-type') eventType: string,
