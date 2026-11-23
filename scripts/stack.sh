@@ -3,9 +3,10 @@
 # stack.sh — one-shot launcher for the local usdx-bridge development stack.
 #
 # It *starts* things; it never builds images. Infrastructure containers come
-# from docker compose; every application service runs from source on the host.
-# If the core-ledger image is missing, core-ledger and worker are skipped and
-# the script says so — build them once with `make docker-build`.
+# from docker compose; every application service — core-ledger and its saga
+# worker included — runs from source on the host. The two moved off the compose
+# `app` profile (usdx/core-ledger:dev) so a live run tests the current code,
+# not an image built days or weeks ago.
 #
 # Usage:
 #   scripts/stack.sh up             start infra containers + every host service
@@ -15,7 +16,7 @@
 #
 # Logs and pid files live in .logs/stack/ (gitignored). Host ports are
 # deliberately remapped out of the 3000-8090 range, which other local stacks
-# commonly hold: core-ledger and the worker publish on 18081/18181, and every
+# commonly hold: core-ledger and the worker listen on 18081/18181, and every
 # host service listens on its SERVICE_TABLE port (13xxx for the Node services,
 # 18xxx for the Go ones).
 #
@@ -25,12 +26,9 @@
 # held by anything else is reported as CONFLICT, never as up.
 #
 # Everything below can be overridden from the environment:
-#   CORE_LEDGER_HOST_PORT            (18081)
-#   WORKER_HOST_PORT                 (18181)
 #   SOLANA_RELAYER_KEYPAIR_HOST_PATH ($HOME/.config/solana/usdx-relayer.json)
 #   AUDIT_TRAIL_TOKEN                (dev-audit-ingest-token)
 #   WORKFLOW_CALLBACK_SECRET         (dev-workflow-callback-secret)
-#   WORKER_AUDIT_TRAIL_URL           (http://host.docker.internal:18085)
 
 set -euo pipefail
 
@@ -38,23 +36,24 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd -P)
 RUNTIME_DIR="$REPO_ROOT/.logs/stack"
 
-CORE_LEDGER_HOST_PORT=${CORE_LEDGER_HOST_PORT:-18081}
-WORKER_HOST_PORT=${WORKER_HOST_PORT:-18181}
 SOLANA_RELAYER_KEYPAIR_HOST_PATH=${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-${HOME:-}/.config/solana/usdx-relayer.json}
 AUDIT_TRAIL_TOKEN=${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
 WORKFLOW_CALLBACK_SECRET=${WORKFLOW_CALLBACK_SECRET:-dev-workflow-callback-secret}
-WORKER_AUDIT_TRAIL_URL=${WORKER_AUDIT_TRAIL_URL:-http://host.docker.internal:18085}
 
-# Compose reads these from the environment for its ports, volumes and worker
-# settings.
-export CORE_LEDGER_HOST_PORT WORKER_HOST_PORT SOLANA_RELAYER_KEYPAIR_HOST_PATH WORKER_AUDIT_TRAIL_URL
-
-CORE_LEDGER_URL="http://localhost:$CORE_LEDGER_HOST_PORT"
+# core-ledger and its worker now run on the host from source, so their ports
+# are the fixed SERVICE_TABLE entries below — nothing is exported to compose
+# for them anymore (the `app` profile keeps its own port mapping for
+# `make up-app`).
+CORE_LEDGER_URL="http://localhost:18081"
 AUDIT_TRAIL_URL="http://localhost:18085"
 
 # name:kind:port — the host-run services, in start order. kind picks the
-# command: go services run from their own directory, node services use pnpm.
-SERVICE_TABLE="audit-trail:go:18085
+# command (see service_dir/service_cmd): go services run from their own
+# directory, node services use pnpm. core-ledger and its worker go first,
+# since every other service calls the ledger.
+SERVICE_TABLE="core-ledger:go:18081
+core-ledger-worker:go:18181
+audit-trail:go:18085
 signer:go:18084
 indexer:go:18083
 identity:node:13001
@@ -182,10 +181,11 @@ EOF
 }
 
 compose_conflicts() {
-	# The ports the compose-posted containers publish. One of ours is fine;
-	# anything else — another container or a bare host process — is not.
+	# The port the compose-posted gateway publishes. core-ledger (18081) and
+	# the worker (18181) now run on the host, so those are owned via pid in
+	# host_conflicts like every other host service.
 	local spec name port holders holder state conflicts=""
-	for spec in gateway:18082 core-ledger:18081 worker:18181; do
+	for spec in gateway:18082; do
 		name=${spec%%:*}
 		port=${spec##*:}
 		holders=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2>/dev/null || true)
@@ -238,6 +238,18 @@ EOF
 # launcher moves them (and only to get out of other stacks' way).
 service_env() {
 	case "$1" in
+	core-ledger)
+		echo "PORT=18081"
+		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
+		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
+		echo "NATS_URL=nats://localhost:54222"
+		;;
+	core-ledger-worker)
+		echo "WORKER_PORT=18181"
+		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
+		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
+		echo "NATS_URL=nats://localhost:54222"
+		;;
 	audit-trail)
 		echo "PORT=18085"
 		echo "INGEST_TOKEN=$AUDIT_TRAIL_TOKEN"
@@ -327,6 +339,31 @@ service_env() {
 	esac
 }
 
+# service_dir NAME — the source directory NAME's command runs from. core-ledger
+# and its worker share core-ledger/ (and its .env); everything else lives under
+# services/<name>.
+service_dir() {
+	case "$1" in
+	core-ledger|core-ledger-worker) printf '%s' "$REPO_ROOT/core-ledger" ;;
+	*) printf '%s' "$REPO_ROOT/services/$1" ;;
+	esac
+}
+
+# service_cmd NAME KIND — the command to run. The worker's entrypoint is
+# cmd/worker, not the cmd/server every other Go service uses.
+service_cmd() {
+	case "$1" in
+	core-ledger-worker) printf 'go run ./cmd/worker' ;;
+	*)
+		if [ "$2" = "go" ]; then
+			printf 'go run ./cmd/server'
+		else
+			printf 'pnpm run start:dev'
+		fi
+		;;
+	esac
+}
+
 # start_process NAME DIR CMD KIND [KEY=VALUE ...]
 #
 # Runs CMD from DIR in its own process group, with the KEY=VALUE overrides
@@ -379,16 +416,12 @@ start_services() {
 	local name kind port dir cmd envpairs
 	while IFS=: read -r name kind port; do
 		[ -n "$name" ] || continue
-		dir="$REPO_ROOT/services/$name"
+		dir=$(service_dir "$name")
 		if [ ! -f "$dir/.env" ]; then
 			echo "warning: $name: no .env in $dir — skipping (copy .env.example)" >&2
 			continue
 		fi
-		if [ "$kind" = "go" ]; then
-			cmd="go run ./cmd/server"
-		else
-			cmd="pnpm run start:dev"
-		fi
+		cmd=$(service_cmd "$name" "$kind")
 		envpairs=$(service_env "$name")
 		# Word split on purpose: each line is one KEY=VALUE word.
 		start_process "$name" "$dir" "$cmd" "$kind" $envpairs
@@ -442,6 +475,23 @@ EOF
 cmd_up() {
 	mkdir -p "$RUNTIME_DIR"
 
+	# core-ledger and its worker now run on the host from source. If their
+	# compose containers are still around (e.g. from `make up-app`), stop them
+	# first — before the conflict check below, which would otherwise report our own
+	# containers as foreign holders of 18081/18181.
+	local stopped=""
+	if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'usdx-core-ledger'; then
+		docker stop usdx-core-ledger >/dev/null 2>&1 || true
+		stopped="$stopped core-ledger"
+	fi
+	if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'usdx-worker'; then
+		docker stop usdx-worker >/dev/null 2>&1 || true
+		stopped="$stopped worker"
+	fi
+	if [ -n "$stopped" ]; then
+		echo "== stopped compose containers to free the host ports:$stopped"
+	fi
+
 	# Refuse to start on top of somebody else's listener. Reporting this
 	# before launching anything beats a half-started stack whose services
 	# silently talk to the other project — or fail to bind and look "down".
@@ -457,13 +507,6 @@ cmd_up() {
 	echo "== infra (docker compose, no image build)"
 	compose up -d --no-build postgres keycloak redis traefik timescaledb nats minio
 
-	if docker image inspect usdx/core-ledger:dev >/dev/null 2>&1; then
-		echo "== core-ledger + worker (image present)"
-		compose --profile app up -d --no-build core-ledger worker
-	else
-		echo "warning: image usdx/core-ledger:dev not found — skipping core-ledger and worker." >&2
-		echo "         run 'make docker-build', then re-run 'make stack-up'." >&2
-	fi
 
 	# Traefik sometimes comes up without its published host port; recreating
 	# just that container restores the 18082 binding without touching anything
@@ -510,6 +553,11 @@ cmd_up() {
 # down
 # ---------------------------------------------------------------------------
 
+group_alive() {
+	# Succeeds while any process in process group $1 is still running.
+	pgrep -g "$1" >/dev/null 2>&1
+}
+
 stop_process() {
 	local name=$1
 	local pidfile="$RUNTIME_DIR/$name.pid"
@@ -527,14 +575,16 @@ stop_process() {
 		kill -TERM "$pid" 2>/dev/null || true
 	fi
 	i=0
+	# Wait for the whole group: `go run` exits before the binary it built,
+	# which can hold the port for a moment after the leader is gone.
 	while [ "$i" -lt 10 ]; do
-		if ! process_alive "$pid"; then
+		if ! process_alive "$pid" && ! group_alive "$pid"; then
 			break
 		fi
 		sleep 1
 		i=$((i + 1))
 	done
-	if process_alive "$pid"; then
+	if process_alive "$pid" || group_alive "$pid"; then
 		if ! kill -KILL -- "-$pid" 2>/dev/null; then
 			kill -KILL "$pid" 2>/dev/null || true
 		fi

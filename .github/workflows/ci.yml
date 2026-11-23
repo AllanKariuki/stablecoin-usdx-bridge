@@ -45,12 +45,13 @@ jobs:
       - name: go vet
         run: go vet ./core-ledger/... ./shared/go/platform/... ./shared/authz/... ./services/auth-proxy/... ./services/indexer/... ./services/signer/... ./services/audit-trail/...
 
-      - name: Create signer's and audit-trail's test databases
+      - name: Create the test databases
         # Service containers can't mount docker-entrypoint-initdb.d, so this is
-        # infra/postgres/init/05-p6-databases.sql and 06-p7-databases.sql run
-        # by hand.
+        # infra/postgres/init/02-ledger-test-db.sql, 05-p6-databases.sql and
+        # 06-p7-databases.sql run by hand.
         run: |
           PGPASSWORD=bridge psql -h localhost -p 55433 -U bridge -d bridge \
+            -c "CREATE DATABASE bridge_test OWNER bridge;" \
             -c "CREATE ROLE signer WITH LOGIN PASSWORD 'signer';" \
             -c "CREATE DATABASE signer_test OWNER signer;" \
             -c "CREATE ROLE audit_trail WITH LOGIN PASSWORD 'audit_trail';" \
@@ -58,7 +59,7 @@ jobs:
 
       - name: go test (unit + integration)
         env:
-          LEDGER_TEST_DATABASE_URL: postgres://bridge:bridge@localhost:55433/bridge?sslmode=disable
+          LEDGER_TEST_DATABASE_URL: postgres://bridge:bridge@localhost:55433/bridge_test?sslmode=disable
           # Its own database, not the ledger's: both migrate with goose's
           # default version table, so sharing one makes signer skip its
           # migrations (see the Makefile's SIGNER_TEST_DATABASE_URL).

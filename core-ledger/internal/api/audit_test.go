@@ -5,12 +5,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/testdb"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -40,7 +40,7 @@ func TestIntegrationWalletStatusChangeIsAuditedWithTheCallersIdentity(t *testing
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 
-	db, err := sql.Open("pgx", os.Getenv("LEDGER_TEST_DATABASE_URL"))
+	db, err := sql.Open("pgx", testdb.DSN(t, "LEDGER_TEST_DATABASE_URL"))
 	if err != nil {
 		t.Fatal(err)
 	}

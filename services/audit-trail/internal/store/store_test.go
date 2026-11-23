@@ -3,11 +3,11 @@ package store
 import (
 	"context"
 	"errors"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/testdb"
 	"github.com/google/uuid"
 )
 
@@ -19,10 +19,7 @@ import (
 //	  go test ./services/audit-trail/... -race -v
 func testStore(t *testing.T) *Store {
 	t.Helper()
-	dsn := os.Getenv("AUDIT_TRAIL_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set AUDIT_TRAIL_TEST_DATABASE_URL to run audit-trail store integration tests")
-	}
+	dsn := testdb.DSN(t, "AUDIT_TRAIL_TEST_DATABASE_URL")
 	st, err := Open(dsn)
 	if err != nil {
 		t.Fatalf("opening store: %v", err)

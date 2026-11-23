@@ -1,5 +1,6 @@
 .PHONY: help up down logs up-app kill-worker logs-worker up-obs down-obs \
 	test test-unit test-integration test-eth eth-deps test-sol test-node db-backfill \
+	e2e e2e-fast \
 	build run run-worker run-indexer reconcile docker-build \
 	lint fmt fmt-check \
 	authz-gen keycloak-realm \
@@ -180,6 +181,14 @@ test-node: up db-backfill
 db-backfill:
 	@infra/postgres/backfill.sh usdx-postgres
 
+## Run the live end-to-end money-flow harness (moves testnet funds, ~45-60 min).
+e2e:
+	node scripts/e2e/money-flows.mjs
+
+## Run the money-flow harness without the on-chain legs (fiat only, ~1 min).
+e2e-fast:
+	node scripts/e2e/money-flows.mjs --fast
+
 # ---------------------------------------------------------------------------
 # Build / run
 # ---------------------------------------------------------------------------
@@ -196,24 +205,24 @@ build:
 
 ## Run core-ledger against local infra (needs core-ledger/.env — see .env.example).
 run: up
-	cd core-ledger && go run ./cmd/server
+	cd core-ledger && set -a; . ./.env; set +a; go run ./cmd/server
 
 ## Run the saga worker against local infra. The API only enqueues sagas now,
 ## so nothing reaches a chain until this is running.
 run-worker: up
-	cd core-ledger && go run ./cmd/worker
+	cd core-ledger && set -a; . ./.env; set +a; go run ./cmd/worker
 
 ## Run the chain indexer against local infra (needs services/indexer/.env).
 # Nothing writes eth/sol_supply_snapshot without this, so reconciliation's
 # Leg A falls back to calling the chains directly.
 run-indexer: up
-	cd services/indexer && go run ./cmd/server
+	cd services/indexer && set -a; . ./.env; set +a; go run ./cmd/server
 
 ## Reconcile once and report. Exit 0 balanced, 2 broken, 1 could-not-check.
 # This is the same binary the k8s CronJob runs; `--watch 5m` is the long-lived
 # form compose uses.
 reconcile:
-	cd core-ledger && go run ./cmd/reconcile --triggered-by operator
+	cd core-ledger && set -a; . ./.env; set +a; go run ./cmd/reconcile --triggered-by operator
 
 ## Build every service image.
 docker-build:

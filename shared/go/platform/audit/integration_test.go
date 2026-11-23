@@ -8,10 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/testdb"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -28,10 +29,7 @@ import (
 //	  go test ./shared/go/platform/audit -race -v
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
-	dsn := os.Getenv("LEDGER_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set LEDGER_TEST_DATABASE_URL to run audit outbox integration tests")
-	}
+	dsn := testdb.DSN(t, "LEDGER_TEST_DATABASE_URL")
 
 	admin, err := sql.Open("pgx", dsn)
 	if err != nil {

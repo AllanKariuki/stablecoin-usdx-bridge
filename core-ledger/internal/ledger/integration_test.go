@@ -3,9 +3,10 @@ package ledger
 import (
 	"context"
 	"math/big"
-	"os"
 	"testing"
 	"time"
+
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/testdb"
 )
 
 // These tests run against a real PostgreSQL instance, because the parts of
@@ -17,10 +18,7 @@ import (
 //	LEDGER_TEST_DATABASE_URL='postgres://bridge:bridge@localhost:55433/bridge_test?sslmode=disable' go test ./internal/ledger/ -run Integration -v
 func testRepo(t *testing.T) (*Repository, *Service, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("LEDGER_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set LEDGER_TEST_DATABASE_URL to run ledger integration tests")
-	}
+	dsn := testdb.DSN(t, "LEDGER_TEST_DATABASE_URL")
 
 	repo, err := NewRepository(dsn)
 	if err != nil {

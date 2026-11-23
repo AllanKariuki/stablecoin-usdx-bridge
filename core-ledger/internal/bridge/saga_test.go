@@ -8,13 +8,13 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/testdb"
 )
 
 // The saga is tested against a real PostgreSQL instance because the things
@@ -136,10 +136,7 @@ var (
 
 func repository(t *testing.T) *ledger.Repository {
 	t.Helper()
-	dsn := os.Getenv("LEDGER_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set LEDGER_TEST_DATABASE_URL to run bridge saga integration tests")
-	}
+	dsn := testdb.DSN(t, "LEDGER_TEST_DATABASE_URL")
 	sharedOnce.Do(func() {
 		sharedRepo, sharedErr = ledger.NewRepository(dsn)
 		if sharedErr == nil {
