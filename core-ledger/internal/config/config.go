@@ -19,6 +19,16 @@ type Config struct {
 	Port     int    `env:"PORT" default:"8081"`
 	LogLevel string `env:"LOG_LEVEL" default:"info"`
 
+	// AuthIssuerURL is the Keycloak realm issuer (the URL OIDC discovery is
+	// relative to, e.g. http://localhost:8080/realms/damp). Every API request
+	// must carry a service-account JWT verified against it — required, with
+	// no unauthenticated mode, because core-ledger holds the money (H2).
+	AuthIssuerURL string `env:"AUTH_ISSUER_URL" required:"true"`
+	// AuthAudience is the client a caller's token must name in `aud`: the
+	// bearer-only `core-ledger` resource client from infra/keycloak's realm
+	// template, whose client roles this API's route table checks.
+	AuthAudience string `env:"AUTH_AUDIENCE" default:"core-ledger"`
+
 	DatabaseURL string `env:"DATABASE_URL" required:"true"`
 
 	EthRPCURL        string `env:"ETH_RPC_URL" required:"true"`

@@ -23,7 +23,13 @@ import type { Request, Response } from 'express-serve-static-core';
 export class UpstreamProxy {
   private readonly logger = new Logger(UpstreamProxy.name);
 
-  async forward(baseUrl: string, req: Request, res: Response, pathOverride?: string): Promise<void> {
+  async forward(
+    baseUrl: string,
+    req: Request,
+    res: Response,
+    pathOverride?: string,
+    extraHeaders?: Record<string, string>,
+  ): Promise<void> {
     if (!baseUrl) {
       throw new PlatformException(
         503,
@@ -41,6 +47,13 @@ export class UpstreamProxy {
     for (const name of ['x-user-id', 'x-org-id', 'x-roles', 'x-permissions', 'x-request-id', 'idempotency-key']) {
       const value = req.headers[name];
       if (typeof value === 'string') headers[name] = value;
+    }
+    // extraHeaders are bff's own additions — e.g. its service-account
+    // Authorization for the one upstream that authenticates every call
+    // (core-ledger, H2). Never read from req: the user's gateway token is
+    // deliberately not forwarded to a service-to-service boundary.
+    for (const [name, value] of Object.entries(extraHeaders ?? {})) {
+      headers[name] = value;
     }
 
     const hasBody = req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'DELETE';

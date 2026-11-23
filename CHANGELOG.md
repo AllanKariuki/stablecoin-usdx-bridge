@@ -3,6 +3,52 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-23 — H2: core-ledger authenticates every call
+
+### Added — service-account auth on core-ledger (target bar: real money)
+- **core-ledger authenticates every API call** with a Keycloak
+  service-account JWT (`AUTH_ISSUER_URL` required, `AUTH_AUDIENCE`
+  default `core-ledger`). A route table in `core-ledger/internal/api/auth.go`
+  maps each route to the client roles that authorize it, default-deny; only
+  `/healthz`, `/readyz` and `/metrics` are exempt. Missing/invalid token →
+  401 `UNAUTHENTICATED`; valid token without the role → 403 `FORBIDDEN`.
+  There is no disable switch.
+- **Seven client roles** on the new bearer-only `core-ledger` resource
+  client (realm template + `scripts/keycloak-sync.sh`, which upserts the
+  whole H2 surface into a *running* Keycloak — an existing dev volume never
+  re-imports the realm JSON): `ledger.user-proxy` (bff), `ledger.settlement`
+  (payments), `ledger.wallet-provision` (identity), `ledger.wallet-status`
+  (kyc, compliance), `ledger.reserves.custodian` (rms),
+  `ledger.reserves.chain-supply` (indexer), `ledger.reports.read`
+  (reporting). `scripts/stack.sh up` runs the sync after Keycloak is up.
+- **`shared/go/platform/oidcverify`**: the verifier moved out of
+  auth-proxy's `internal/` and extended with `ClientRoles`
+  (`resource_access.<client>.roles`), `AuthorizedParty` (azp) and
+  `HasClientRole`, so one verifier serves both auth boundaries. The fake
+  issuer moved alongside it (`oidcverify/oidctest`) and mints
+  `resource_access`/azp claims.
+- **`ServiceTokenClient`** in `shared/node/nest-platform`: client-
+  credentials against Keycloak, cached until 30s before expiry,
+  single-flight refresh, typed errors. Every Node service's core-ledger
+  client (and bff's operator proxy) now attaches its own service-account
+  bearer; `X-Service-Token`/`CORE_LEDGER_SERVICE_TOKEN` plumbing is gone.
+  identity reuses its existing `identity-service` client through the same
+  shared token cache as its Keycloak Admin client.
+- **indexer** mints its token through `golang.org/x/oauth2/clientcredentials`
+  (`SERVICE_CLIENT_ID`/`SERVICE_CLIENT_SECRET` + Keycloak base URL/realm).
+- **actor()** falls back to `service:<azp>` instead of `"api"` when a call
+  carries no `X-User-Id`, so the journal names the authenticated caller.
+- An unauthenticated request gets 401 on every path, before the route table
+  is consulted, so it can't be used to map which routes exist.
+- k8s: the core-ledger, worker and reconcile manifests set `AUTH_ISSUER_URL`.
+  Every calling service's manifest (payments, rms, kyc, compliance,
+  reporting, indexer, identity) carries `SERVICE_CLIENT_ID`, a
+  `SERVICE_CLIENT_SECRET` secret ref, and `KEYCLOAK_BASE_URL`/`KEYCLOAK_REALM`.
+  Each `<service>-secrets` needs a `service-client-secret` key before deploying.
+- The e2e harness's `negatives` step now posts directly to core-ledger with
+  no token (→ 401) and with a customer's gateway token — right issuer, wrong
+  audience (→ 401).
+
 ## 2026-11-12
 
 ### Added — frontend redesign, split into two apps and a shared package

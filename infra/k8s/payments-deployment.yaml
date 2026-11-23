@@ -37,6 +37,17 @@ spec:
               value: "postgres://payments:payments@postgres.default.svc.cluster.local:5432/payments?sslmode=disable"
             - name: CORE_LEDGER_URL
               value: "http://core-ledger.default.svc.cluster.local:8081"
+            # Service-account credentials for core-ledger (H2): core-ledger
+            # rejects any call without a svc-payments bearer token.
+            - name: SERVICE_CLIENT_ID
+              value: "svc-payments"
+            - name: SERVICE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: payments-secrets, key: service-client-secret }
+            - name: KEYCLOAK_BASE_URL
+              value: "http://keycloak.default.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "damp"
             - name: NOTIFICATIONS_URL
               value: "http://notifications.default.svc.cluster.local:3000"
             - name: OUTBOX_RELAY_SECONDS

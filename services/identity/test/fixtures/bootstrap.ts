@@ -24,8 +24,8 @@ export async function bootstrapIdentityApp(
   process.env.DATABASE_URL = TEST_DATABASE_URL;
   process.env.KEYCLOAK_BASE_URL = keycloakUrl;
   process.env.KEYCLOAK_REALM = 'damp';
-  process.env.KEYCLOAK_ADMIN_CLIENT_ID = 'identity-service';
-  process.env.KEYCLOAK_ADMIN_CLIENT_SECRET = 'test-secret';
+  process.env.SERVICE_CLIENT_ID = 'identity-service';
+  process.env.SERVICE_CLIENT_SECRET = 'test-secret';
   process.env.CORE_LEDGER_URL = coreLedgerUrl;
   process.env.LOG_LEVEL = 'error'; // quiet test output; access logs aren't the point of these specs
   process.env.PORT = '3001';

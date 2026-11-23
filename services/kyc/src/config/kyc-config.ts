@@ -24,6 +24,24 @@ export class KycConfig {
   @IsNotEmpty()
   CORE_LEDGER_URL!: string;
 
+  // --- Service-to-service auth (H2). Every core-ledger call carries kyc's
+  // own service-account token; core-ledger verifies it and checks
+  // ledger.wallet-status.
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_ID!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_SECRET!: string;
+
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  KEYCLOAK_BASE_URL!: string;
+
+  @IsString()
+  KEYCLOAK_REALM = 'damp';
+
   // Maker-checker. Unset means nothing can be approved in this environment —
   // cases reach PENDING_APPROVAL and stop, which is the correct failure for a
   // gate whose approval service is missing.

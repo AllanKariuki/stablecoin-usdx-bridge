@@ -1063,9 +1063,18 @@ func deriveCorrelationID(idempotencyKey string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("saga:"+idempotencyKey)).String()
 }
 
+// actor is who a write is stamped as. X-User-Id (set by the gateway via
+// auth-proxy, or by a service naming the party it acts for) wins; without
+// it, the authenticated service client itself is the actor — "service:<azp>"
+// rather than the pre-auth "api" fallback, so the journal names the caller
+// instead of anonymizing it. The bare "api" fallback survives only for
+// tests that call handlers without the auth middleware.
 func actor(c *fiber.Ctx) string {
 	if sub := c.Get("X-User-Id"); sub != "" {
 		return sub
+	}
+	if client, ok := c.Locals(authClientLocalsKey).(string); ok && client != "" {
+		return "service:" + client
 	}
 	return "api"
 }

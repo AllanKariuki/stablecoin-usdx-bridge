@@ -33,7 +33,8 @@ export class IdentityConfig {
   CORE_LEDGER_URL!: string;
 
   // Keycloak's base URL (NOT the realm issuer bff/auth-proxy use) — Admin
-  // API paths are /admin/realms/<realm>/... under this.
+  // API paths are /admin/realms/<realm>/... under this, and the token
+  // endpoint is /realms/<realm>/protocol/openid-connect/token.
   @IsUrl({ require_tld: false })
   @IsNotEmpty()
   KEYCLOAK_BASE_URL!: string;
@@ -42,13 +43,17 @@ export class IdentityConfig {
   @IsNotEmpty()
   KEYCLOAK_REALM = 'damp';
 
+  // The one Keycloak client identity authenticates as for both of its
+  // service-to-service surfaces (H2): the Keycloak Admin API
+  // (realm-management roles) and core-ledger's POST /wallets
+  // (ledger.wallet-provision) — one client, one cached token.
   @IsString()
   @IsNotEmpty()
-  KEYCLOAK_ADMIN_CLIENT_ID = 'identity-service';
+  SERVICE_CLIENT_ID = 'identity-service';
 
   @IsString()
   @IsNotEmpty()
-  KEYCLOAK_ADMIN_CLIENT_SECRET!: string;
+  SERVICE_CLIENT_SECRET!: string;
 
   // services/audit-trail's base URL. The audit relay drains audit_outbox to
   // its POST /internal/events; empty means events wait, durably, until set.

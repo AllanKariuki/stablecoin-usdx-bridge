@@ -1,8 +1,12 @@
-// Package testoidc stands up a fake OIDC issuer (discovery document + JWKS
-// endpoint) and signs tokens against it, so auth-proxy's tests can exercise
+// Package oidctest stands up a fake OIDC issuer (discovery document + JWKS
+// endpoint) and signs tokens against it, so a service's tests can exercise
 // real signature/issuer/audience/expiry verification through go-oidc
 // without a live Keycloak.
-package testoidc
+//
+// It moved out of services/auth-proxy/internal/testoidc when the verifier
+// moved into shared/go/platform/oidcverify, so core-ledger's auth tests can
+// use the same fake issuer auth-proxy's do.
+package oidctest
 
 import (
 	"crypto/rand"
@@ -67,15 +71,22 @@ func (s *Server) jwks(w http.ResponseWriter, r *http.Request) {
 }
 
 // Claims lets a test override the defaults SignToken fills in (subject,
-// audience, expiry) — only what's set is overridden.
+// audience, expiry, azp, realm/client roles) — only what's set is
+// overridden.
 type Claims struct {
 	Subject string
 	Roles   []string
+	// ClientRoles is minted as resource_access.<client>.roles, the shape
+	// Keycloak puts a service-account's client roles in.
+	ClientRoles map[string][]string
+	// Azp is minted as the azp claim — the client that obtained the token.
+	Azp     string
 	Expires time.Time
 }
 
 // SignToken produces an RS256-signed access token in Keycloak's shape:
-// standard iss/aud/sub/exp plus realm_access.roles.
+// standard iss/aud/sub/exp plus realm_access.roles, resource_access and azp
+// when the test sets them.
 func (s *Server) SignToken(t *testing.T, audience string, c Claims) string {
 	t.Helper()
 
@@ -95,6 +106,16 @@ func (s *Server) SignToken(t *testing.T, audience string, c Claims) string {
 		"realm_access": map[string]any{
 			"roles": c.Roles,
 		},
+	}
+	if c.Azp != "" {
+		claims["azp"] = c.Azp
+	}
+	if len(c.ClientRoles) > 0 {
+		resourceAccess := make(map[string]any, len(c.ClientRoles))
+		for client, roles := range c.ClientRoles {
+			resourceAccess[client] = map[string]any{"roles": roles}
+		}
+		claims["resource_access"] = resourceAccess
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)

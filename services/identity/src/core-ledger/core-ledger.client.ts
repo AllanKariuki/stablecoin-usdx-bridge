@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ServiceTokenClient } from '@damp/nest-platform';
 
 /**
  * identity's only outbound call to core-ledger: ensure a party's default
@@ -10,13 +11,20 @@ import { ConfigService } from '@nestjs/config';
  * this is safe to call on every first provisioning, not just a literal
  * signup flow (there isn't a separate one — see ProvisioningService's
  * doc comment).
+ *
+ * H2: the call carries identity's service-account token (ledger.wallet-
+ * provision), minted by the same ServiceTokenClient instance
+ * KeycloakAdminClient uses — one client-credentials cache per process.
  */
 @Injectable()
 export class CoreLedgerClient {
   private readonly logger = new Logger(CoreLedgerClient.name);
   private readonly baseUrl: string;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    private readonly serviceTokens: ServiceTokenClient,
+  ) {
     this.baseUrl = config.get<string>('CORE_LEDGER_URL', { infer: true })!;
   }
 
@@ -32,9 +40,14 @@ export class CoreLedgerClient {
     try {
       const response = await fetch(new URL('/wallets', this.baseUrl), {
         method: 'POST',
-        // Named so core-ledger's ledger.wallet.created audit event says who
-        // created the wallet rather than its anonymous "api" fallback.
-        headers: { 'Content-Type': 'application/json', 'X-User-Id': 'service:identity' },
+        // X-User-Id names identity as the caller for the journal's
+        // initiated_by ("service:identity-service" via azp is the auth
+        // fallback; this stays explicit for the audit trail).
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': 'service:identity',
+          Authorization: `Bearer ${await this.serviceTokens.accessToken()}`,
+        },
         body: JSON.stringify({ user_id: partyId, currency: 'USD', label: 'Main' }),
       });
       if (!response.ok) {

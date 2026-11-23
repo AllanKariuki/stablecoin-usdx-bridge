@@ -1,5 +1,5 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { PlatformConfigModule, PlatformModule, ServiceTokenClient } from '@damp/nest-platform';
 import { CasesController } from './cases/cases.controller';
 import { AuditRelayService } from './audit/audit-relay.service';
 import { ComplianceConfig } from './config/compliance-config';
@@ -14,7 +14,7 @@ import { ScreeningService } from './screening/screening.service';
 
 @Module({
   controllers: [CasesController, IngestController, ApprovalsController],
-  providers: [IngestService, ScreeningService, EnforcementService, WorkflowClient, CoreLedgerClient],
+  providers: [IngestService, ScreeningService, EnforcementService, WorkflowClient, CoreLedgerClient, ServiceTokenClient],
 })
 export class ComplianceModule {}
 

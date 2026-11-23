@@ -1,5 +1,6 @@
 import { Controller, Get, Post, Put, Req, Res } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ServiceTokenClient } from '@damp/nest-platform';
 import type { Request, Response } from 'express-serve-static-core';
 import { UpstreamProxy } from './upstream.proxy';
 
@@ -60,9 +61,18 @@ export class CoreLedgerOperationsProxyController {
 
   constructor(
     private readonly proxy: UpstreamProxy,
+    private readonly serviceTokens: ServiceTokenClient,
     config: ConfigService,
   ) {
     this.baseUrl = config.get<string>('CORE_LEDGER_URL', { infer: true }) ?? '';
+  }
+
+  /** core-ledger authenticates every call (H2); the forwarded request
+   * carries bff's own service-account token, never the user's. */
+  private async forward(req: Request, res: Response) {
+    return this.proxy.forward(this.baseUrl, req, res, undefined, {
+      authorization: `Bearer ${await this.serviceTokens.accessToken()}`,
+    });
   }
 
   @Get([
@@ -75,11 +85,11 @@ export class CoreLedgerOperationsProxyController {
     'reserves/reconciliation-breaks',
   ])
   read(@Req() req: Request, @Res() res: Response) {
-    return this.proxy.forward(this.baseUrl, req, res);
+    return this.forward(req, res);
   }
 
   @Post(['transactions/:transactionId/reversal', 'ledger/closures', 'redemptions/:transactionId/confirm'])
   write(@Req() req: Request, @Res() res: Response) {
-    return this.proxy.forward(this.baseUrl, req, res);
+    return this.forward(req, res);
   }
 }

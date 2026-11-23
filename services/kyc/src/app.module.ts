@@ -1,5 +1,5 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { PlatformConfigModule, PlatformModule, ServiceTokenClient } from '@damp/nest-platform';
 import { ApprovalsController } from './cases/approvals.controller';
 import { CasesController } from './cases/cases.controller';
 import { CasesService } from './cases/cases.service';
@@ -14,7 +14,7 @@ import { WorkflowClient } from './workflow/workflow.client';
 
 @Module({
   controllers: [CasesController, ApprovalsController],
-  providers: [CasesService, TiersRepository, StubKycProvider, StorageService, WorkflowClient, CoreLedgerClient],
+  providers: [CasesService, TiersRepository, StubKycProvider, StorageService, WorkflowClient, CoreLedgerClient, ServiceTokenClient],
 })
 export class KycModule {}
 
