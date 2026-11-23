@@ -102,7 +102,12 @@ var Default = Table{
 	compile("GET", "/dashboard", authz.PermissionWalletsReadOwn, authz.PermissionWalletsReadAny),
 
 	// Money movement
-	compile("POST", "/deposits", authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny),
+	//
+	// A deposit here is a manual treasury adjustment with no payment rail
+	// behind it, not a customer top-up — customer deposits go through
+	// services/payments' payment-intent path, where a rail confirms the fiat
+	// arrived. wallets:write:own/:any deliberately do not authorize it.
+	compile("POST", "/deposits", authz.PermissionWalletsDepositManual),
 	compile("POST", "/withdrawals", authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny),
 	compile("POST", "/transfers", authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny),
 	compile("POST", "/fx/quotes", authz.PermissionFxQuote),

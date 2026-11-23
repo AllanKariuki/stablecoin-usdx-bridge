@@ -80,6 +80,8 @@ const (
 	PermissionTransactionsReadOwn Permission = "transactions:read:own"
 	// Reverse a posted transaction by contra-entry.
 	PermissionTransactionsReverse Permission = "transactions:reverse"
+	// Credit a wallet manually without a payment rail (treasury adjustment).
+	PermissionWalletsDepositManual Permission = "wallets:deposit:manual"
 	// Read any wallet and balance, regardless of owner.
 	PermissionWalletsReadAny Permission = "wallets:read:any"
 	// Read the caller's own wallets and balances.
@@ -101,6 +103,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionWalletsReadAny,
 		PermissionWalletsWriteOwn,
 		PermissionWalletsWriteAny,
+		PermissionWalletsDepositManual,
 		PermissionWalletsStatusManage,
 		PermissionTransactionsReadOwn,
 		PermissionTransactionsReadAny,
@@ -184,6 +187,7 @@ var RolePermissions = map[Role][]Permission{
 		PermissionTransactionsReverse,
 		PermissionLedgerRead,
 		PermissionLedgerAdmin,
+		PermissionWalletsDepositManual,
 		PermissionNotificationsReadOwn,
 		PermissionApprovalsPropose,
 		PermissionApprovalsDecide,

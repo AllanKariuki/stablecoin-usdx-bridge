@@ -1,4 +1,4 @@
-# Single source of truth for DAMP's RBAC model: 6 roles, 32 permissions.
+# Single source of truth for DAMP's RBAC model: 6 roles, 33 permissions.
 #
 # Generates (see shared/authz/gen, `make authz-gen`):
 #   - shared/authz/generated/permissions.go   — services/auth-proxy's role→permission
@@ -44,6 +44,8 @@ permissions:
     description: Deposit, withdraw, or transfer from the caller's own wallets.
   wallets:write:any:
     description: Deposit, withdraw, or transfer from any wallet (operator/treasury actions).
+  wallets:deposit:manual:
+    description: Credit a wallet manually without a payment rail (treasury adjustment).
   wallets:status:manage:
     description: Freeze or unfreeze a wallet.
 
@@ -170,6 +172,7 @@ roles:
       - wallets:read:any
       - wallets:write:own
       - wallets:write:any
+      - wallets:deposit:manual
       - wallets:status:manage
       - transactions:read:own
       - transactions:read:any
@@ -228,6 +231,7 @@ roles:
       - transactions:reverse
       - ledger:read
       - ledger:admin
+      - wallets:deposit:manual
       - notifications:read:own
       - approvals:propose
       - approvals:decide

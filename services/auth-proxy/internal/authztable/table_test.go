@@ -67,3 +67,24 @@ func TestAllows_UnrelatedPermissionInsufficient(t *testing.T) {
 		t.Error("expected ledger:admin to satisfy the closures rule")
 	}
 }
+
+func TestDeposits_RequireManualDepositPermission(t *testing.T) {
+	rule, found := authztable.Default.Match("POST", "/deposits")
+	if !found {
+		t.Fatal("setup: expected a rule for POST /deposits")
+	}
+	if !rule.Allows([]authz.Permission{authz.PermissionWalletsDepositManual}) {
+		t.Error("expected wallets:deposit:manual to authorize a manual deposit")
+	}
+	// A customer holds wallets:write:own; that must not be enough to credit a
+	// wallet with no rail behind it.
+	if rule.Allows(authz.RolePermissions[authz.RoleCustomer]) {
+		t.Error("the customer role must not be able to POST /deposits")
+	}
+	if rule.Allows([]authz.Permission{authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny}) {
+		t.Error("wallets:write:own/:any must not authorize a manual deposit")
+	}
+	if !rule.Allows(authz.RolePermissions[authz.RoleTreasury]) {
+		t.Error("expected the treasury role to hold wallets:deposit:manual")
+	}
+}

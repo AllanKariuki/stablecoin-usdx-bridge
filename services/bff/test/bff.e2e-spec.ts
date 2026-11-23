@@ -92,7 +92,7 @@ describe('bff (e2e, against a fake core-ledger)', () => {
 
     const res = await request(app.getHttpServer())
       .post('/deposits')
-      .set({ ...authHeaders('dave'), 'idempotency-key': 'test-key-1' })
+      .set({ ...authHeaders('dave', ['wallets:deposit:manual']), 'idempotency-key': 'test-key-1' })
       .send({ walletId, amount: '25.00', reference: 'test' })
       .expect(201);
 
@@ -107,7 +107,7 @@ describe('bff (e2e, against a fake core-ledger)', () => {
     const walletId = wallets.body[0].id;
     await request(app.getHttpServer())
       .post('/deposits')
-      .set({ ...authHeaders('erin'), 'idempotency-key': 'test-key-2' })
+      .set({ ...authHeaders('erin', ['wallets:deposit:manual']), 'idempotency-key': 'test-key-2' })
       .send({ walletId, amount: '5.00' })
       .expect(201);
 
