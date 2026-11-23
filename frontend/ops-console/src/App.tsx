@@ -1,10 +1,11 @@
 import { lazy, Suspense, type ReactNode } from 'react';
-import { Route, Routes } from 'react-router-dom';
-import { AuthCallback, RequireAuth, RequirePermission, RequireRole, type Permission } from '@damp/web-shared/auth';
+import { Route, Routes, useLocation } from 'react-router-dom';
+import { AuthCallback, RequireAuth, RequirePermission, RequireRole, useAuth, type Permission } from '@damp/web-shared/auth';
 import { AppRoot, AppShell } from '@damp/web-shared/layout';
 import { NotFoundPage } from '@damp/web-shared/pages';
-import { SkeletonRows } from '@damp/web-shared/ui';
+import { FullPageLoader, SkeletonRows } from '@damp/web-shared/ui';
 import { GlobalSearch } from './components/GlobalSearch';
+import StaffEntry, { PORTAL_URL } from './pages/StaffEntry';
 import { STAFF_ROLES, WORKSPACE_META, WORKSPACE_NAV } from './workspace-config';
 import { useWorkspace } from './workspace-context';
 import { WorkspaceProvider, WorkspaceSwitcher } from './workspaces';
@@ -30,9 +31,30 @@ const Audit = lazy(() => import('./pages/auditor/Audit'));
 const Reports = lazy(() => import('./pages/auditor/Reports'));
 const Directory = lazy(() => import('./pages/admin/Directory'));
 
-const PORTAL_URL = 'http://localhost:5173';
-
 const gated = (anyOf: Permission[], page: ReactNode) => <RequirePermission anyOf={anyOf}>{page}</RequirePermission>;
+
+/**
+ * The console's front door: an anonymous staff entry at `/`, the loading
+ * spinner while the session is checked, and the gated shell everywhere else.
+ * Deep links keep RequireAuth's auto-redirect to Keycloak.
+ */
+function ConsoleEntry() {
+  const { status } = useAuth();
+  const location = useLocation();
+  if (location.pathname === '/') {
+    if (status === 'loading') return <FullPageLoader label="Checking your session" />;
+    if (status === 'anonymous') return <StaffEntry />;
+  }
+  return (
+    <RequireAuth>
+      <RequireRole roles={STAFF_ROLES} elsewhere={{ label: 'Go to the DAMP portal', href: PORTAL_URL }}>
+        <WorkspaceProvider>
+          <ConsoleShell />
+        </WorkspaceProvider>
+      </RequireRole>
+    </RequireAuth>
+  );
+}
 
 function ConsoleShell() {
   const { workspace } = useWorkspace();
@@ -80,18 +102,7 @@ export function App() {
     <AppRoot>
       <Routes>
         <Route path="/auth/callback" element={<AuthCallback />} />
-        <Route
-          path="/*"
-          element={
-            <RequireAuth>
-              <RequireRole roles={STAFF_ROLES} elsewhere={{ label: 'Go to the DAMP portal', href: PORTAL_URL }}>
-                <WorkspaceProvider>
-                  <ConsoleShell />
-                </WorkspaceProvider>
-              </RequireRole>
-            </RequireAuth>
-          }
-        />
+        <Route path="/*" element={<ConsoleEntry />} />
       </Routes>
     </AppRoot>
   );
