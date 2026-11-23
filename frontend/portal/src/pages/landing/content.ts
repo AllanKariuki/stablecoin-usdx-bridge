@@ -199,7 +199,7 @@ export const FIAT = [
 
 export const TIERS = [
   { n: '1', name: 'Basic', desc: 'Everyday personal use' },
-  { n: '2', name: 'Verified', desc: 'You are here' },
+  { n: '2', name: 'Verified', desc: 'ID checked' },
   { n: '3', name: 'Enhanced', desc: 'Raise it with proof of address' },
 ];
 
