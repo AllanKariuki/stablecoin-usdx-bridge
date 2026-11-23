@@ -80,6 +80,7 @@ payments~payments.user-proxy~services/bff: banks, payment-intents, invoices
 workflow~workflow.user-proxy~services/bff: the approval surface
 workflow~workflow.propose~services/kyc + services/compliance + svc-core-ledger: POST /approval-requests
 kyc~kyc.user-proxy~services/bff: user-facing kyc routes
+kyc~kyc.tier-read~services/payments + services/bff: GET /internal/parties/:partyId/tier (H5 KYC gate)
 compliance~compliance.user-proxy~services/bff: user-facing compliance routes
 compliance~compliance.ingest~svc-core-ledger-worker: POST /internal/outbox
 reporting~reporting.user-proxy~services/bff: user-facing reporting routes
@@ -127,6 +128,7 @@ svc-bff~rms
 svc-bff~notifications
 svc-bff~audit-trail
 svc-payments~core-ledger
+svc-payments~kyc
 svc-payments~notifications
 svc-payments~audit-trail
 svc-kyc~core-ledger
@@ -173,6 +175,8 @@ workflow~svc-kyc~workflow.propose
 workflow~svc-compliance~workflow.propose
 workflow~svc-core-ledger~workflow.propose
 kyc~svc-bff~kyc.user-proxy
+kyc~svc-bff~kyc.tier-read
+kyc~svc-payments~kyc.tier-read
 compliance~svc-bff~compliance.user-proxy
 compliance~svc-core-ledger-worker~compliance.ingest
 reporting~svc-bff~reporting.user-proxy

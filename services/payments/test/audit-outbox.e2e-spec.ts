@@ -55,7 +55,18 @@ describe('payments audit producer (real Postgres)', () => {
     banks = new BanksRepository(db);
     outbox = new OutboxRepository(db);
     relay = new OutboxRelay(outbox, config({ NOTIFICATIONS_URL: '' }), { accessToken: jest.fn(async () => 'tok') } as never);
-    service = new IntentsService(intents, banks, ledger as never, rails as never, db);
+    // H5: these specs exercise the intent *persistence* path; the KYC gate is
+    // not what is under test here, so it passes through (its own spec is
+    // intents-kyc-gate.spec.ts).
+    service = new IntentsService(
+      intents,
+      banks,
+      ledger as never,
+      rails as never,
+      db,
+      { require: jest.fn(async () => undefined) } as never,
+      config({ KYC_MIN_TIER_FIAT: 'TIER_1' }),
+    );
   });
 
   afterAll(async () => {

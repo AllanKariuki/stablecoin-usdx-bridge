@@ -27,6 +27,20 @@ export class PaymentsConfig {
   @IsNotEmpty()
   CORE_LEDGER_URL!: string;
 
+  // --- KYC gate (H5). Every intent creation checks the party's tier against
+  // KYC_MIN_TIER_FIAT before any write or core-ledger call; KycGate calls
+  // kyc's GET /internal/parties/:partyId/tier with this base URL. Empty is a
+  // deliberate failure: the gate fails CLOSED (503 KYC_UNAVAILABLE) on every
+  // intent rather than moving money past an unconfigured check.
+  @IsString()
+  KYC_URL = '';
+
+  // The tier name (from kyc's kyc_tiers seed) every intent requires.
+  // TIER_1 is the first non-zero tier: TIER_0 can do nothing by construction.
+  @IsString()
+  @IsNotEmpty()
+  KYC_MIN_TIER_FIAT = 'TIER_1';
+
   // --- Service-to-service auth (H2). Every core-ledger call carries
   // payments' own service-account token; core-ledger verifies it and checks
   // ledger.settlement.

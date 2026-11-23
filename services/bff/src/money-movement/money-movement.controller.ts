@@ -1,5 +1,6 @@
 import { Body, Controller, Headers, Post } from '@nestjs/common';
-import { PlatformException } from '@damp/nest-platform';
+import { ConfigService } from '@nestjs/config';
+import { KycGate, PlatformException } from '@damp/nest-platform';
 import { AuthContext, CurrentUser } from '../auth/current-user.decorator';
 import { CoreLedgerClient } from '../core-ledger/core-ledger.client';
 import { WalletOwnership } from '../wallets/wallet-ownership.service';
@@ -51,10 +52,16 @@ interface TransferBody {
  */
 @Controller()
 export class MoneyMovementController {
+  private readonly minTier: string;
+
   constructor(
     private readonly coreLedger: CoreLedgerClient,
     private readonly ownership: WalletOwnership,
-  ) {}
+    private readonly kycGate: KycGate,
+    config: ConfigService,
+  ) {
+    this.minTier = config.get<string>('KYC_MIN_TIER_ISSUANCE', { infer: true }) ?? 'TIER_1';
+  }
 
   @Post('deposits')
   deposit(
@@ -105,6 +112,11 @@ export class MoneyMovementController {
     @CurrentUser() auth: AuthContext,
   ): Promise<TransactionView> {
     requireIdempotencyKey(idempotencyKey);
+    // H5: the customer-facing transfer moves the caller's money, so the
+    // caller's KYC tier gates it — before the ownership read and before any
+    // core-ledger call. The operator /deposits and /withdrawals above are
+    // deliberately not gated: an operator adjusts any wallet by design.
+    await this.kycGate.require(auth.userId, this.minTier);
     // Only the source is checked: sending money to another user's wallet is
     // the point of a transfer, and core-ledger rejects an unknown destination.
     await this.ownership.requireOwnWallets(auth, [body.fromWalletId]);

@@ -87,7 +87,18 @@ describe('IntentsService rail availability', () => {
   }
 
   function serviceFor(parts: ReturnType<typeof harness>, rails: RailRegistry): IntentsService {
-    return new IntentsService(parts.intents as never, parts.banks as never, parts.ledger as never, rails, parts.db as never);
+    // H5: the KYC gate passes through here — what is under test is the rail
+    // registry's refusal happening before any write (the gate's own behaviour
+    // is covered by intents-kyc-gate.spec.ts).
+    return new IntentsService(
+      parts.intents as never,
+      parts.banks as never,
+      parts.ledger as never,
+      rails,
+      parts.db as never,
+      { require: jest.fn(async () => undefined) } as never,
+      config({ KYC_MIN_TIER_FIAT: 'TIER_1' }),
+    );
   }
 
   it('refuses a bank_mpesa intent before calling the ledger or persisting anything, when M-Pesa is unavailable', async () => {

@@ -30,7 +30,10 @@ describe('kyc audit producer (real Postgres)', () => {
     await db.onModuleInit();
     workflow = new WorkflowClient(config, { accessToken: jest.fn(async () => 'tok') } as never);
     jest.spyOn(workflow, 'propose').mockImplementation(async () => ({ id: `req_${randomUUID()}` }) as never);
-    const ledger = { setWalletsActive: async () => true } as unknown as CoreLedgerClient;
+    // H5: reject() freezes wallets via core-ledger; core-ledger itself is a
+    // stand-in here, so the freeze is a recorded no-op (its wire behaviour is
+    // covered by core-ledger.client.spec.ts).
+    const ledger = { setWalletsActive: async () => true, setWalletsFrozen: async () => true } as unknown as CoreLedgerClient;
     cases = new CasesService(db, new TiersRepository(db), {} as StubKycProvider, workflow, ledger);
   });
 
