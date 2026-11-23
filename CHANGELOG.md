@@ -3,6 +3,32 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-23 — hardening H1
+
+### Fixed
+- **A mined-but-reverted transaction is terminal.** An Ethereum receipt with
+  status 0, or a Solana signature that landed with an error, was classified
+  transient. The saga re-waited on a hash that can never succeed until the
+  attempt budget dead-lettered it. Both chain clients now wrap
+  `bridge.ErrTxFailedOnChain`, and the saga's existing terminal paths
+  compensate: a mint returns fiat, and a burn returns tokens. The check runs
+  after the replay guards, because a Solana `already in use` failure proves an
+  earlier transaction landed.
+- **M-Pesa B2C** sent the shortcode as `InitiatorName` and no
+  `SecurityCredential`, so real Daraja payouts could not succeed. New config:
+  `MPESA_INITIATOR_NAME` and `MPESA_SECURITY_CREDENTIAL`. Payouts are refused
+  with `RAIL_UNAVAILABLE` before any HTTP call when either is unset.
+
+### Security
+- **audit-trail fails closed.** It refuses to start without `INGEST_TOKEN`
+  unless `ENV=local`, and in local it warns on each unauthenticated request.
+  The k8s manifest now sets `ENV=production`. Left unset, it defaulted to
+  local, which would have kept production open.
+
+### Changed
+- The e2e harness checks reconciliation Leg C by delta. rms's stub custodian
+  mirrors ledger cash, so only the run's movement is meaningful.
+
 ## 2026-11-23 — live end-to-end money-flow tests
 
 ### Security — money-path holes closed
