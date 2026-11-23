@@ -14,7 +14,7 @@ export default function KycQueue() {
         title="KYC review"
         description="Submissions the screening provider flagged for a person to look at. Oldest first — the applicant is waiting."
       />
-      <Card>
+      <Card className="reveal">
         <DataTable
           caption="KYC review queue"
           rows={queue.data}

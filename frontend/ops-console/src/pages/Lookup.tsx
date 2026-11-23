@@ -64,7 +64,7 @@ function Lookup({ kind }: { kind: Kind }) {
             </Button>
           </form>
         </Card>
-        <Card>
+        <Card className="reveal">
           <CardHeader title="Recently opened" />
           {recent.length === 0 ? (
             <EmptyState icon={<Clock className="size-6" aria-hidden />} title="Nothing yet" className="py-6">

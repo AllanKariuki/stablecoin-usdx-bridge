@@ -144,7 +144,7 @@ export default function WalletDetail() {
 
 function WalletSummary({ wallet }: { wallet: Wallet | undefined }) {
   return (
-    <Card>
+    <Card className="reveal">
       <CardHeader title="Summary" />
       {!wallet ? (
         <div className="flex flex-col gap-3">

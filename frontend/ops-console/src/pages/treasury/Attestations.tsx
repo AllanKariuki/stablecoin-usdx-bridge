@@ -30,7 +30,7 @@ export default function Attestations() {
           </Can>
         }
       />
-      <Card>
+      <Card className="reveal">
         <DataTable
           caption="Attestations"
           rows={list.data}

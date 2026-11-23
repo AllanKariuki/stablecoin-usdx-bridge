@@ -139,7 +139,7 @@ export default function CaseDetail() {
               />
             </Card>
 
-            <Card>
+            <Card className="reveal">
               <CardHeader title="Notes" description="Append-only: each note is evidence of what was known, and when." />
               {c && c.notes.length > 0 ? (
                 <ol className="m-0 mb-4 flex list-none flex-col gap-3 p-0">
@@ -175,7 +175,7 @@ export default function CaseDetail() {
         }
         side={
           <>
-            <Card>
+            <Card className="reveal">
               <CardHeader title="Case" />
               {!c ? (
                 <Skeleton className="h-28 w-full" />
@@ -192,7 +192,7 @@ export default function CaseDetail() {
                 />
               )}
             </Card>
-            <Card>
+            <Card className="reveal">
               <CardHeader title="Enforcement actions" />
               {c && c.enforcementActions.length > 0 ? (
                 <ul className="m-0 flex list-none flex-col gap-2 p-0">

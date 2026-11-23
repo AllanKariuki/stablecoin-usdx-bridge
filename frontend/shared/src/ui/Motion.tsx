@@ -178,7 +178,7 @@ export function ProgressRing({
 
 /** Small pulsing status dot (bare; pair it with a label as needed). */
 export function PulseDot({ tone = 'cyan', className }: { tone?: 'cyan' | 'warn'; className?: string }) {
-  return <span aria-hidden className={cx('inline-block size-2 rounded-full animate-live', tone === 'warn' ? 'bg-warn' : 'bg-cyan', className)} />;
+  return <span aria-hidden className={cx('inline-block size-2 rounded-full', tone === 'warn' ? 'bg-warn animate-live-warn' : 'bg-cyan animate-live', className)} />;
 }
 
 /** Infinite horizontal tape: children rendered twice, pauses on hover. */

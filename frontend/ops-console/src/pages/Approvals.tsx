@@ -3,7 +3,7 @@ import { Check, ListChecks, X } from 'lucide-react';
 import { apiErrorMessage, approvalsApi, type ApprovalRequest } from '@damp/web-shared/api';
 import { Can, useAuth } from '@damp/web-shared/auth';
 import { formatDateTime, humanize, timeAgo, useAsync } from '@damp/web-shared/lib';
-import { Button, Callout, Card, ConfirmDialog, DataTable, Drawer, KeyValueList, MonoRef, PageHeader, StatusBadge } from '@damp/web-shared/ui';
+import { Badge, Button, Callout, Card, ConfirmDialog, DataTable, Drawer, KeyValueList, MonoRef, PageHeader, PulseDot, StatusBadge } from '@damp/web-shared/ui';
 import { JsonBlock } from '../components/JsonBlock';
 
 /**
@@ -25,7 +25,7 @@ export default function Approvals() {
         title="Approvals"
         description="Requests waiting for a second person. Each one names the exact payload you are agreeing to."
       />
-      <Card>
+      <Card className="reveal">
         <DataTable
           caption="Pending approval requests"
           rows={requests.data}
@@ -45,7 +45,9 @@ export default function Approvals() {
               render: (r) => {
                 const needed = policyFor(r.action)?.approvalsRequired;
                 const got = r.approvals.filter((a) => a.decision === 'APPROVE' || a.decision === 'APPROVED').length;
-                return <span className="text-[13px] font-semibold tabular-nums">{needed ? `${got} of ${needed}` : got}</span>;
+                if (needed !== undefined) return <span className="text-[13px] font-semibold tabular-nums">{`${got} of ${needed}`}</span>;
+                if (r.status === 'PENDING') return <Badge tone="warn" icon={<PulseDot tone="warn" />}>Waiting on a second approver</Badge>;
+                return <span className="text-[13px] font-semibold tabular-nums">{got}</span>;
               },
             },
             { key: 'expires', header: 'Expires', render: (r) => <span className="text-[13px] text-muted">{timeAgo(r.expiresAt)}</span> },
