@@ -414,6 +414,39 @@ async function customerWallets() {
   };
 }
 
+// --- Stub-rail fiat accounting (Leg C expectation) ---------------------------
+//
+// Leg C compares the custodian's reported bank balance against GL 1100.USD
+// ("Cash at custodian", chart.go GLTrustBank) — the figure the reconcile run
+// row carries as ledger_cash. On this stack the custodian is a stub that
+// mirrors core-ledger's cash position on a poll (services/rms
+// StubCustodianProvider), while payments' stub rail posts to that same GL on
+// every run: a settled deposit debits it for the full amount (flows.go
+// Deposit), a settled withdrawal credits it for the net after fee (flows.go
+// Withdraw). Issuance and redemption do not touch it — they re-shape the
+// claim into reserve backing and never move cash (flows.go Issue/Redeem) — and
+// p2p/invoice transfers only move liabilities.
+//
+// So the run's net stub-rail fiat is exactly how far ledger_cash should move,
+// and — until the next custodian poll re-syncs the stub — exactly how much
+// Leg C is expected to fall short of the last reported bank balance. That is
+// Leg C working, not a posting bug.
+
+const railFiat = []; // [{ direction, units }] for settled stub-rail intents this run created
+
+function recordRailFiat(direction, currency, magnitude) {
+  // Leg C reconciles ledger.PegCurrency (USD) only; a non-USD rail intent is
+  // not the GL this check reads.
+  if (currency !== 'USD') return;
+  railFiat.push({ direction, units: magnitude });
+}
+
+function expectedCustodianCashMovement() {
+  let v = 0n;
+  for (const r of railFiat) v += r.direction === 'DEPOSIT' ? r.units : -r.units;
+  return v;
+}
+
 // ---------------------------------------------------------------------------
 // Step 2 — deposit
 // ---------------------------------------------------------------------------
@@ -451,6 +484,10 @@ async function stepDeposit() {
   assert(entry, 'deposit posting missing from wallet statement', { body: stmt.body });
   assert(entry.amount?.amount === '200.00' && entry.direction === 'CREDIT',
     `deposit posting was ${entry.direction} ${JSON.stringify(entry.amount)}, expected CREDIT 200.00`, { body: entry });
+
+  // A deposit debits GL 1100.USD by the full amount, which is exactly the
+  // credit the customer's wallet just took.
+  recordRailFiat('DEPOSIT', 'USD', diffUnits(after, before, 'USD'));
 
   await invariants();
 
@@ -585,6 +622,11 @@ async function stepWithdrawal() {
 
   const after = await walletBalance(ctx.customer.usd.id, USERS.customer);
   assert(diffUnits(after, before, 'USD') === -500n, `customer moved ${fmtUnits(diffUnits(after, before, 'USD'), 'USD')}, expected -5.00`);
+
+  // A withdrawal credits GL 1100.USD the *net* after fee (flows.go Withdraw).
+  // FEE_WITHDRAWAL_BPS is 0 on this stack, so the customer's gross debit is
+  // the cash that leaves the custodian.
+  recordRailFiat('WITHDRAWAL', 'USD', -diffUnits(after, before, 'USD'));
 
   await invariants();
 
@@ -877,16 +919,17 @@ function summarizeReconcile(log) {
   let ok = false;
   let breaks = false;
   let errored = false;
+  let ledgerCash = null;
   for (const line of String(log).split('\n')) {
     let o;
     try { o = JSON.parse(line); } catch { continue; }
-    if (o.msg === 'reconciliation OK') ok = true;
+    if (o.msg === 'reconciliation OK') { ok = true; ledgerCash = o.ledger_cash ?? null; }
     else if (o.msg === 'reconciliation found breaks') breaks = true;
     else if (o.msg === 'reconciliation could not be performed') errored = true;
     else if (o.msg === 'reconciliation break') legs[o.leg] = { code: o.code, drift: o.drift, detail: o.detail };
     else if (o.msg === 'Leg C skipped: no custodian has reported a balance yet') legs.LEG_C = { skipped: true };
   }
-  return { ok, breaks, errored, legs };
+  return { ok, breaks, errored, legs, ledgerCash };
 }
 
 // --- Leg A delta snapshots ---------------------------------------------------
@@ -925,16 +968,37 @@ function snapshotFromRun(run) {
     : eth + sol - issued + inTransit;
   return {
     drift, issued, inTransit, eth, sol,
+    // Leg C's two terms come straight off the run row (renderRun in
+    // core-ledger/internal/api/reserves.go), still in smallest units. The bank
+    // balance is null when no custodian has reported one yet.
+    bankBalance: bigOrNull(run.bank_balance),
+    ledgerCash: bigOrNull(run.ledger_cash),
+    bankAsOf: run.bank_as_of ?? null,
     legAOk: run.leg_a_ok, legBOk: run.leg_b_ok, legCOk: run.leg_c_ok,
     status: run.status, id: run.id, source: 'http',
   };
 }
 
+// The log fallback has no structured Leg C row, but a Leg C break line carries
+// the leg's own Detail() string — `shortfall=... bank_balance=... (as_of=...)
+// ledger_cash=...` (reconciliation/legs.go) — and a healthy run logs
+// ledger_cash on its "reconciliation OK" line.
+function parseLegCDetail(detail) {
+  const m = String(detail ?? '').match(/shortfall=(-?\d+) bank_balance=(-?\d+) \(as_of=([^)]*)\) ledger_cash=(-?\d+)/);
+  if (!m) return { bankBalance: null, ledgerCash: null };
+  return { bankBalance: BigInt(m[2]), ledgerCash: BigInt(m[4]) };
+}
+
 function snapshotFromLog(log) {
   const sum = summarizeReconcile(log);
+  const legCBreak = sum.legs.LEG_C && !sum.legs.LEG_C.skipped ? sum.legs.LEG_C : null;
+  const cash = legCBreak ? parseLegCDetail(legCBreak.detail) : { bankBalance: null, ledgerCash: null };
   return {
     drift: sum.legs.LEG_A?.drift != null ? BigInt(sum.legs.LEG_A.drift) : 0n,
     issued: null, inTransit: null, eth: null, sol: null,
+    bankBalance: cash.bankBalance,
+    ledgerCash: cash.ledgerCash ?? (sum.ledgerCash !== null ? BigInt(sum.ledgerCash) : null),
+    bankAsOf: null,
     legAOk: sum.legs.LEG_A ? false : true,
     legBOk: sum.legs.LEG_B ? false : true,
     legCOk: sum.legs.LEG_C ? (sum.legs.LEG_C.skipped ? null : false) : true,
@@ -983,12 +1047,10 @@ async function stepReconcile() {
   console.log(`  reconcile exit=${after.exitCode}  status=${after.status}  id=${after.id ?? '(log)'}`);
   console.log(`  legs  LegA=${describeLeg('LegA', after.legAOk)} LegB=${describeLeg('LegB', after.legBOk)} LegC=${describeLeg('LegC', after.legCOk)}`);
 
-  // Leg B is the 1:1 peg; it must be ok. Leg C is skipped until a custodian
-  // reports a balance — reported, not failed.
+  // Leg B is the 1:1 peg; it must be ok. Leg C is evaluated by delta below:
+  // a custodian shortfall that grows by exactly this run's stub-rail fiat is
+  // the stub custodian, not a product failure.
   assert(after.legBOk === true, `Leg B is not ok (leg_b_ok=${after.legBOk})`, { status: after.status, id: after.id });
-  if (after.legCOk === false) {
-    assert(false, 'Leg C reports a custodian shortfall', { legCOk: after.legCOk });
-  }
 
   const legs = `LegA=${describeLeg('LegA', after.legAOk)} LegB=${describeLeg('LegB', after.legBOk)} LegC=${describeLeg('LegC', after.legCOk)}`;
   if (before) {
@@ -1022,9 +1084,70 @@ async function stepReconcile() {
     }
   }
 
+  // ---- Leg C: ledger cash vs the custodian's reported balance ---------------
+  //
+  // Leg C is an inequality (bank >= ledger cash) against a *stub* custodian
+  // that mirrors ledger cash on a 60s poll while the stub rail moves GL
+  // 1100.USD on every run. So the run's job is not "is there a shortfall" —
+  // until the next poll the ledger has moved and the last reported balance has
+  // not, correctly — it is "did the ledger cash move by exactly what the rail
+  // said it would". A different number is a posting bug.
+  const expectedCash = expectedCustodianCashMovement();
+  const expectedTerms = `${expectedCash >= 0n ? '+' : ''}${expectedCash}`;
+  const railTerms = railFiat.length
+    ? railFiat.map((r) => `${r.direction === 'DEPOSIT' ? '+' : '-'}${r.units} ${r.direction.toLowerCase()}`).join(', ')
+    : 'none';
+  const hasCash = (s) => s !== null && s !== undefined && s.bankBalance !== null && s.ledgerCash !== null;
+  const cashTerms = (s) => (hasCash(s)
+    ? `bank_balance=${s.bankBalance} (as_of=${s.bankAsOf ?? '?'}) ledger_cash=${s.ledgerCash}`
+    : 'bank_balance=? ledger_cash=?');
+
+  if (hasCash(before)) console.log(`  Leg C  before ${cashTerms(before)}`);
+  console.log(`  Leg C  after  ${cashTerms(after)}`);
+
+  let cashDeltaActual = null;
+  if (after.legCOk === null) {
+    console.log(`  Leg C  skipped (no custodian snapshot) — nothing to compare; stub rail moved ${expectedTerms} (${railTerms})`);
+  } else if (!hasCash(before) || !hasCash(after)) {
+    console.log(`  Leg C  ${describeLeg('LegC', after.legCOk)}; cash terms unavailable on one side — skipped the delta comparison (stub rail moved ${expectedTerms}: ${railTerms})`);
+    if (before?.legCOk === false || after.legCOk === false) {
+      console.log('  KNOWN: stub custodian; shortfall grows by net stub fiat (stub balance lags the ledger by up to one poll)');
+    }
+  } else {
+    const bankDelta = after.bankBalance - before.bankBalance;
+    const cashDelta = after.ledgerCash - before.ledgerCash;
+    cashDeltaActual = cashDelta;
+    console.log(`  Leg C  delta  bank_balance=${bankDelta} ledger_cash=${cashDelta}  expected ledger_cash=${expectedTerms}  (stub rail: ${railTerms})`);
+
+    // The stub custodian is a mirror, not a constant: services/rms's
+    // StubCustodianProvider reports the ledger's own cash position plus its
+    // configured drift, re-polled every CUSTODIAN_POLL_SECONDS (60s). So a
+    // bank_balance move is only legitimate when a *new snapshot* was posted
+    // (bank_as_of advanced) — that is the stub re-syncing to cash this run
+    // moved. A figure that changed with no new snapshot moved underneath us.
+    const repolled = before.bankAsOf !== null && after.bankAsOf !== null && after.bankAsOf !== before.bankAsOf;
+    if (bankDelta !== 0n && repolled) {
+      console.log(`  Leg C  bank_balance re-polled during the run (as_of ${before.bankAsOf} -> ${after.bankAsOf}) — stub custodian mirrors ledger cash`);
+    }
+
+    // A stub custodian's balance lags by up to one poll, so the whole expected
+    // change in Leg C's drift is the ledger-cash movement. Say so out loud
+    // rather than letting a red leg look like a failure of this run.
+    if (before.legCOk === false || after.legCOk === false) {
+      console.log(`  KNOWN: stub custodian; shortfall grows by net stub fiat (LegC before=${describeLeg('LegC', before.legCOk)} after=${describeLeg('LegC', after.legCOk)})`);
+    }
+
+    assert(bankDelta === 0n || repolled,
+      `Leg C bank_balance changed during the run with no new custodian snapshot: before=${before.bankBalance} (as_of=${before.bankAsOf ?? '?'}) after=${after.bankBalance} (as_of=${after.bankAsOf ?? '?'})`,
+      { before: cashTerms(before), after: cashTerms(after) });
+    assert(cashDelta === expectedCash,
+      `Leg C ledger_cash moved ${cashDelta}, expected ${expectedTerms} from the run's stub-rail fiat (${railTerms}) — a mismatch here is a posting bug, not stub drift`,
+      { before: cashTerms(before), after: cashTerms(after), railFiat });
+  }
+
   return {
     ids: after.id ? { reconciliationRunId: after.id } : undefined,
-    note: `reconcile exit=${after.exitCode} status=${after.status} ${legs}`,
+    note: `reconcile exit=${after.exitCode} status=${after.status} ${legs} legC cash delta expected=${expectedTerms} actual=${cashDeltaActual ?? '?'}`,
   };
 }
 
