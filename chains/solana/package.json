@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "init-mint": "tsx scripts/initialize-mint.ts",
+    "init-config": "tsx scripts/initialize-config.ts",
     "import-keypair": "tsx scripts/import-keypair.ts",
     "export-keypair": "tsx scripts/export-keypair.ts"
   },

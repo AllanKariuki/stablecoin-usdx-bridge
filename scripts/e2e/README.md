@@ -29,11 +29,15 @@ make e2e-fast                                # same as --fast
 
 ## Flags
 
-- `--fast` — skip the on-chain steps (`issuance`, `bridge`, `redeem`) and the
-  chain-supply reads.
+- `--fast` — skip the on-chain steps (`issuance`, `bridge`, `redeem-eth`,
+  `redeem-sol`) and the chain-supply reads.
 - `--only=<step,...>` — run only the named steps, in order
-  (`wallets, deposit, p2p, invoice, withdrawal, issuance, bridge, redeem,
-  negatives, reconcile`).
+  (`wallets, deposit, p2p, invoice, withdrawal, issuance, bridge, redeem-eth,
+  redeem-sol, negatives, reconcile`). The redeem steps look their wallets and
+  balances up from the API, so `--only=redeem-eth` runs standalone; it fails
+  with a clear message when the ETH USD-X balance is below the redemption
+  amount. `redeem-sol` is reported SKIP (not FAIL) when the bridge step did not
+  complete and the customer therefore holds no Solana USD-X.
 - `--timeout-min=<N>` — saga poll timeout in minutes (default 40).
 
 ## What it checks
@@ -47,10 +51,14 @@ make e2e-fast                                # same as --fast
 5. **withdrawal** — 5.00 USD to a verified stub-rail bank account.
 6. **issuance** *(full)* — 50.00 USD-X minted on Ethereum; on-chain supply +50.
 7. **bridge** *(full)* — 20 USD-X Ethereum → Solana; both supplies move.
-8. **redeem** *(full)* — 10 USD-X redeemed from each chain; supplies -10 each.
-9. **negatives** — idempotent replay, overdraw refusal, cross-user/operator-only
-   403s, 401s for missing/garbage tokens, 400 for a missing Idempotency-Key.
-10. **reconcile** — runs the reconcile job once at the start and once at the
+8. **redeem-eth** *(full)* — 10 USD-X redeemed on Ethereum; supply -10, fiat
+   +10.
+9. **redeem-sol** *(full)* — 10 USD-X redeemed on Solana; supply -10, fiat
+   +10. Skipped with a reason when the bridge step did not complete (nothing
+   to burn on Solana).
+10. **negatives** — idempotent replay, overdraw refusal, cross-user/operator-only
+    403s, 401s for missing/garbage tokens, 400 for a missing Idempotency-Key.
+11. **reconcile** — runs the reconcile job once at the start and once at the
     end, then asserts Leg A's drift (on-chain supply − (issued − in transit))
     did not change across the run, so the ledger and the chains moved together.
     A pre-existing break is reported as KNOWN, not a failure; Leg B must be ok,

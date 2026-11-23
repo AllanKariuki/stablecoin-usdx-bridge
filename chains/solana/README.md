@@ -89,7 +89,32 @@ ANCHOR_WALLET=~/.config/solana/id.json \
 npm run init-mint
 
 # 7. Copy the printed USDX_MINT_ADDRESS into .env
+
+# 8. Create the BridgeConfig PDA (one-off per deployment — see below)
+ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+ANCHOR_WALLET=~/.config/solana/id.json \
+npm run init-config
 ```
+
+### BridgeConfig (`initialize-config`)
+
+Run once per deployment, and after any program upgrade that introduced
+`BridgeConfig` (P6/R6). The `bridge-config` PDA holds `admin`, `relayer` and
+`paused`; `bridge_mint`/`bridge_burn` read the relayer from it rather than from
+a compiled-in constant, which is what makes key rotation a `set_relayer`
+transaction instead of a redeploy.
+
+- `admin` defaults to the provider wallet (`ADMIN_PUBKEY` overrides it).
+- `relayer` is seeded by the instruction from the program's `RELAYER_PUBKEY`
+  constant. To rotate it afterwards, call `set_relayer` signed by the admin.
+- Idempotent: if the PDA already exists the script fetches it, prints
+  admin/relayer/paused and sends nothing. If its relayer differs from the
+  expected one (`RELAYER_PUBKEY`, else the keypair at
+  `SOLANA_RELAYER_KEYPAIR_PATH`, default `~/.config/solana/usdx-relayer.json`)
+  it warns, names `set_relayer`, and exits non-zero.
+- Without a config (or with a mismatched program/config), `BridgeMint` and
+  `BridgeBurn` fail with `AccountNotSigner`/`AccountNotInitialized` — run
+  `init-config` (or `set_relayer`) rather than chasing the token accounts.
 
 ## Testing
 
@@ -128,6 +153,9 @@ exercises the real authorization logic.
 
 - `initialize-mint.ts` — one-off: creates the SPL mint, hands mint authority
   to `usdx_bridge`'s PDA. Run once per cluster deploy.
+- `initialize-config.ts` — one-off: creates the `bridge-config` PDA
+  (admin/relayer/paused). Run once per deployment and after the program
+  upgrade that introduced BridgeConfig; idempotent.
 - `import-keypair.ts` / `export-keypair.ts` — move a keypair in/out of the
   Solana CLI's on-disk JSON format (e.g. for the relayer key referenced by
   `SOLANA_RELAYER_KEYPAIR_PATH`).

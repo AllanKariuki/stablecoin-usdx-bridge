@@ -10,9 +10,10 @@
  *
  *   node scripts/e2e/money-flows.mjs [--fast] [--only=step,...] [--timeout-min=40]
  *
- * --fast skips the on-chain steps (issuance, bridge, redeem) and the chain
- * reads, so a run moves fiat only and finishes in ~1 minute. The full run
- * spends testnet funds (Sepolia ETH + devnet SOL) and takes ~45-60 minutes.
+ * --fast skips the on-chain steps (issuance, bridge, redeem-eth, redeem-sol)
+ * and the chain reads, so a run moves fiat only and finishes in ~1 minute.
+ * The full run spends testnet funds (Sepolia ETH + devnet SOL) and takes
+ * ~45-60 minutes.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -42,12 +43,13 @@ function parseArgs(argv) {
 function printHelp() {
   console.log(`Usage: node scripts/e2e/money-flows.mjs [--fast] [--only=<step,...>] [--timeout-min=40]
 
-  --fast             skip the on-chain steps (issuance, bridge, redeem)
+  --fast             skip the on-chain steps (issuance, bridge, redeem-eth,
+                     redeem-sol)
   --only=step,...    run only the named steps, in order
   --timeout-min=N    saga poll timeout in minutes (default 40)
 
-Steps: wallets, deposit, p2p, invoice, withdrawal, issuance, bridge, redeem,
-       negatives, reconcile`);
+Steps: wallets, deposit, p2p, invoice, withdrawal, issuance, bridge,
+       redeem-eth, redeem-sol, negatives, reconcile`);
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +109,15 @@ class StepError extends Error {
   constructor(message, detail) {
     super(message);
     this.detail = detail; // optional {status, body} or string payload
+  }
+}
+
+// A step can report that it was not applicable rather than that it failed —
+// reported as SKIP in the summary and not counted against the run.
+class StepSkip extends Error {
+  constructor(reason) {
+    super(reason);
+    this.reason = reason;
   }
 }
 
@@ -245,6 +256,12 @@ async function step(name, fn) {
     return out;
   } catch (err) {
     const ms = Date.now() - started;
+    if (err instanceof StepSkip) {
+      results.push({ name, result: 'SKIP', note: err.reason });
+      console.log(`SKIP  ${name}  (${(ms / 1000).toFixed(1)}s)`);
+      console.log(`      ${err.reason}`);
+      return null;
+    }
     const e = err instanceof StepError ? err : new StepError(err?.stack || String(err));
     results.push({ name, result: 'FAIL', error: e.message, detail: e.detail });
     console.log(`FAIL  ${name}  (${(ms / 1000).toFixed(1)}s)`);
@@ -383,6 +400,18 @@ async function walletBalance(walletId, user) {
 
 function diffUnits(after, before, currency) {
   return units(after, currency) - units(before, currency);
+}
+
+// Resolve the customer's wallets from the API. The redeem steps use this
+// instead of ctx.customer so each can run standalone via --only=...
+async function customerWallets() {
+  const w = (await api(USERS.customer, 'GET', '/wallets')).body;
+  assert(Array.isArray(w), 'customer GET /wallets did not return an array', { body: w });
+  return {
+    usd: w.find((x) => x.currency === 'USD' && !x.chain),
+    usdxEth: w.find((x) => x.currency === 'USDX' && x.chain === 'ETHEREUM'),
+    usdxSol: w.find((x) => x.currency === 'USDX' && x.chain === 'SOLANA'),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +592,7 @@ async function stepWithdrawal() {
 }
 
 // ---------------------------------------------------------------------------
-// Steps 6-8 — on-chain (skipped with --fast)
+// Steps 6-9 — on-chain (skipped with --fast)
 // ---------------------------------------------------------------------------
 
 async function sagaPoll(correlationId, kind, timeoutMs) {
@@ -641,46 +670,97 @@ async function stepBridge() {
   return { ids: { bridgeCorrelationId: corrId, bridgeTxHash: hash, bridgeExplorerUrl: url }, note: `tx ${hash} ${url || ''}` };
 }
 
-async function stepRedeem() {
-  const fiatBefore = await walletBalance(ctx.customer.usd.id, USERS.customer);
+const REDEEM_AMOUNT = '10.00';
+const REDEEM_UNITS = 10_000_000n; // 10.00 USD-X at 6 decimals
 
-  // Redeem 10 from Solana first, then 10 from Ethereum — sequentially.
-  const solBefore = await readSolSupply();
-  const r1 = await api(USERS.customer, 'POST', '/redemptions', {
-    usdxWalletId: ctx.customer.usdxSol.id,
-    fiatWalletId: ctx.customer.usd.id,
-    amount: '10.00',
+// Shared request + saga wait. Each redeem step takes its own supply and
+// wallet snapshots around this call.
+async function submitRedemption(label, usdxWalletId, fiatWalletId, amount) {
+  const r = await api(USERS.customer, 'POST', '/redemptions', {
+    usdxWalletId,
+    fiatWalletId,
+    amount,
   });
-  assert(r1.status === 202, `sol redemption -> ${r1.status}`, { status: r1.status, body: r1.body });
-  const t1 = await sagaPoll(r1.body.correlationId, 'sol redeem', opts.timeoutMin * 60_000);
-  assert(t1.body?.status === 'COMPLETED', `sol redeem saga ${t1.body?.status}: ${t1.body?.lastError}`, { status: t1.status, body: t1.body });
-  const solAfter = await readSolSupply();
-  assert(solAfter.amount - solBefore.amount === -(10n * 10n ** BigInt(solAfter.decimals)), `Solana supply delta ${solAfter.amount - solBefore.amount}`);
+  assert(r.status === 202, `${label} redemption -> ${r.status}`, { status: r.status, body: r.body });
+  const t = await sagaPoll(r.body.correlationId, `${label} redeem`, opts.timeoutMin * 60_000);
+  assert(t.body?.status === 'COMPLETED', `${label} redeem saga ${t.body?.status}: ${t.body?.lastError}`, { status: t.status, body: t.body });
+  return { correlationId: r.body.correlationId, saga: t.body };
+}
 
+async function stepRedeemEth() {
+  // Resolved from the API, not ctx, so --only=redeem-eth runs standalone.
+  const wallets = await customerWallets();
+  assert(wallets.usd?.id, 'no customer USD fiat wallet');
+  assert(wallets.usdxEth?.id, 'no customer USD-X ETHEREUM wallet (run the wallets step first)');
+
+  const walletBefore = await walletBalance(wallets.usdxEth.id, USERS.customer);
+  assert(units(walletBefore, 'USDX') >= REDEEM_UNITS,
+    `customer ETH USD-X balance ${walletBefore} is below the redemption amount ${REDEEM_AMOUNT} — run the issuance step (or bridge from Solana) to fund it first`,
+    { body: { walletId: wallets.usdxEth.id, balance: walletBefore } });
+
+  const fiatBefore = await walletBalance(wallets.usd.id, USERS.customer);
   const ethBefore = readEthTotalSupply();
-  const r2 = await api(USERS.customer, 'POST', '/redemptions', {
-    usdxWalletId: ctx.customer.usdxEth.id,
-    fiatWalletId: ctx.customer.usd.id,
-    amount: '10.00',
-  });
-  assert(r2.status === 202, `eth redemption -> ${r2.status}`, { status: r2.status, body: r2.body });
-  const t2 = await sagaPoll(r2.body.correlationId, 'eth redeem', opts.timeoutMin * 60_000);
-  assert(t2.body?.status === 'COMPLETED', `eth redeem saga ${t2.body?.status}: ${t2.body?.lastError}`, { status: t2.status, body: t2.body });
+
+  const { correlationId, saga } = await submitRedemption('eth', wallets.usdxEth.id, wallets.usd.id, REDEEM_AMOUNT);
+
   const ethAfter = readEthTotalSupply();
   const ethDec = readEthDecimals();
-  assert(ethAfter - ethBefore === -(10n * 10n ** BigInt(ethDec)), `ETH supply delta ${ethAfter - ethBefore}`);
+  assert(ethAfter - ethBefore === -(10n * 10n ** BigInt(ethDec)), `ETH supply delta ${ethAfter - ethBefore}, expected -10 * 10^${ethDec}`);
 
-  // Fiat credited per the ledger posting: two 10.00 credits.
-  const fiatAfter = await walletBalance(ctx.customer.usd.id, USERS.customer);
-  assert(diffUnits(fiatAfter, fiatBefore, 'USD') === 2000n, `fiat moved ${fmtUnits(diffUnits(fiatAfter, fiatBefore, 'USD'), 'USD')}, expected +20.00`);
+  const walletAfter = await walletBalance(wallets.usdxEth.id, USERS.customer);
+  assert(diffUnits(walletAfter, walletBefore, 'USDX') === -REDEEM_UNITS,
+    `ETH USD-X wallet moved ${fmtUnits(diffUnits(walletAfter, walletBefore, 'USDX'), 'USDX')}, expected -${REDEEM_AMOUNT}`);
+
+  const fiatAfter = await walletBalance(wallets.usd.id, USERS.customer);
+  assert(diffUnits(fiatAfter, fiatBefore, 'USD') === 1000n,
+    `fiat moved ${fmtUnits(diffUnits(fiatAfter, fiatBefore, 'USD'), 'USD')}, expected +${REDEEM_AMOUNT}`);
 
   await invariants();
 
-  return { ids: { solRedeemCorrelationId: r1.body.correlationId, ethRedeemCorrelationId: r2.body.correlationId } };
+  const hash = saga.sourceTxHash || saga.destTxHash;
+  const url = saga.sourceTxUrl || saga.destTxUrl;
+  return { ids: { ethRedeemCorrelationId: correlationId, ethRedeemTxHash: hash, ethRedeemExplorerUrl: url }, note: `tx ${hash} ${url || ''}` };
+}
+
+async function stepRedeemSol() {
+  // Resolved from the API, not ctx, so --only=redeem-sol runs standalone.
+  const wallets = await customerWallets();
+  const solWallet = wallets.usdxSol;
+  const solBalance = solWallet?.id ? await walletBalance(solWallet.id, USERS.customer) : '0.00';
+
+  // Only the bridge step puts USD-X on Solana. If it did not complete there
+  // is nothing to burn, which is a skip — not a failure of this run.
+  if (!solWallet?.id || units(solBalance, 'USDX') < REDEEM_UNITS) {
+    throw new StepSkip(`bridge step did not complete — customer holds ${solBalance} Solana USD-X, below the redemption amount ${REDEEM_AMOUNT}`);
+  }
+  assert(wallets.usd?.id, 'no customer USD fiat wallet');
+
+  const fiatBefore = await walletBalance(wallets.usd.id, USERS.customer);
+  const solBefore = await readSolSupply();
+
+  const { correlationId, saga } = await submitRedemption('sol', solWallet.id, wallets.usd.id, REDEEM_AMOUNT);
+
+  const solAfter = await readSolSupply();
+  assert(solAfter.amount - solBefore.amount === -(10n * 10n ** BigInt(solAfter.decimals)),
+    `Solana supply delta ${solAfter.amount - solBefore.amount}, expected -10 * 10^${solAfter.decimals}`);
+
+  const walletAfter = await walletBalance(solWallet.id, USERS.customer);
+  assert(diffUnits(walletAfter, solBalance, 'USDX') === -REDEEM_UNITS,
+    `SOL USD-X wallet moved ${fmtUnits(diffUnits(walletAfter, solBalance, 'USDX'), 'USDX')}, expected -${REDEEM_AMOUNT}`);
+
+  const fiatAfter = await walletBalance(wallets.usd.id, USERS.customer);
+  assert(diffUnits(fiatAfter, fiatBefore, 'USD') === 1000n,
+    `fiat moved ${fmtUnits(diffUnits(fiatAfter, fiatBefore, 'USD'), 'USD')}, expected +${REDEEM_AMOUNT}`);
+
+  await invariants();
+
+  const hash = saga.sourceTxHash || saga.destTxHash;
+  const url = saga.sourceTxUrl || saga.destTxUrl;
+  return { ids: { solRedeemCorrelationId: correlationId, solRedeemTxHash: hash, solRedeemExplorerUrl: url }, note: `tx ${hash} ${url || ''}` };
 }
 
 // ---------------------------------------------------------------------------
-// Step 9 — negative checks (always run)
+// Step 10 — negative checks (always run)
 // ---------------------------------------------------------------------------
 
 function subcheck(name, ok, extra) {
@@ -762,7 +842,7 @@ async function stepNegatives() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 10 — reconciliation
+// Step 11 — reconciliation
 // ---------------------------------------------------------------------------
 
 function runReconcile() {
@@ -960,7 +1040,8 @@ const STEPS = [
   { name: 'withdrawal', fn: stepWithdrawal, money: true, onchain: false },
   { name: 'issuance', fn: stepIssuance, money: true, onchain: true },
   { name: 'bridge', fn: stepBridge, money: true, onchain: true },
-  { name: 'redeem', fn: stepRedeem, money: true, onchain: true },
+  { name: 'redeem-eth', fn: stepRedeemEth, money: true, onchain: true },
+  { name: 'redeem-sol', fn: stepRedeemSol, money: true, onchain: true },
   { name: 'negatives', fn: stepNegatives, money: false, onchain: false },
   { name: 'reconcile', fn: stepReconcile, money: false, onchain: false },
 ];
