@@ -6,6 +6,7 @@ import { ROLE_LABELS, type Permission } from '../auth/authz';
 import { cx } from '../lib/cx';
 import { IconButton } from '../ui/Button';
 import { Logo } from '../ui/Logo';
+import { DecorDiamonds } from '../ui/Motion';
 
 export interface NavItem {
   to: string;
@@ -55,10 +56,7 @@ function SidebarContents({ appName, nav, context, settingsTo, onNavigate }: AppS
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden">
-      <svg aria-hidden width="420" height="420" viewBox="0 0 200 200" className="pointer-events-none absolute -right-48 -top-40 opacity-[0.12]">
-        <rect x="45" y="45" width="80" height="80" transform="rotate(45 85 85)" fill="none" stroke="#1FD3E6" strokeWidth="3" />
-        <rect x="75" y="75" width="80" height="80" transform="rotate(45 115 115)" fill="none" stroke="#fff" strokeWidth="3" />
-      </svg>
+      <DecorDiamonds size={420} className="absolute -right-48 -top-40 opacity-[0.12]" />
 
       <div className="relative px-5 pt-5 pb-4">
         <Logo size={38} subtitle={appName} inverted />
@@ -79,13 +77,14 @@ function SidebarContents({ appName, nav, context, settingsTo, onNavigate }: AppS
                     onClick={onNavigate}
                     className={({ isActive }) =>
                       cx(
-                        'group flex min-h-11 items-center gap-3 rounded-[14px] px-3 text-sm font-semibold no-underline transition-colors',
+                        'group relative flex min-h-11 items-center gap-3 rounded-[14px] px-3 text-sm font-semibold no-underline transition-colors',
                         isActive ? 'bg-white text-navy shadow-card' : 'text-on-navy-muted hover:bg-white/8 hover:text-white',
                       )
                     }
                   >
                     {({ isActive }) => (
                       <>
+                        {isActive && <span aria-hidden className="absolute bottom-2 left-0 top-2 w-[3px] rounded-full bg-cyan animate-grow-y origin-center" />}
                         <item.icon className={cx('size-[18px] shrink-0', isActive ? 'text-action' : 'text-on-navy-subtle group-hover:text-cyan')} aria-hidden />
                         <span className="flex-1 truncate">{item.label}</span>
                         {item.badge !== undefined && item.badge !== null && (
@@ -140,6 +139,10 @@ export function AppShell(props: AppShellProps) {
   const [drawer, setDrawer] = useState(false);
   const location = useLocation();
   useEffect(() => setDrawer(false), [location.pathname]);
+  // Key the content by the first path segment: sub-route changes (payments
+  // tabs, /move/:kind) are new routes for the shell but must not remount and
+  // lose page state.
+  const section = '/' + (location.pathname.split('/')[1] ?? '');
 
   return (
     <div className="min-h-dvh bg-shell lg:flex lg:gap-4 lg:p-4">
@@ -178,7 +181,9 @@ export function AppShell(props: AppShellProps) {
         </header>
 
         <main id="main" className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-6 sm:px-6 lg:px-2 lg:py-8">
-          {children ?? <Outlet />}
+          <div key={section} className="animate-rise">
+            {children ?? <Outlet />}
+          </div>
         </main>
       </div>
     </div>

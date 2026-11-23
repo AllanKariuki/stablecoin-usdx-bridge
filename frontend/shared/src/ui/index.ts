@@ -7,3 +7,5 @@ export * from './Data';
 export * from './Overlay';
 export * from './Tabs';
 export * from './Logo';
+export * from './Motion';
+export * from './Hero';

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, Copy } from 'lucide-react';
 import { cx } from '../lib/cx';
 import { truncateMiddle } from '../lib/format';
@@ -92,10 +92,19 @@ export function DataTable<T>({
   caption?: string;
   className?: string;
 }) {
+  const risenOnce = useRef(false);
+  // Spend the stagger after the first batch commits. Setting the ref in an
+  // effect (not during render) keeps StrictMode's double render from seeing
+  // it already set, which would suppress the first-batch animation entirely.
+  useEffect(() => {
+    if (rows && rows.length > 0) risenOnce.current = true;
+  }, [rows]);
   if (error) return <ErrorState message={error} onRetry={onRetry} />;
   if (!loading && rows && rows.length === 0 && empty) {
     return <EmptyState title={empty.title} icon={empty.icon} action={empty.action}>{empty.body}</EmptyState>;
   }
+  // Stagger only the first batch of rows, not every refetch.
+  const firstBatch = !risenOnce.current && !!rows?.length;
   const hide = (c: Column<T>) => (c.hideOnMobile ? 'hidden md:table-cell' : '');
   return (
     <div className={cx('overflow-x-auto', className)}>
@@ -121,10 +130,11 @@ export function DataTable<T>({
                   ))}
                 </tr>
               ))
-            : rows?.map((row) => (
+            : rows?.map((row, i) => (
                 <tr
                   key={rowKey(row)}
-                  className={cx('border-b border-line last:border-0', onRowClick && 'cursor-pointer hover:bg-canvas focus-visible:bg-canvas')}
+                  className={cx('border-b border-line last:border-0', onRowClick && 'cursor-pointer hover:bg-canvas focus-visible:bg-canvas', firstBatch && 'animate-rise')}
+                  style={firstBatch ? { animationDelay: `${Math.min(i, 10) * 30}ms` } : undefined}
                   onClick={onRowClick ? () => onRowClick(row) : undefined}
                   onKeyDown={onRowClick ? (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onRowClick(row)) : undefined}
                   tabIndex={onRowClick ? 0 : undefined}
