@@ -5,7 +5,7 @@ import { apiErrorMessage, apiStatus, ledgerApi } from '@damp/web-shared/api';
 import { Can } from '@damp/web-shared/auth';
 import { formatDate, humanize, useAsync } from '@damp/web-shared/lib';
 import { NotFoundPage } from '@damp/web-shared/pages';
-import { Button, Callout, Card, CardHeader, DataTable, ErrorState, Field, Input, KeyValueList, LinkButton, MonoRef, MoneyText, PageHeader, Skeleton, StatusBadge } from '@damp/web-shared/ui';
+import { Button, Callout, Card, CardHeader, DataTable, ErrorState, Field, HeroPanel, Input, KeyValueList, LinkButton, MonoRef, MoneyText, PageHeader, Skeleton, StatusBadge } from '@damp/web-shared/ui';
 import TransactionDrawer from '../components/TransactionDrawer';
 import SignedAmount from '../components/SignedAmount';
 import { isFrozen } from '../hooks/useWallets';
@@ -43,10 +43,10 @@ export default function WalletDetailPage() {
       ) : (
         <div className="grid gap-5 lg:grid-cols-[1fr_2fr]">
           <div className="flex flex-col gap-4">
-            <Card className="bg-navy text-white" padded>
+            <HeroPanel className="p-5 sm:p-6">
               <p className="text-[13px] text-on-navy-muted">Available balance</p>
               {w ? <MoneyText money={w.balance} size="xl" className="mt-2 text-white" /> : <Skeleton className="mt-2 h-8 w-40" />}
-            </Card>
+            </HeroPanel>
             {w && isFrozen(w) && (
               <Callout tone="warn" title="This wallet is frozen">
                 Money can’t move in or out while it’s frozen. This usually means our compliance team needs to check something. Contact support and quote the wallet reference below.

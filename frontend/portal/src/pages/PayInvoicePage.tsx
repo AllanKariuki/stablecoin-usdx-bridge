@@ -5,7 +5,7 @@ import { apiErrorMessage, newIdempotencyKey } from '@damp/web-shared/api';
 import { paymentsApi, resolvePaymentLink, type PaymentIntent } from '@damp/web-shared/api/payments';
 import { useAuth } from '@damp/web-shared/auth';
 import { formatDate, useAsync } from '@damp/web-shared/lib';
-import { Button, Callout, Card, ErrorState, KeyValueList, LinkButton, Logo, MonoRef, MoneyText, SkeletonRows, StatusBadge } from '@damp/web-shared/ui';
+import { Button, Callout, Card, ErrorState, HeroPanel, KeyValueList, LinkButton, Logo, MonoRef, MoneyText, SkeletonRows, StatusBadge } from '@damp/web-shared/ui';
 
 /**
  * Where an invoice's payment link lands. Opens without an account (the token
@@ -42,9 +42,13 @@ export default function PayInvoicePage() {
   const here = `/pay/${encodeURIComponent(payToken)}`;
 
   return (
-    <div className="min-h-dvh bg-shell px-4 py-8">
-      <div className="mx-auto flex max-w-lg flex-col gap-6">
-        <Logo size={36} subtitle="Payment link" />
+    <div className="min-h-dvh bg-shell">
+      <HeroPanel className="rounded-none">
+        <header className="mx-auto flex w-full max-w-lg items-center justify-between gap-4 px-6 py-6">
+          <Logo size={36} subtitle="Payment link" inverted />
+        </header>
+      </HeroPanel>
+      <main className="mx-auto flex max-w-lg flex-col gap-6 px-4 py-8">
         <Card className="animate-rise">
           {invoice.loading ? (
             <SkeletonRows rows={3} />
@@ -106,7 +110,7 @@ export default function PayInvoicePage() {
             )
           ) : null}
         </Card>
-      </div>
+      </main>
     </div>
   );
 }

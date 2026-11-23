@@ -168,7 +168,7 @@ export default function MoveMoneyPage() {
           )}
         </Card>
 
-        <aside className="flex flex-col gap-4">
+        <aside className="reveal flex flex-col gap-4">
           <Card className="bg-navy text-white">
             <h2 className="text-base font-bold">Sending to someone else?</h2>
             <p className="mt-1 text-sm leading-relaxed text-on-navy-muted">Pay a saved payee, send an invoice or withdraw to a linked bank from Payments.</p>
