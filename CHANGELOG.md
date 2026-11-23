@@ -3,6 +3,63 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-23 — live end-to-end money-flow tests
+
+### Security — money-path holes closed
+- **bff `/transfers` and `/withdrawals` never checked wallet ownership.** A
+  code comment claimed core-ledger enforced it, but core-ledger has no caller
+  identity, so any customer could move another user's funds. Writes now share
+  `WalletOwnership` with issuance and redemption, and every write forwards the
+  actor instead of booking as `"api"`.
+- **bff `/deposits` credited any wallet, for any amount, with no payment rail
+  behind it**, and every customer could call it. `/withdrawals` debited a
+  wallet with no payout. Both are now operator-only manual adjustments
+  (`wallets:adjust:manual`, granted to treasury and admin), checked at
+  auth-proxy and again in bff. The portal's Move Money page creates
+  DEPOSIT/WITHDRAWAL payment intents instead.
+- **payments `STUB_RAIL_ENABLED` was never read.** The rail registry silently
+  fell back to the stub for an unconfigured M-Pesa and for unknown rail names,
+  booking ledger credit for fiat that never arrived. The flag now defaults to
+  off, the stub registers only when enabled, and an unavailable rail is a 422
+  `RAIL_UNAVAILABLE` before anything is persisted.
+- **Go integration tests could write to the dev ledger.** On 2026-11-12 they
+  ran against the `bridge` database and left test sagas and phantom issuance
+  behind. `shared/go/platform/testdb` now fails any test whose DSN names a
+  database not ending in `_test`, and CI uses `bridge_test`.
+
+### Added
+- `scripts/e2e/money-flows.mjs` (`make e2e`, `make e2e-fast`) drives the
+  running stack through the gateway with real Keycloak tokens. It covers:
+  - wallets, deposit, P2P transfer, invoice and withdrawal;
+  - issuance, the ETH→SOL bridge, and redemption on each chain;
+  - authorization and idempotency negatives.
+
+  Trial balance and integrity are checked after every money step.
+  Reconciliation is checked by delta (Leg A drift unchanged; Leg C ledger cash
+  moves by exactly the run's net stub fiat), because the dev ledger carries
+  the earlier test pollution.
+- bff `POST /bridges`, ownership-checked on both wallets.
+- `chains/solana/scripts/initialize-config.ts` (`npm run init-config`) creates
+  P6's `BridgeConfig`, idempotently.
+
+### Changed — local stack
+- Host ports moved out of the range other local stacks hold: Node services
+  to 13xxx, Go services to 18xxx, the gateway to 18082. Container and k8s
+  ports are unchanged.
+- `stack.sh` counts a port as up only when our own process holds it, prints
+  `CONFLICT` with the holder otherwise, and refuses to start on top of one.
+  `down` waits for the whole process group.
+- core-ledger and its worker run from source on the host. The compose image
+  dated from 2026-11-09 and predated weeks of merged code. Makefile `run*` and
+  `reconcile` targets load `.env`.
+
+### Verified live (Sepolia + Solana devnet)
+All flows pass: deposit, P2P, invoice, withdrawal, a 50 USD-X issuance, the
+20 USD-X ETH→SOL bridge, and redemptions on both chains.
+- The first bridge attempt failed because the devnet program predated P6's
+  `BridgeConfig`. The saga compensated correctly.
+- The program was then upgraded (slot 525426188) and its config initialised.
+
 ## 2026-11-12
 
 ### Added — frontend redesign, split into two apps and a shared package
