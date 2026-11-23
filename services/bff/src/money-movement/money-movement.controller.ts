@@ -27,17 +27,19 @@ interface TransferBody {
 /**
  * The money-movement routes, and who is allowed to reach which one.
  *
- * - **POST /deposits is an operator-only manual adjustment.** A customer's
- *   deposit arrives through services/payments' payment-intent path, where a
- *   rail has to confirm the fiat moved before core-ledger is asked to book
- *   it. This route skips the rail entirely, so it requires
- *   wallets:deposit:manual (treasury and admin only, checked here as well as
- *   at the gateway) and is for treasury corrections, never a self-service
- *   top-up.
- * - **POST /withdrawals and POST /transfers are own-wallet-only.** The
- *   destination of a transfer may be someone else's wallet by design, but the
- *   source must belong to the caller; core-ledger has no caller identity of
- *   its own and will post against whatever wallet id it is handed.
+ * - **POST /deposits and POST /withdrawals are operator-only manual
+ *   adjustments.** A customer's fiat moves through services/payments'
+ *   payment-intent path, where a rail has to confirm the money moved before
+ *   core-ledger is asked to book it. These routes skip the rail entirely, so
+ *   they require wallets:adjust:manual (treasury and admin only, checked here
+ *   as well as at the gateway) and are for treasury corrections, never
+ *   self-service money movement. An operator adjusts somebody else's wallet
+ *   by design, so the permission — not wallet ownership — is the control.
+ * - **POST /transfers is own-wallet-only.** The destination of a transfer may
+ *   be someone else's wallet by design, but the source must belong to the
+ *   caller; core-ledger has no caller identity of its own and will post
+ *   against whatever wallet id it is handed. A transfer never crosses the
+ *   platform boundary, so no rail is involved.
  * - **The actor is always forwarded.** Without X-User-Id, core-ledger records
  *   initiated_by="api", which makes a money movement impossible to attribute
  *   to the person who asked for it.
@@ -61,16 +63,7 @@ export class MoneyMovementController {
     @CurrentUser() auth: AuthContext,
   ): Promise<TransactionView> {
     requireIdempotencyKey(idempotencyKey);
-    // Defence in depth: auth-proxy already limits this route to
-    // wallets:deposit:manual, but a bff reachable without the gateway must not
-    // become an unauthenticated way to mint balance.
-    if (!auth.permissions.includes('wallets:deposit:manual')) {
-      throw new PlatformException(
-        403,
-        'INSUFFICIENT_PERMISSIONS',
-        'crediting a wallet without a payment rail requires wallets:deposit:manual',
-      );
-    }
+    requireManualAdjustment(auth);
     return this.post(
       '/deposits',
       {
@@ -84,13 +77,15 @@ export class MoneyMovementController {
   }
 
   @Post('withdrawals')
-  async withdraw(
+  withdraw(
     @Body() body: WithdrawBody,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
     @CurrentUser() auth: AuthContext,
   ): Promise<TransactionView> {
     requireIdempotencyKey(idempotencyKey);
-    await this.ownership.requireOwnWallets(auth, [body.walletId]);
+    // An operator debits somebody else's wallet by design, so this is
+    // permission-gated rather than ownership-checked.
+    requireManualAdjustment(auth);
     return this.post(
       '/withdrawals',
       {
@@ -140,5 +135,20 @@ export class MoneyMovementController {
 export function requireIdempotencyKey(key: string | undefined): asserts key is string {
   if (!key) {
     throw new PlatformException(400, 'MISSING_IDEMPOTENCY_KEY', 'Idempotency-Key header is required');
+  }
+}
+
+/**
+ * Defence in depth: auth-proxy already limits /deposits and /withdrawals to
+ * wallets:adjust:manual, but a bff reachable without the gateway must not
+ * become a way to move fiat with no payment rail behind it.
+ */
+export function requireManualAdjustment(auth: AuthContext): void {
+  if (!auth.permissions.includes('wallets:adjust:manual')) {
+    throw new PlatformException(
+      403,
+      'INSUFFICIENT_PERMISSIONS',
+      'moving fiat without a payment rail requires wallets:adjust:manual',
+    );
   }
 }

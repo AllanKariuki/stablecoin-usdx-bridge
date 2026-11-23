@@ -44,8 +44,8 @@ permissions:
     description: Deposit, withdraw, or transfer from the caller's own wallets.
   wallets:write:any:
     description: Deposit, withdraw, or transfer from any wallet (operator/treasury actions).
-  wallets:deposit:manual:
-    description: Credit a wallet manually without a payment rail (treasury adjustment).
+  wallets:adjust:manual:
+    description: Credit or debit a wallet manually without a payment rail (treasury adjustment).
   wallets:status:manage:
     description: Freeze or unfreeze a wallet.
 
@@ -172,7 +172,7 @@ roles:
       - wallets:read:any
       - wallets:write:own
       - wallets:write:any
-      - wallets:deposit:manual
+      - wallets:adjust:manual
       - wallets:status:manage
       - transactions:read:own
       - transactions:read:any
@@ -231,7 +231,7 @@ roles:
       - transactions:reverse
       - ledger:read
       - ledger:admin
-      - wallets:deposit:manual
+      - wallets:adjust:manual
       - notifications:read:own
       - approvals:propose
       - approvals:decide

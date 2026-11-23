@@ -69,7 +69,7 @@ describe('bff money movement and bridges (e2e, against a fake core-ledger)', () 
 
       await request(app.getHttpServer())
         .post('/deposits')
-        .set({ ...as('treasury-1', ['wallets:deposit:manual']), 'idempotency-key': 'dep-treasury-1' })
+        .set({ ...as('treasury-1', ['wallets:adjust:manual']), 'idempotency-key': 'dep-treasury-1' })
         .send({ walletId, amount: '10.00', reference: 'adjustment' })
         .expect(201);
 
@@ -78,31 +78,33 @@ describe('bff money movement and bridges (e2e, against a fake core-ledger)', () 
     });
   });
 
-  describe('POST /withdrawals', () => {
-    it("refuses another user's wallet without calling core-ledger", async () => {
+  describe('POST /withdrawals (operator-only manual adjustment)', () => {
+    it('refuses a customer holding only wallets:write:own, without calling core-ledger', async () => {
+      const walletId = await fiatWallet('wd-customer');
+      const before = writesBefore();
+
+      await request(app.getHttpServer())
+        .post('/withdrawals')
+        .set({ ...as('wd-customer', ['wallets:write:own']), 'idempotency-key': 'wd-customer-1' })
+        .send({ walletId, amount: '1.00' })
+        .expect(403)
+        .expect((res) => expect(res.body.code).toBe('INSUFFICIENT_PERMISSIONS'));
+
+      expect(coreLedger.writes).toHaveLength(before);
+    });
+
+    it("lets a treasury operator debit another user's wallet and forwards them as the actor", async () => {
       const walletId = await fiatWallet('wd-victim');
       const before = writesBefore();
 
       await request(app.getHttpServer())
         .post('/withdrawals')
-        .set({ ...as('wd-attacker', ['wallets:write:own']), 'idempotency-key': 'wd-attacker-1' })
-        .send({ walletId, amount: '1.00' })
-        .expect(403)
-        .expect((res) => expect(res.body.code).toBe('FORBIDDEN'));
-
-      expect(coreLedger.writes).toHaveLength(before);
-    });
-
-    it("withdraws from the caller's own wallet and forwards them as the actor", async () => {
-      const walletId = await fiatWallet('wd-owner');
-
-      await request(app.getHttpServer())
-        .post('/withdrawals')
-        .set({ ...as('wd-owner', ['wallets:write:own']), 'idempotency-key': 'wd-owner-1' })
-        .send({ walletId, amount: '5.00' })
+        .set({ ...as('treasury-1', ['wallets:adjust:manual']), 'idempotency-key': 'wd-treasury-1' })
+        .send({ walletId, amount: '5.00', reference: 'adjustment' })
         .expect(201);
 
-      expect(coreLedger.lastActor).toBe('wd-owner');
+      expect(coreLedger.writes).toHaveLength(before + 1);
+      expect(coreLedger.lastActor).toBe('treasury-1');
     });
   });
 

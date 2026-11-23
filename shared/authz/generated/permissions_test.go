@@ -82,7 +82,7 @@ func allPermissions() map[Permission]bool {
 	return map[Permission]bool{
 		PermissionWalletsReadOwn: true, PermissionWalletsReadAny: true,
 		PermissionWalletsWriteOwn: true, PermissionWalletsWriteAny: true,
-		PermissionWalletsDepositManual: true,
+		PermissionWalletsAdjustManual: true,
 		PermissionWalletsStatusManage: true, PermissionTransactionsReadOwn: true,
 		PermissionTransactionsReadAny: true, PermissionTransactionsReverse: true,
 		PermissionIssuanceCreate: true, PermissionRedemptionCreate: true,

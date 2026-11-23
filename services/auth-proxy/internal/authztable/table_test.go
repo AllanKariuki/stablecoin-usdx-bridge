@@ -68,23 +68,37 @@ func TestAllows_UnrelatedPermissionInsufficient(t *testing.T) {
 	}
 }
 
-func TestDeposits_RequireManualDepositPermission(t *testing.T) {
-	rule, found := authztable.Default.Match("POST", "/deposits")
+func TestManualAdjustments_RequireAdjustPermission(t *testing.T) {
+	// Both routes move fiat with no payment rail behind them, so the same
+	// permission gates them — in either direction.
+	for _, path := range []string{"/deposits", "/withdrawals"} {
+		rule, found := authztable.Default.Match("POST", path)
+		if !found {
+			t.Fatalf("setup: expected a rule for POST %s", path)
+		}
+		if !rule.Allows([]authz.Permission{authz.PermissionWalletsAdjustManual}) {
+			t.Errorf("expected wallets:adjust:manual to authorize POST %s", path)
+		}
+		// A customer holds wallets:write:own; that must not be enough to move
+		// fiat with no rail behind it.
+		if rule.Allows(authz.RolePermissions[authz.RoleCustomer]) {
+			t.Errorf("the customer role must not be able to POST %s", path)
+		}
+		if rule.Allows([]authz.Permission{authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny}) {
+			t.Errorf("wallets:write:own/:any must not authorize POST %s", path)
+		}
+		if !rule.Allows(authz.RolePermissions[authz.RoleTreasury]) {
+			t.Errorf("expected the treasury role to hold wallets:adjust:manual (POST %s)", path)
+		}
+	}
+}
+
+func TestTransfers_RemainAvailableToCustomers(t *testing.T) {
+	rule, found := authztable.Default.Match("POST", "/transfers")
 	if !found {
-		t.Fatal("setup: expected a rule for POST /deposits")
+		t.Fatal("setup: expected a rule for POST /transfers")
 	}
-	if !rule.Allows([]authz.Permission{authz.PermissionWalletsDepositManual}) {
-		t.Error("expected wallets:deposit:manual to authorize a manual deposit")
-	}
-	// A customer holds wallets:write:own; that must not be enough to credit a
-	// wallet with no rail behind it.
-	if rule.Allows(authz.RolePermissions[authz.RoleCustomer]) {
-		t.Error("the customer role must not be able to POST /deposits")
-	}
-	if rule.Allows([]authz.Permission{authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny}) {
-		t.Error("wallets:write:own/:any must not authorize a manual deposit")
-	}
-	if !rule.Allows(authz.RolePermissions[authz.RoleTreasury]) {
-		t.Error("expected the treasury role to hold wallets:deposit:manual")
+	if !rule.Allows(authz.RolePermissions[authz.RoleCustomer]) {
+		t.Error("customers must still be able to transfer between their own wallets")
 	}
 }

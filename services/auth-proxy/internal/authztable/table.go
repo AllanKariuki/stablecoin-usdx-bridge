@@ -103,12 +103,15 @@ var Default = Table{
 
 	// Money movement
 	//
-	// A deposit here is a manual treasury adjustment with no payment rail
-	// behind it, not a customer top-up — customer deposits go through
-	// services/payments' payment-intent path, where a rail confirms the fiat
-	// arrived. wallets:write:own/:any deliberately do not authorize it.
-	compile("POST", "/deposits", authz.PermissionWalletsDepositManual),
-	compile("POST", "/withdrawals", authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny),
+	// /deposits and /withdrawals here are manual treasury adjustments with no
+	// payment rail behind them, not customer money movement — customers move
+	// fiat through services/payments' payment-intent path, where a rail
+	// confirms the money moved. wallets:write:own/:any deliberately do not
+	// authorize either.
+	compile("POST", "/deposits", authz.PermissionWalletsAdjustManual),
+	compile("POST", "/withdrawals", authz.PermissionWalletsAdjustManual),
+	// A wallet-to-wallet transfer never crosses the platform boundary, so
+	// there is no rail to require; ownership of the source is enforced in bff.
 	compile("POST", "/transfers", authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny),
 	compile("POST", "/fx/quotes", authz.PermissionFxQuote),
 	compile("POST", "/fx/conversions", authz.PermissionFxConvert),
