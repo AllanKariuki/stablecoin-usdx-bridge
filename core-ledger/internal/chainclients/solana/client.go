@@ -291,7 +291,10 @@ func (c *Client) WaitForFinality(txHash string, finalityLevel string) error {
 		if err == nil && len(statuses.Value) > 0 && statuses.Value[0] != nil {
 			status := statuses.Value[0]
 			if status.Err != nil {
-				return fmt.Errorf("tx %s failed: %v", txHash, status.Err)
+				// Landed and failed: the signature is permanently failed, so
+				// the saga must treat it as terminal rather than wait on it
+				// again. The underlying error text is kept for operators.
+				return fmt.Errorf("tx %s failed: %v: %w", txHash, status.Err, bridge.ErrTxFailedOnChain)
 			}
 			if reachedCommitment(status.ConfirmationStatus, want) {
 				return nil

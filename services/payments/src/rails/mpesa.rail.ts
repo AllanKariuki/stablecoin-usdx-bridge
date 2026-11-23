@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { PlatformException } from '@damp/nest-platform';
 import { RailCallback, RailInitiation, RailProvider, RailRequest } from './rail-provider';
 import { toScaled } from '../money/money';
 
@@ -32,6 +33,9 @@ export class MpesaRail implements RailProvider {
   private readonly shortcode: string;
   private readonly passkey: string;
   private readonly callbackUrl: string;
+  // B2C initiator credentials. Never logged.
+  private readonly initiatorName: string;
+  private readonly securityCredential: string;
 
   private token: { value: string; expiresAt: number } | null = null;
 
@@ -42,6 +46,8 @@ export class MpesaRail implements RailProvider {
     this.shortcode = config.get<string>('MPESA_SHORTCODE', { infer: true }) ?? '';
     this.passkey = config.get<string>('MPESA_PASSKEY', { infer: true }) ?? '';
     this.callbackUrl = config.get<string>('MPESA_CALLBACK_URL', { infer: true }) ?? '';
+    this.initiatorName = config.get<string>('MPESA_INITIATOR_NAME', { infer: true }) ?? '';
+    this.securityCredential = config.get<string>('MPESA_SECURITY_CREDENTIAL', { infer: true }) ?? '';
   }
 
   /** Whether this rail is usable at all. Unconfigured is a normal state. */
@@ -96,11 +102,23 @@ export class MpesaRail implements RailProvider {
 
   async disburse(req: RailRequest): Promise<RailInitiation> {
     this.assertConfigured();
+    // B2C authenticates as the API initiator, not as the business shortcode.
+    // Without the credential there is nothing to authenticate with, so the
+    // request is refused before any HTTP call rather than sent and rejected
+    // by Daraja. Deposits do not need these and are unaffected.
+    if (!this.initiatorName || !this.securityCredential) {
+      throw new PlatformException(
+        422,
+        'RAIL_UNAVAILABLE',
+        'M-Pesa payouts are not configured: MPESA_INITIATOR_NAME/MPESA_SECURITY_CREDENTIAL',
+      );
+    }
     const whole = this.wholeShillings(req.amount);
 
     const res = await this.post('/mpesa/b2c/v1/paymentrequest', {
       OriginatorConversationID: req.intentId,
-      InitiatorName: this.shortcode,
+      InitiatorName: this.initiatorName,
+      SecurityCredential: this.securityCredential,
       CommandID: 'BusinessPayment',
       Amount: whole,
       PartyA: this.shortcode,

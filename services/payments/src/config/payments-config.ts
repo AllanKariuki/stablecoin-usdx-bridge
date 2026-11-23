@@ -83,6 +83,23 @@ export class PaymentsConfig {
   @IsString()
   MPESA_PASSKEY = '';
 
+  // --- M-Pesa B2C (payouts) ---
+  //
+  // Daraja's B2C API authenticates as the initiator configured in the portal,
+  // not as the business shortcode: InitiatorName is that account's username,
+  // and SecurityCredential is its password encrypted with Safaricom's public
+  // certificate. The portal generates the encrypted value; it is used
+  // verbatim here and never logged. Both are needed only for payouts — STK
+  // deposits are unaffected — so leaving them blank keeps the rail usable for
+  // collection and refuses disbursement with RAIL_UNAVAILABLE.
+  @IsOptional()
+  @IsString()
+  MPESA_INITIATOR_NAME = '';
+
+  @IsOptional()
+  @IsString()
+  MPESA_SECURITY_CREDENTIAL = '';
+
   // Must be publicly reachable for Daraja to POST to it — an ngrok tunnel in
   // local development. An unreachable callback URL is the single most common
   // reason an STK push appears to hang forever.
