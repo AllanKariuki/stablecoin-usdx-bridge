@@ -3,7 +3,7 @@
 In-app, email and webhook notifications, plus the WebSocket fan-out at `/ws`.
 
 **Port 3000 is not this service's choice.** `frontend/public/runtime-config.js`
-declares `VITE_APP_WEBSOCKET_URL = ws://localhost:3000/ws` and
+declares `VITE_APP_WEBSOCKET_URL = ws://localhost:13000/ws` and
 `frontend/src/services/websocketService.ts` connects to it — this service was
 built to that contract, which is also why Grafana went on 53000 back in P3.
 

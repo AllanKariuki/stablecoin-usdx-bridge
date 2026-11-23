@@ -3,13 +3,14 @@ import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } fr
 
 export class NotificationsConfig {
   /**
-   * 3000, not a port of this service's choosing.
+   * The container/in-cluster port is 3000; the host publishes 13000.
    *
    * frontend/public/runtime-config.js declares
-   * VITE_APP_WEBSOCKET_URL = ws://localhost:3000/ws, and the frontend was
-   * written against it before this service existed. That is also why Grafana
-   * sits on 53000 — see the plan's port map, where 3000 is reserved for
-   * exactly this.
+   * VITE_APP_WEBSOCKET_URL = ws://localhost:13000/ws, and the frontend was
+   * written against it before this service existed. Compose maps host 13000
+   * onto this port, and scripts/stack.sh runs the process with PORT=13000 so
+   * the host listener is the port the browser dials. That is also why Grafana
+   * sits on 53000 — see the plan's port map.
    */
   @Type(() => Number)
   @IsInt()

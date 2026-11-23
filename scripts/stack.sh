@@ -13,9 +13,16 @@
 #   scripts/stack.sh down --infra   ...and stop the containers too (volumes kept)
 #   scripts/stack.sh status         show what is running, where, and on which port
 #
-# Logs and pid files live in .logs/stack/ (gitignored). Host ports 8081/8181
-# are often taken by other projects, so core-ledger and the worker publish on
-# 18081/18181 by default.
+# Logs and pid files live in .logs/stack/ (gitignored). Host ports are
+# deliberately remapped out of the 3000-8090 range, which other local stacks
+# commonly hold: core-ledger and the worker publish on 18081/18181, and every
+# host service listens on its SERVICE_TABLE port (13xxx for the Node services,
+# 18xxx for the Go ones).
+#
+# `status` and `up` distinguish our processes from foreign listeners by
+# walking the pid recorded for each service down to the process that actually
+# binds the port — `pnpm` and `go run` both spawn a child to do that. A port
+# held by anything else is reported as CONFLICT, never as up.
 #
 # Everything below can be overridden from the environment:
 #   CORE_LEDGER_HOST_PORT            (18081)
@@ -23,7 +30,7 @@
 #   SOLANA_RELAYER_KEYPAIR_HOST_PATH ($HOME/.config/solana/usdx-relayer.json)
 #   AUDIT_TRAIL_TOKEN                (dev-audit-ingest-token)
 #   WORKFLOW_CALLBACK_SECRET         (dev-workflow-callback-secret)
-#   WORKER_AUDIT_TRAIL_URL           (http://host.docker.internal:8085)
+#   WORKER_AUDIT_TRAIL_URL           (http://host.docker.internal:18085)
 
 set -euo pipefail
 
@@ -36,30 +43,30 @@ WORKER_HOST_PORT=${WORKER_HOST_PORT:-18181}
 SOLANA_RELAYER_KEYPAIR_HOST_PATH=${SOLANA_RELAYER_KEYPAIR_HOST_PATH:-${HOME:-}/.config/solana/usdx-relayer.json}
 AUDIT_TRAIL_TOKEN=${AUDIT_TRAIL_TOKEN:-dev-audit-ingest-token}
 WORKFLOW_CALLBACK_SECRET=${WORKFLOW_CALLBACK_SECRET:-dev-workflow-callback-secret}
-WORKER_AUDIT_TRAIL_URL=${WORKER_AUDIT_TRAIL_URL:-http://host.docker.internal:8085}
+WORKER_AUDIT_TRAIL_URL=${WORKER_AUDIT_TRAIL_URL:-http://host.docker.internal:18085}
 
 # Compose reads these from the environment for its ports, volumes and worker
 # settings.
 export CORE_LEDGER_HOST_PORT WORKER_HOST_PORT SOLANA_RELAYER_KEYPAIR_HOST_PATH WORKER_AUDIT_TRAIL_URL
 
 CORE_LEDGER_URL="http://localhost:$CORE_LEDGER_HOST_PORT"
-AUDIT_TRAIL_URL="http://localhost:8085"
+AUDIT_TRAIL_URL="http://localhost:18085"
 
 # name:kind:port — the host-run services, in start order. kind picks the
 # command: go services run from their own directory, node services use pnpm.
-SERVICE_TABLE="audit-trail:go:8085
-signer:go:8084
-indexer:go:8083
-identity:node:3001
-workflow:node:3006
-notifications:node:3000
-payments:node:3003
-kyc:node:3007
-compliance:node:3004
-reporting:node:3008
-rms:node:3005
-bff:node:3002
-auth-proxy:go:8090"
+SERVICE_TABLE="audit-trail:go:18085
+signer:go:18084
+indexer:go:18083
+identity:node:13001
+workflow:node:13006
+notifications:node:13000
+payments:node:13003
+kyc:node:13007
+compliance:node:13004
+reporting:node:13008
+rms:node:13005
+bff:node:13002
+auth-proxy:go:18090"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -91,6 +98,116 @@ port_listens() {
 	lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
 }
 
+recorded_pid() {
+	# Prints NAME's recorded pid when it is still alive, or nothing.
+	local pid
+	pid=$(read_pid "$RUNTIME_DIR/$1.pid")
+	if [ -n "$pid" ] && process_alive "$pid"; then
+		printf '%s' "$pid"
+	fi
+}
+
+pid_under() {
+	# Succeeds when $1 is $2 itself or descends from it. The process that
+	# binds a port is usually a child of the pid we recorded: `go run`
+	# builds and execs the binary, `pnpm run start:dev` spawns ts-node/vite.
+	local pid=$1 ancestor=$2 parent hops=0
+	case $pid in '' | *[!0-9]*) return 1 ;; esac
+	while [ "$pid" -gt 1 ]; do
+		[ "$pid" = "$ancestor" ] && return 0
+		parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+		[ -n "$parent" ] || return 1
+		pid=$parent
+		hops=$((hops + 1))
+		[ "$hops" -lt 64 ] || return 1
+	done
+	return 1
+}
+
+port_state() {
+	# port_state PORT [OWNER_PID] — prints one of:
+	#   down                      nothing is listening
+	#   up                        every listener is OWNER_PID or a descendant
+	#   CONFLICT:<pid>:<command>  the first listener this stack does not own
+	local port=$1 owner=${2:-} pid pids cmd
+	pids=$(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+	if [ -z "$pids" ]; then
+		printf 'down'
+		return 0
+	fi
+	for pid in $pids; do
+		if [ -n "$owner" ] && pid_under "$pid" "$owner"; then
+			continue
+		fi
+		cmd=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d '\n' | sed 's/^[[:space:]]*//')
+		printf 'CONFLICT:%s:%s' "$pid" "${cmd:-unknown}"
+		return 0
+	done
+	printf 'up'
+}
+
+describe_conflict() {
+	# describe_conflict NAME PORT STATE — one printable conflict line.
+	local name=$1 port=$2 state=$3 pid cmd
+	pid=${state#CONFLICT:}
+	cmd=${pid#*:}
+	pid=${pid%%:*}
+	printf '  %s: port %s held by pid %s (%s)' "$name" "$port" "$pid" "${cmd:-unknown}"
+}
+
+host_conflicts() {
+	# Prints a line for every host-service port held by a foreign process.
+	local name kind port owner state conflicts=""
+	while IFS=: read -r name kind port; do
+		[ -n "$name" ] || continue
+		owner=$(recorded_pid "$name")
+		state=$(port_state "$port" "$owner")
+		case $state in
+		CONFLICT:*) conflicts="$conflicts$(describe_conflict "$name" "$port" "$state")
+" ;;
+		esac
+	done <<EOF
+$SERVICE_TABLE
+EOF
+
+	owner=$(recorded_pid frontends)
+	for port in 5173 5174; do
+		state=$(port_state "$port" "$owner")
+		case $state in
+		CONFLICT:*) conflicts="$conflicts$(describe_conflict frontends "$port" "$state")
+" ;;
+		esac
+	done
+	printf '%s' "$conflicts"
+}
+
+compose_conflicts() {
+	# The ports the compose-posted containers publish. One of ours is fine;
+	# anything else — another container or a bare host process — is not.
+	local spec name port holders holder state conflicts=""
+	for spec in gateway:18082 core-ledger:18081 worker:18181; do
+		name=${spec%%:*}
+		port=${spec##*:}
+		holders=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2>/dev/null || true)
+		if [ -n "$holders" ]; then
+			for holder in $holders; do
+				case $holder in
+				usdx-*) ;;
+				*) conflicts="$conflicts  $name: port $port published by container $holder
+" ;;
+				esac
+			done
+			continue
+		fi
+		state=$(port_state "$port" "")
+		case $state in
+		CONFLICT:*) conflicts="$conflicts$(describe_conflict "$name" "$port" "$state")
+" ;;
+		esac
+	done
+	printf '%s' "$conflicts"
+}
+
 port_rows() {
 	# name:port for every expected listener, one per line.
 	local name kind port
@@ -116,80 +233,96 @@ EOF
 
 # service_env NAME — prints the host-side env overrides for a service, one
 # KEY=VALUE per line. The same data drives every service; nothing is copied.
+# PORT is overridden here for every service: the .env files and in-code
+# defaults carry the container/in-cluster ports, and only the host-side
+# launcher moves them (and only to get out of other stacks' way).
 service_env() {
 	case "$1" in
 	audit-trail)
+		echo "PORT=18085"
 		echo "INGEST_TOKEN=$AUDIT_TRAIL_TOKEN"
 		echo "ANCHOR_INTERVAL=5m"
 		;;
 	signer)
+		echo "PORT=18084"
 		echo "SOLANA_RELAYER_KEYPAIR_PATH=$SOLANA_RELAYER_KEYPAIR_HOST_PATH"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		;;
 	indexer)
+		echo "PORT=18083"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
 		;;
 	identity)
-		echo "PORT=3001"
+		echo "PORT=13001"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		;;
 	workflow)
+		echo "PORT=13006"
 		echo "CALLBACK_SECRET=$WORKFLOW_CALLBACK_SECRET"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		;;
 	notifications)
+		echo "PORT=13000"
 		echo "NATS_URL=nats://localhost:54222"
-		echo "IDENTITY_SERVICE_URL=http://localhost:3001"
+		echo "IDENTITY_SERVICE_URL=http://localhost:13001"
 		;;
 	payments)
+		echo "PORT=13003"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
-		echo "NOTIFICATIONS_URL=http://localhost:3000"
+		echo "NOTIFICATIONS_URL=http://localhost:13000"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		;;
 	kyc)
+		echo "PORT=13007"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
-		echo "WORKFLOW_URL=http://localhost:3006"
+		echo "WORKFLOW_URL=http://localhost:13006"
+		echo "SELF_URL=http://localhost:13007"
 		echo "WORKFLOW_CALLBACK_SECRET=$WORKFLOW_CALLBACK_SECRET"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		;;
 	compliance)
+		echo "PORT=13004"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
-		echo "WORKFLOW_URL=http://localhost:3006"
+		echo "WORKFLOW_URL=http://localhost:13006"
+		echo "SELF_URL=http://localhost:13004"
 		echo "WORKFLOW_CALLBACK_SECRET=$WORKFLOW_CALLBACK_SECRET"
-		echo "NOTIFICATIONS_URL=http://localhost:3000"
+		echo "NOTIFICATIONS_URL=http://localhost:13000"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		;;
 	reporting)
+		echo "PORT=13008"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		;;
 	rms)
+		echo "PORT=13005"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		;;
 	bff)
-		echo "PORT=3002"
+		echo "PORT=13002"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
-		echo "PAYMENTS_URL=http://localhost:3003"
-		echo "NOTIFICATIONS_URL=http://localhost:3000"
-		echo "WORKFLOW_URL=http://localhost:3006"
-		echo "KYC_URL=http://localhost:3007"
-		echo "COMPLIANCE_URL=http://localhost:3004"
-		echo "REPORTING_URL=http://localhost:3008"
+		echo "PAYMENTS_URL=http://localhost:13003"
+		echo "NOTIFICATIONS_URL=http://localhost:13000"
+		echo "WORKFLOW_URL=http://localhost:13006"
+		echo "KYC_URL=http://localhost:13007"
+		echo "COMPLIANCE_URL=http://localhost:13004"
+		echo "REPORTING_URL=http://localhost:13008"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
-		echo "RMS_URL=http://localhost:3005"
+		echo "RMS_URL=http://localhost:13005"
 		;;
 	auth-proxy)
-		echo "IDENTITY_SERVICE_URL=http://localhost:3001"
+		echo "PORT=18090"
+		echo "IDENTITY_SERVICE_URL=http://localhost:13001"
 		;;
 	esac
 }
@@ -272,13 +405,15 @@ start_frontends() {
 
 wait_for_ports() {
 	local deadline=$((SECONDS + 180))
-	local rows name port failed pair logpath
+	local rows name port failed pair logpath owner state
 	rows=$(port_rows)
 	while :; do
 		failed=""
 		while IFS=: read -r name port; do
 			[ -n "$name" ] || continue
-			if ! port_listens "$port"; then
+			owner=$(recorded_pid "$name")
+			state=$(port_state "$port" "$owner")
+			if [ "$state" != "up" ]; then
 				failed="$failed $name:$port"
 			fi
 		done <<EOF
@@ -307,6 +442,18 @@ EOF
 cmd_up() {
 	mkdir -p "$RUNTIME_DIR"
 
+	# Refuse to start on top of somebody else's listener. Reporting this
+	# before launching anything beats a half-started stack whose services
+	# silently talk to the other project — or fail to bind and look "down".
+	local conflicts
+	conflicts=$(printf '%s\n%s\n' "$(host_conflicts)" "$(compose_conflicts)" | sed '/^[[:space:]]*$/d')
+	if [ -n "$conflicts" ]; then
+		echo "error: not starting — these ports are held by something this stack does not own:" >&2
+		printf '%s\n' "$conflicts" >&2
+		echo "stop those processes (or free the ports) and re-run." >&2
+		exit 1
+	fi
+
 	echo "== infra (docker compose, no image build)"
 	compose up -d --no-build postgres keycloak redis traefik timescaledb nats minio
 
@@ -319,10 +466,10 @@ cmd_up() {
 	fi
 
 	# Traefik sometimes comes up without its published host port; recreating
-	# just that container restores the 8082 binding without touching anything
+	# just that container restores the 18082 binding without touching anything
 	# else.
 	if [ -z "$(docker port usdx-traefik 8082 2>/dev/null || true)" ]; then
-		echo "== traefik is missing its 8082 host binding — recreating it"
+		echo "== traefik is missing its 18082 host binding — recreating it"
 		compose up -d --no-build --force-recreate traefik
 	fi
 
@@ -430,36 +577,49 @@ EOF
 # ---------------------------------------------------------------------------
 
 print_status() {
-	local name kind port pid pidfile state
+	local name kind port pid state note one holder_pid holder_cmd
 
-	printf '%-14s %-10s %-6s %-8s %s\n' "NAME" "PORT" "STATE" "PID" "LOG"
+	printf '%-14s %-12s %-9s %-8s %s\n' "NAME" "PORT" "STATE" "PID" "LOG"
 	while IFS=: read -r name kind port; do
 		[ -n "$name" ] || continue
-		pidfile="$RUNTIME_DIR/$name.pid"
-		pid=$(read_pid "$pidfile")
-		if [ -n "$pid" ] && ! process_alive "$pid"; then
-			pid=""
-		fi
-		state="down"
-		if port_listens "$port"; then
-			state="up"
-		fi
-		printf '%-14s %-10s %-6s %-8s %s\n' \
-			"$name" "$port" "$state" "${pid:--}" "$RUNTIME_DIR/$name.log"
+		pid=$(recorded_pid "$name")
+		state=$(port_state "$port" "$pid")
+		note=""
+		case $state in
+		CONFLICT:*)
+			holder_pid=${state#CONFLICT:}
+			holder_cmd=${holder_pid#*:}
+			holder_pid=${holder_pid%%:*}
+			state="CONFLICT"
+			note="  (held by pid $holder_pid $holder_cmd)"
+			;;
+		esac
+		printf '%-14s %-12s %-9s %-8s %s%s\n' \
+			"$name" "$port" "$state" "${pid:--}" "$RUNTIME_DIR/$name.log" "$note"
 	done <<EOF
 $SERVICE_TABLE
 EOF
 
-	pid=$(read_pid "$RUNTIME_DIR/frontends.pid")
-	if [ -n "$pid" ] && ! process_alive "$pid"; then
-		pid=""
-	fi
-	state="down"
-	if port_listens 5173 && port_listens 5174; then
-		state="up"
-	fi
-	printf '%-14s %-10s %-6s %-8s %s\n' \
-		"frontends" "5173/5174" "$state" "${pid:--}" "$RUNTIME_DIR/frontends.log"
+	# The frontends row is up only when both dev servers are ours.
+	pid=$(recorded_pid frontends)
+	state="up"
+	note=""
+	for port in 5173 5174; do
+		one=$(port_state "$port" "$pid")
+		case $one in
+		up) ;;
+		down) [ "$state" = "CONFLICT" ] || state="down" ;;
+		CONFLICT:*)
+			state="CONFLICT"
+			holder_pid=${one#CONFLICT:}
+			holder_cmd=${holder_pid#*:}
+			holder_pid=${holder_pid%%:*}
+			note="  (port $port held by pid $holder_pid $holder_cmd)"
+			;;
+		esac
+	done
+	printf '%-14s %-12s %-9s %-8s %s%s\n' \
+		"frontends" "5173/5174" "$state" "${pid:--}" "$RUNTIME_DIR/frontends.log" "$note"
 
 	echo
 	echo "containers:"
@@ -468,7 +628,7 @@ EOF
 	echo
 	echo "portal:      http://localhost:5173"
 	echo "ops console: http://localhost:5174"
-	echo "gateway:     http://localhost:8082/api"
+	echo "gateway:     http://localhost:18082/api"
 	echo "keycloak:    http://localhost:8080"
 }
 

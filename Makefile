@@ -65,8 +65,8 @@ logs:
 ## Start the observability stack (Prometheus, Pushgateway, Grafana, Loki).
 # Behind its own profile so a plain `make up` stays a database and a broker
 # rather than a nine-container stack. Grafana is on 53000, not 3000 — 3000
-# belongs to services/notifications' WebSocket, which the frontend's
-# runtime-config.js hardcodes.
+# belongs to services/notifications' WebSocket (published on host 13000),
+# which the frontend's runtime-config.js hardcodes.
 up-obs:
 	docker compose --profile obs up -d
 	@echo "grafana on http://localhost:53000 (anonymous viewer), prometheus on :59090"

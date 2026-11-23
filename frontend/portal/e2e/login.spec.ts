@@ -24,7 +24,7 @@ test.describe('P1 login flow', () => {
   });
 
   test('a forged X-User-Id is rejected at the gateway', async ({ request }) => {
-    const gatewayResponse = await request.get('http://localhost:8082/api/wallets', {
+    const gatewayResponse = await request.get('http://localhost:18082/api/wallets', {
       headers: { 'X-User-Id': 'someone-else' },
       failOnStatusCode: false,
     });

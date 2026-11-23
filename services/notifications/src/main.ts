@@ -32,8 +32,8 @@ async function main(): Promise<void> {
 
   // The WebSocket server attaches to the same HTTP server Nest just bound, so
   // /ws and the REST surface share one port — which is what the frontend's
-  // runtime-config.js assumes (ws://localhost:3000/ws alongside nothing else
-  // on 3000).
+  // runtime-config.js assumes (ws://localhost:13000/ws alongside nothing else
+  // on that port; the host publishes 13000, the container port is 3000).
   //
   // It attaches *after* listen() because the underlying server does not exist
   // until then.

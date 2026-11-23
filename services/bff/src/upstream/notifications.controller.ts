@@ -7,7 +7,7 @@ import { UpstreamProxy } from './upstream.proxy';
  * services/notifications' HTTP surface.
  *
  * The WebSocket is deliberately NOT proxied: the frontend connects straight
- * to ws://localhost:3000/ws, which is what runtime-config.js has always
+ * to ws://localhost:13000/ws, which is what runtime-config.js has always
  * declared. Proxying a long-lived socket through the BFF would put a second
  * process in the path of every message for no gain, and the upgrade is
  * authenticated at its own end (see services/notifications/src/ws/ws.auth.ts,

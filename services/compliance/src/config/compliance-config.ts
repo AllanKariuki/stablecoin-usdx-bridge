@@ -38,7 +38,7 @@ export class ComplianceConfig {
 
   @IsOptional()
   @IsString()
-  SELF_URL = 'http://localhost:3004';
+  SELF_URL = 'http://localhost:13004';
 
   @IsOptional()
   @IsString()

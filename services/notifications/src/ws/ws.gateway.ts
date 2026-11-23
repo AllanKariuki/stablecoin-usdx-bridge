@@ -11,11 +11,12 @@ interface Client {
 }
 
 /**
- * The WebSocket fan-out at `/ws` on :3000.
+ * The WebSocket fan-out at `/ws` on :3000 inside the container — published as
+ * :13000 on the host.
  *
- * Both the path and the port are fixed by something that already exists:
+ * Both the path and the host port are fixed by something that already exists:
  * `frontend/public/runtime-config.js` declares
- * `VITE_APP_WEBSOCKET_URL = ws://localhost:3000/ws`, and
+ * `VITE_APP_WEBSOCKET_URL = ws://localhost:13000/ws`, and
  * `frontend/src/services/websocketService.ts` connects to it. This service is
  * built to that contract rather than the other way round — which is also why
  * Grafana was put on 53000 back in P3.
