@@ -78,7 +78,7 @@ core-ledger~ledger.reserves.chain-supply~services/indexer: chain supply snapshot
 core-ledger~ledger.reports.read~services/reporting: report GET surface
 payments~payments.user-proxy~services/bff: banks, payment-intents, invoices
 workflow~workflow.user-proxy~services/bff: the approval surface
-workflow~workflow.propose~services/kyc + services/compliance: POST /approval-requests
+workflow~workflow.propose~services/kyc + services/compliance + svc-core-ledger: POST /approval-requests
 kyc~kyc.user-proxy~services/bff: user-facing kyc routes
 compliance~compliance.user-proxy~services/bff: user-facing compliance routes
 compliance~compliance.ingest~svc-core-ledger-worker: POST /internal/outbox
@@ -106,6 +106,7 @@ svc-rms~dev-svc-rms-secret
 svc-reporting~dev-svc-reporting-secret
 svc-indexer~dev-svc-indexer-secret
 svc-core-ledger-worker~dev-svc-core-ledger-worker-secret
+svc-core-ledger~dev-svc-core-ledger-secret
 svc-auth-proxy~dev-svc-auth-proxy-secret
 svc-workflow~dev-svc-workflow-secret
 svc-notifications~dev-svc-notifications-secret
@@ -143,6 +144,7 @@ svc-core-ledger-worker~notifications
 svc-core-ledger-worker~compliance
 svc-core-ledger-worker~indexer
 svc-core-ledger-worker~audit-trail
+svc-core-ledger~workflow
 svc-auth-proxy~identity
 svc-workflow~audit-trail
 svc-notifications~identity
@@ -169,6 +171,7 @@ payments~svc-bff~payments.user-proxy
 workflow~svc-bff~workflow.user-proxy
 workflow~svc-kyc~workflow.propose
 workflow~svc-compliance~workflow.propose
+workflow~svc-core-ledger~workflow.propose
 kyc~svc-bff~kyc.user-proxy
 compliance~svc-bff~compliance.user-proxy
 compliance~svc-core-ledger-worker~compliance.ingest

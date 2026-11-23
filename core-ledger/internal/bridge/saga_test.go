@@ -48,6 +48,9 @@ type fakeChain struct {
 	mintErr func(n int) error
 	burnErr func(n int) error
 	waitErr func(n int) error
+
+	// verifyErr is what VerifyBurn (H4's break-glass proof) returns.
+	verifyErr func() error
 }
 
 func (f *fakeChain) BridgeMint(to string, amount *big.Int, correlationID string) (string, error) {
@@ -94,6 +97,19 @@ func (f *fakeChain) WaitForFinality(txHash string, param string) error {
 	}
 	return nil
 }
+
+func (f *fakeChain) VerifyBurn(_ context.Context, _ string, _ string, _ *big.Int, _ string) error {
+	f.mu.Lock()
+	fn := f.verifyErr
+	f.mu.Unlock()
+
+	if fn != nil {
+		return fn()
+	}
+	return nil
+}
+
+func (f *fakeChain) ValidTxHash(txHash string) bool { return txHash != "" }
 
 func (f *fakeChain) mints() int {
 	f.mu.Lock()

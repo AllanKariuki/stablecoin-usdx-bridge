@@ -937,6 +937,32 @@
       ]
     },
     {
+      "clientId": "svc-core-ledger",
+      "name": "core-ledger API server (confidential)",
+      "description": "Service account for core-ledger's API server (H4): client-credentials only, carrying workflow.propose for its break-glass maker-checker proposals. The worker keeps its own client (svc-core-ledger-worker); both binaries share one config surface and the environment decides which client id they hold.",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-core-ledger-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-workflow",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "workflow",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
       "clientId": "svc-auth-proxy",
       "name": "services/auth-proxy (confidential)",
       "description": "Service account for services/auth-proxy (H3): client-credentials only, carrying identity.resolve for its GET /internal/parties/by-subject/:subject lookup.",

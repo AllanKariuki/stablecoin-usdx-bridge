@@ -143,13 +143,27 @@ type Config struct {
 	// --- H3: the worker's outbound service-to-service auth. The worker's
 	// relay (notifications/compliance) and its indexer finality checks all
 	// carry a client-credentials token minted for svc-core-ledger-worker
-	// (internal/serviceauth). Only the worker binary needs these — the API
-	// server and reconcile never call another service over HTTP — which is
-	// why they are optional here and required in cmd/worker.
+	// (internal/serviceauth). H4 gives the API server outbound calls of its
+	// own — it proposes break-glass approvals to services/workflow — and it
+	// uses its own client, svc-core-ledger. Both binaries read these same
+	// fields; which client id they hold is decided by the environment
+	// (core-ledger/.env for the server, stack.sh and the k8s worker
+	// deployment overriding it for the worker). Required in cmd/server and
+	// cmd/worker, optional here so `reconcile` can keep loading config it
+	// never calls anyone from.
 	ServiceClientID     string `env:"SERVICE_CLIENT_ID" default:""`
 	ServiceClientSecret string `env:"SERVICE_CLIENT_SECRET" default:""`
 	KeycloakBaseURL     string `env:"KEYCLOAK_BASE_URL" default:"http://localhost:8080"`
 	KeycloakRealm       string `env:"KEYCLOAK_REALM" default:"damp"`
+
+	// --- H4: break-glass maker-checker. The server proposes approvals to
+	// services/workflow (WORKFLOW_URL), receives the signed decisions on
+	// CORE_LEDGER_SELF_URL/internal/approvals/callback, and verifies them
+	// with WORKFLOW_CALLBACK_SECRET — the same shared secret workflow, kyc
+	// and compliance already use.
+	WorkflowURL            string `env:"WORKFLOW_URL" default:""`
+	WorkflowCallbackSecret string `env:"WORKFLOW_CALLBACK_SECRET" default:""`
+	CoreLedgerSelfURL      string `env:"CORE_LEDGER_SELF_URL" default:""`
 }
 
 func Load() (Config, error) {

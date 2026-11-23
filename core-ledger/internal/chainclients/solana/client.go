@@ -1,10 +1,13 @@
 package solana
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	solanago "github.com/gagliardetto/solana-go"
@@ -319,6 +322,136 @@ func reachedCommitment(have, want rpc.ConfirmationStatusType) bool {
 		rpc.ConfirmationStatusFinalized: 2,
 	}
 	return rank[have] >= rank[want]
+}
+
+// ValidTxHash reports whether txHash is a well-formed Solana signature (a
+// base58 encoding of 64 bytes).
+func (c *Client) ValidTxHash(txHash string) bool {
+	_, err := solanago.SignatureFromBase58(txHash)
+	return err == nil
+}
+
+// VerifyBurn is the on-chain half of H4's break-glass control — the Solana
+// twin of the Ethereum client's. It reads the transaction at the `finalized`
+// commitment (so a positive answer is final by construction), checks it
+// succeeded, and finds the bridge_burn instruction for this client's program,
+// decoding amount (u64, little-endian) and correlation id ([u8; 32]) from the
+// same layout encodeBridgeArgs writes. The token account at index 2 of that
+// instruction must be the associated token account derived from `from` and the
+// mint — `from` is the custody wallet address, and the ATA is where its
+// USD-X lives.
+func (c *Client) VerifyBurn(ctx context.Context, txHash, from string, amount *big.Int, correlationID string) error {
+	sig, err := solanago.SignatureFromBase58(txHash)
+	if err != nil {
+		return fmt.Errorf("parsing signature %q: %w", txHash, err)
+	}
+
+	maxTxVersion := uint64(0)
+	tx, err := c.rpc.GetTransaction(ctx, sig, &rpc.GetTransactionOpts{
+		Commitment:                     rpc.CommitmentFinalized,
+		MaxSupportedTransactionVersion: &maxTxVersion,
+	})
+	if err != nil {
+		// solana-go surfaces a null result as a "not found" error, so this is
+		// where "the cluster has nothing finalised under this signature"
+		// arrives. The signature may still exist below finality — that is a
+		// different answer from "never seen", and a different typed error.
+		statuses, serr := c.rpc.GetSignatureStatuses(ctx, true, sig)
+		if serr == nil && len(statuses.Value) > 0 && statuses.Value[0] != nil {
+			return fmt.Errorf("burn %s is not final yet: %w", txHash, bridge.ErrBurnNotFinal)
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return fmt.Errorf("burn %s: %w", txHash, bridge.ErrBurnNotFound)
+		}
+		return fmt.Errorf("reading burn %s: %w", txHash, err)
+	}
+	if tx == nil || tx.Transaction == nil {
+		// Defensive twin of the branch above: if the client ever returns
+		// nil, nil, the statuses call still tells the two answers apart.
+		statuses, serr := c.rpc.GetSignatureStatuses(ctx, true, sig)
+		if serr == nil && len(statuses.Value) > 0 && statuses.Value[0] != nil {
+			return fmt.Errorf("burn %s is not final yet: %w", txHash, bridge.ErrBurnNotFinal)
+		}
+		return fmt.Errorf("burn %s: %w", txHash, bridge.ErrBurnNotFound)
+	}
+
+	if tx.Meta != nil && tx.Meta.Err != nil {
+		return fmt.Errorf("burn %s reverted: %v: %w", txHash, tx.Meta.Err, bridge.ErrBurnReverted)
+	}
+
+	parsed, err := tx.Transaction.GetTransaction()
+	if err != nil {
+		return fmt.Errorf("decoding burn %s: %w", txHash, err)
+	}
+	if parsed == nil {
+		return fmt.Errorf("burn %s: %w: the transaction carries no decodable message", txHash, bridge.ErrBurnNotFound)
+	}
+
+	instr, found := findBridgeBurn(parsed.Message, c.programID)
+	if !found {
+		return fmt.Errorf("burn %s: %w: no bridge_burn instruction for program %s", txHash, bridge.ErrBurnNotFound, c.programID)
+	}
+	if len(instr.Data) < 8+8+32 {
+		return fmt.Errorf("burn %s: %w: bridge_burn data is %d bytes, want %d", txHash, bridge.ErrBurnNotFound, len(instr.Data), 8+8+32)
+	}
+
+	gotAmount := new(big.Int).SetUint64(binary.LittleEndian.Uint64(instr.Data[8:16]))
+	if gotAmount.Cmp(amount) != 0 {
+		return &bridge.ErrBurnMismatch{Field: "amount"}
+	}
+	var gotCorrelation [32]byte
+	copy(gotCorrelation[:], instr.Data[16:48])
+	if gotCorrelation != bridge.CorrelationIDHash(correlationID) {
+		return &bridge.ErrBurnMismatch{Field: "correlation_id"}
+	}
+
+	// BridgeBurn's account order (chains/solana .../bridge_burn.rs): mint,
+	// mint_authority, source, processed_marker, config, relayer, token_program,
+	// system_program — so the source token account is index 2.
+	if len(instr.Accounts) < 3 || int(instr.Accounts[2]) >= len(parsed.Message.AccountKeys) {
+		return fmt.Errorf("burn %s: %w: bridge_burn names fewer than three accounts", txHash, bridge.ErrBurnNotFound)
+	}
+	sourceATA := parsed.Message.AccountKeys[instr.Accounts[2]]
+
+	fromWallet, err := solanago.PublicKeyFromBase58(from)
+	if err != nil {
+		return fmt.Errorf("parsing source address: %w", err)
+	}
+	expectedATA, _, err := solanago.FindAssociatedTokenAddress(fromWallet, c.mint)
+	if err != nil {
+		return fmt.Errorf("deriving source ATA: %w", err)
+	}
+	if !sourceATA.Equals(expectedATA) {
+		return &bridge.ErrBurnMismatch{Field: "from"}
+	}
+	return nil
+}
+
+// findBridgeBurn returns the compiled instruction for programID whose data
+// begins with Anchor's bridge_burn discriminator — the same discriminator
+// encodeBridgeArgs writes.
+func findBridgeBurn(message solanago.Message, programID solanago.PublicKey) (solanago.CompiledInstruction, bool) {
+	programIndex := -1
+	for i, key := range message.AccountKeys {
+		if key.Equals(programID) {
+			programIndex = i
+			break
+		}
+	}
+	if programIndex < 0 {
+		return solanago.CompiledInstruction{}, false
+	}
+
+	wantDisc := anchorDiscriminator("bridge_burn")
+	for _, instr := range message.Instructions {
+		if int(instr.ProgramIDIndex) != programIndex {
+			continue
+		}
+		if len(instr.Data) >= len(wantDisc) && bytes.Equal(instr.Data[:len(wantDisc)], wantDisc) {
+			return instr, true
+		}
+	}
+	return solanago.CompiledInstruction{}, false
 }
 
 func (c *Client) TotalSupply() (*big.Int, uint64, error) {

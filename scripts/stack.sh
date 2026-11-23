@@ -247,6 +247,14 @@ service_env() {
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		echo "NATS_URL=nats://localhost:54222"
+		# H4: the server proposes break-glass approvals to services/workflow
+		# (svc-core-ledger carries workflow.propose) and receives the signed
+		# decisions on its own host URL. core-ledger/.env carries the same
+		# values for the server; the worker's case below overrides the two
+		# SERVICE_* lines only, so this remains the shared surface.
+		echo "WORKFLOW_URL=http://localhost:13006"
+		echo "CORE_LEDGER_SELF_URL=http://localhost:18081"
+		echo "WORKFLOW_CALLBACK_SECRET=$WORKFLOW_CALLBACK_SECRET"
 		;;
 	core-ledger-worker)
 		echo "WORKER_PORT=18181"

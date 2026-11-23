@@ -74,6 +74,7 @@ export class CoreLedgerOperationsProxyController {
     'reserves/reconciliation-runs',
     'reserves/reconciliation-runs/:runId',
     'reserves/reconciliation-breaks',
+    'redemptions/:transactionId/break-glass',
   ])
   read(@Req() req: Request, @Res() res: Response) {
     return this.proxy.forward(this.baseUrl, req, res);

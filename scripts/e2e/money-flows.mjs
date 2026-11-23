@@ -12,8 +12,9 @@
  *
  * --fast skips the on-chain steps (issuance, bridge, redeem-eth, redeem-sol)
  * and the chain reads, so a run moves fiat only and finishes in ~1 minute.
- * The full run spends testnet funds (Sepolia ETH + devnet SOL) and takes
- * ~45-60 minutes.
+ * The break-glass step self-skips in --fast: it needs a redemption whose saga
+ * is in flight, and creating one is on-chain money. The full run spends
+ * testnet funds (Sepolia ETH + devnet SOL) and takes ~45-60 minutes.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -44,12 +45,13 @@ function printHelp() {
   console.log(`Usage: node scripts/e2e/money-flows.mjs [--fast] [--only=<step,...>] [--timeout-min=40]
 
   --fast             skip the on-chain steps (issuance, bridge, redeem-eth,
-                     redeem-sol)
+                     redeem-sol); break-glass self-skips (no in-flight
+                     redemption exists without them)
   --only=step,...    run only the named steps, in order
   --timeout-min=N    saga poll timeout in minutes (default 40)
 
 Steps: wallets, deposit, p2p, invoice, withdrawal, issuance, bridge,
-       redeem-eth, redeem-sol, negatives, reconcile`);
+       redeem-eth, redeem-sol, break-glass, negatives, reconcile`);
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +98,7 @@ const USERS = {
   customer: 'customer@damp.local',
   company: 'company@damp.local',
   treasury: 'treasury@damp.local',
+  admin: 'admin@damp.local',
 };
 
 // ---------------------------------------------------------------------------
@@ -640,7 +643,9 @@ async function stepWithdrawal() {
 async function sagaPoll(correlationId, kind, timeoutMs) {
   return poll(
     () => api(USERS.customer, 'GET', `/transfers/${correlationId}`),
-    (r) => r.status !== 200 || ['COMPLETED', 'FAILED', 'COMPENSATED'].includes(r.body?.status),
+    // A 502/503/504 from the gateway is a transient read failure, not the
+    // saga's answer: keep polling. Any other non-200 ends the poll.
+    (r) => (r.status !== 200 && ![502, 503, 504].includes(r.status)) || ['COMPLETED', 'FAILED', 'COMPENSATED'].includes(r.body?.status),
     timeoutMs,
     10_000,
     `${kind} saga ${correlationId}`,
@@ -799,6 +804,122 @@ async function stepRedeemSol() {
   const hash = saga.sourceTxHash || saga.destTxHash;
   const url = saga.sourceTxUrl || saga.destTxUrl;
   return { ids: { solRedeemCorrelationId: correlationId, solRedeemTxHash: hash, solRedeemExplorerUrl: url }, note: `tx ${hash} ${url || ''}` };
+}
+
+// ---------------------------------------------------------------------------
+// Step 9b — break-glass (always attempted; skipped without a target)
+// ---------------------------------------------------------------------------
+
+const BREAK_GLASS_AMOUNT = '5.00';
+const BREAK_GLASS_UNITS = 5_000_000n; // 5.00 USD-X at 6 decimals
+
+/**
+ * H4's break-glass maker-checker, exercised on the NEGATIVE path only: the
+ * proposal must never settle on an operator's word.
+ *
+ * Full mode creates a small fresh redemption (its saga is in flight for
+ * minutes while the burn reaches finality, so nothing races), then:
+ *
+ *  1. treasury proposes break-glass with a random fake hash -> 202
+ *     PENDING_APPROVAL (and nothing settles);
+ *  2. treasury cannot approve its own request -> workflow 403
+ *     (excludeInitiator);
+ *  3. admin approves -> the burn cannot verify -> VERIFICATION_FAILED;
+ *  4. the saga is NOT settled and the fiat wallet did not move.
+ *
+ * --fast has no gateway route to list pending redemptions (the dead-letter
+ * queue is not exposed through the gateway) and creating one is chain
+ * money, so it skips with a reason.
+ */
+async function stepBreakGlass() {
+  if (opts.fast) {
+    throw new StepSkip(
+      '--fast: a break-glass target needs a redemption whose saga is in flight, and creating one is on-chain money; run the full flow instead',
+    );
+  }
+
+  const wallets = await customerWallets();
+  assert(wallets.usd?.id, 'no customer USD fiat wallet');
+  assert(wallets.usdxEth?.id, 'no customer USD-X ETHEREUM wallet (run the wallets step first)');
+
+  const usdxBefore = await walletBalance(wallets.usdxEth.id, USERS.customer);
+  if (units(usdxBefore, 'USDX') < BREAK_GLASS_UNITS) {
+    throw new StepSkip(
+      `customer ETH USD-X balance ${usdxBefore} is below the break-glass amount ${BREAK_GLASS_AMOUNT} — run the issuance step first`,
+    );
+  }
+
+  const fiatBefore = await walletBalance(wallets.usd.id, USERS.customer);
+
+  // A fresh redemption whose saga is in flight. The worker will eventually
+  // burn it for real (that is the happy path); break-glass below proves it
+  // cannot be settled by hand first.
+  const r = await api(USERS.customer, 'POST', '/redemptions', {
+    usdxWalletId: wallets.usdxEth.id,
+    fiatWalletId: wallets.usd.id,
+    amount: BREAK_GLASS_AMOUNT,
+  });
+  assert(r.status === 202, `break-glass redemption -> ${r.status}`, { status: r.status, body: r.body });
+  const redeemTxId = r.body.transaction?.id;
+  assert(redeemTxId, 'redemption response carries no transaction id', { status: r.status, body: r.body });
+  const correlationId = r.body.correlationId;
+
+  // Operator A (treasury) proposes break-glass with a hash the chain has
+  // never seen.
+  const fakeHash = '0x' + crypto.randomBytes(32).toString('hex');
+  const prop = await api(USERS.treasury, 'POST', `/redemptions/${redeemTxId}/confirm`, {
+    chain_tx_hash: fakeHash,
+    reason: ref('e2e break-glass negative path'),
+  });
+  assert(prop.status === 202 && prop.body?.status === 'PENDING_APPROVAL',
+    `break-glass proposal -> ${prop.status}`, { status: prop.status, body: prop.body });
+  const approvalRequestId = prop.body?.approval_request_id;
+  assert(approvalRequestId, 'proposal carries no approval_request_id', { body: prop.body });
+
+  // The saga must not be settled by the proposal alone.
+  const midSaga = await api(USERS.customer, 'GET', `/transfers/${correlationId}`);
+  assert(midSaga.status === 200 && midSaga.body?.status !== 'COMPLETED',
+    `the proposal settled the saga (${midSaga.body?.status}); a break-glass must not settle without approval`, { body: midSaga.body });
+
+  // Operator A cannot approve their own request — workflow's excludeInitiator.
+  const self = await api(USERS.treasury, 'POST', `/approval-requests/${approvalRequestId}/approve`, { comment: 'self-approval attempt' });
+  assert(self.status === 403, `self-approval -> ${self.status}, want 403`, { status: self.status, body: self.body });
+
+  // Operator B (a different person — admin, who also holds approvals:decide)
+  // approves. The burn cannot verify: the hash is fake.
+  const approval = await api(USERS.admin, 'POST', `/approval-requests/${approvalRequestId}/approve`, { comment: ref('e2e negative approval') });
+  assert(approval.status === 200, `admin approve -> ${approval.status}`, { status: approval.status, body: approval.body });
+
+  // The decision callback is delivered asynchronously (workflow's drain
+  // loop); poll the proposal row to a terminal state.
+  const final = await poll(
+    () => api(USERS.treasury, 'GET', `/redemptions/${redeemTxId}/break-glass`),
+    (res) => res.status === 200 && res.body?.status !== 'PENDING',
+    90_000, 2_000, 'break-glass status',
+  );
+  assert(final.body?.status === 'VERIFICATION_FAILED',
+    `break-glass status ${final.body?.status}, want VERIFICATION_FAILED`, { status: final.status, body: final.body });
+  assert(final.body?.failure_reason, 'VERIFICATION_FAILED carries no failure_reason', { body: final.body });
+
+  // The approval moved nothing: the saga is still in flight and the fiat
+  // wallet is untouched.
+  const saga = await api(USERS.customer, 'GET', `/transfers/${correlationId}`);
+  assert(saga.status === 200 && saga.body?.status !== 'COMPLETED',
+    `the saga is ${saga.body?.status}; a failed verification must not settle it`, { status: saga.status, body: saga.body });
+  const fiatAfter = await walletBalance(wallets.usd.id, USERS.customer);
+  assert(units(fiatAfter, 'USD') === units(fiatBefore, 'USD'),
+    `fiat moved from ${fiatBefore} to ${fiatAfter} on a failed verification`);
+
+  // The status route is operator-only.
+  const asCustomer = await api(USERS.customer, 'GET', `/redemptions/${redeemTxId}/break-glass`);
+  assert(asCustomer.status === 403, `customer break-glass read -> ${asCustomer.status}, want 403`, { status: asCustomer.status });
+
+  await invariants();
+
+  return {
+    ids: { breakGlassRedeemTxId: redeemTxId, breakGlassApprovalRequestId: approvalRequestId },
+    note: `negative path passed: ${final.body.failure_reason}; the worker still settles this redemption the ordinary way (real burn of ${BREAK_GLASS_AMOUNT})`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,6 +1357,7 @@ const STEPS = [
   { name: 'bridge', fn: stepBridge, money: true, onchain: true },
   { name: 'redeem-eth', fn: stepRedeemEth, money: true, onchain: true },
   { name: 'redeem-sol', fn: stepRedeemSol, money: true, onchain: true },
+  { name: 'break-glass', fn: stepBreakGlass, money: false, onchain: false },
   { name: 'negatives', fn: stepNegatives, money: false, onchain: false },
   { name: 'reconcile', fn: stepReconcile, money: false, onchain: false },
 ];

@@ -51,6 +51,12 @@ func (c *slowFinality) WaitForFinality(string, string) error {
 	return nil
 }
 
+func (c *slowFinality) VerifyBurn(context.Context, string, string, *big.Int, string) error {
+	return nil
+}
+
+func (c *slowFinality) ValidTxHash(string) bool { return true }
+
 func TestNotFinalYetDoesNotSpendTheBudget(t *testing.T) {
 	dsn := testdb.DSN(t, "LEDGER_TEST_DATABASE_URL")
 	ctx := context.Background()

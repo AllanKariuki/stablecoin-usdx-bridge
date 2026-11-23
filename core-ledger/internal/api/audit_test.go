@@ -27,7 +27,7 @@ func TestIntegrationWalletStatusChangeIsAuditedWithTheCallersIdentity(t *testing
 	// rejected before the audit middleware could record it.
 	app.Use(h.authMiddleware(t))
 	app.Use(audit.Middleware())
-	NewHandlers(h.repo, h.svc, slog.New(slog.NewTextHandler(io.Discard, nil)), nil).Register(app)
+	NewHandlers(h.repo, h.svc, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, nil, "").Register(app)
 
 	req, _ := http.NewRequest(http.MethodPost, "/wallets/"+h.usd.ID+"/status", strings.NewReader(`{"status":"FROZEN"}`))
 	req.Header.Set("Content-Type", "application/json")
