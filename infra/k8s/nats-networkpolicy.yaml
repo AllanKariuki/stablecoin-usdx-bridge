@@ -1,9 +1,13 @@
-# NATS has no authentication configured — no users, no nkeys, no TLS client
-# certs — so the network is the only thing deciding who may publish. That
+# NATS now authenticates per-service users with per-subject permissions
+# (H7 — see infra/nats/nats.conf, which the server's own deployment mounts;
+# credentials live in the `nats-credentials` Secret). The network is still a
+# meaningful layer — defence in depth against unauthenticated *connections*
+# — but it is no longer the only thing deciding who may publish. That
 # matters because of one subject in particular: notifications delivers
 # whatever arrives on live.notifications.push.v1 straight to customers'
 # WebSockets (services/notifications/src/ws/live-fanout.ts). Any pod that can
-# reach :4222 can put a message in front of any customer.
+# reach :4222 and holds (or steals) a user's password can put a message in
+# front of any customer, so this policy still narrows who may even connect.
 #
 # Like Postgres and Keycloak, NATS is a backing service these manifests point
 # at (nats://nats.default.svc.cluster.local:4222) rather than deploy. This
@@ -14,19 +18,16 @@
 # nothing is not an error, which is exactly why this is spelled out: the
 # policy would silently protect nothing.
 #
-# Two clients, found by grepping for NATS_URL:
+# Three clients, found by grepping for NATS_URL:
 #   - core-ledger-worker — the outbox relay publishes ledger events to
 #     JetStream (core-ledger/internal/outbox/nats.go). Only when NATS_URL is
 #     set in core-ledger-secrets; the API server does not connect.
 #   - notifications — publishes and subscribes on
 #     live.notifications.push.v1 so a push reaches a socket on any replica.
+#   - compliance — consumes enforcement finality (H6) from the DAMP stream
+#     (services/compliance/src/ingest/outbox-consumer.ts).
 # A new client means a new entry here, the same way core-ledger's own
 # policy grows one per caller.
-#
-# This narrows *who* can publish; it does not make a publish trustworthy.
-# The durable fix is per-client NATS credentials with subject permissions
-# (notifications alone may publish live.notifications.>), which the
-# deployment needs before any second team's workload shares this namespace.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

@@ -99,6 +99,15 @@ type Config struct {
 	// absent, which keeps a fresh environment to one `docker compose up`.
 	NATSStream string `env:"NATS_STREAM" default:"DAMP"`
 
+	// NATSUser/NATSPassword are this relay's NATS credentials (H7). The
+	// broker's own config (infra/nats/nats.conf) declares one user per
+	// service with per-subject permissions; connecting with none means the
+	// relay has no permission to publish anything, and events pile up in the
+	// outbox with every attempt failing. So both are required whenever
+	// NATSURL is set — see validateNATS.
+	NATSUser     string `env:"NATS_USER" default:""`
+	NATSPassword string `env:"NATS_PASSWORD" default:""`
+
 	// ReconcilePreferSnapshots makes the reconciliation job read chain supply
 	// from the indexer's snapshots rather than calling the chains itself.
 	// Default off: a deployment with no indexer must not silently reconcile
@@ -177,7 +186,29 @@ func Load() (Config, error) {
 	if err := cfg.validateSigning(); err != nil {
 		return cfg, err
 	}
+	if err := cfg.validateNATS(); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
+}
+
+// validateNATS refuses a boot where the relay has a broker but no
+// credentials for it. NATSURL set with NATS_USER/NATS_PASSWORD missing is a
+// deployment that would start, connect, and be refused permission on every
+// publish — the outbox would hold the events durably, which is exactly the
+// failure mode that looks healthy from outside (no error logs, events
+// accumulating) until compliance stops seeing enforcement finality. Failing
+// at boot with the variable names is the cheaper place to learn about it.
+func (c Config) validateNATS() error {
+	if c.NATSURL == "" {
+		return nil
+	}
+	if c.NATSUser == "" || c.NATSPassword == "" {
+		return &platform.ConfigError{Problems: []string{
+			"NATS_USER and NATS_PASSWORD are required when NATS_URL is set (the broker authenticates per-service users — see infra/nats/nats.conf)",
+		}}
+	}
+	return nil
 }
 
 // validateSigning makes the either/or explicit.

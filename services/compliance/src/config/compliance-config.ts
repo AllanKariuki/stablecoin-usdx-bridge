@@ -94,6 +94,20 @@ export class ComplianceConfig {
   @IsString()
   NATS_STREAM = 'DAMP';
 
+  // --- H7: this consumer's NATS credentials. infra/nats/nats.conf declares
+  // one user per service with per-subject permissions; the outbox consumer
+  // refuses to start when NATS_URL is set and either is missing — its
+  // subscription is the money path for H6 enforcement finality, so an
+  // anonymously-connected consumer that is refused on every subject must
+  // fail loudly at boot, not sit silently delivering nothing.
+  @IsOptional()
+  @IsString()
+  NATS_USER = '';
+
+  @IsOptional()
+  @IsString()
+  NATS_PASSWORD = '';
+
   // The longest window any rule looks back over. It bounds the history query
   // that runs on every posting, so it is configuration rather than a
   // max() over the rules — a single mis-set rule should not turn every

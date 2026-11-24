@@ -41,6 +41,15 @@ const (
 	OutcomeError   = "ERROR"
 )
 
+// MethodResignAllowance is the method recorded in the signature chain for a
+// re-sign allowance grant (H7). It is not a signing method — no key, no
+// bytes — it is the append-only record that an operator raised one
+// correlation's re-sign cap, by how much, until when, and why. A distinct
+// method keeps grant rows out of every signing query (they bind no payload,
+// count towards no cap) while still riding the same hash chain, so an
+// attacker who erases a grant breaks the chain detectably.
+const MethodResignAllowance = "resign-allowance"
+
 // GenesisHash is the prev_hash of the first row. A fixed, recognisable value
 // rather than an empty string, so "the chain starts here" is distinguishable
 // from "somebody wrote an empty prev_hash".
@@ -142,6 +151,10 @@ const (
 	TrailActionAllowed = "signer.signature.allowed"
 	TrailActionDenied  = "signer.signature.denied"
 	TrailActionError   = "signer.signature.error"
+	// TrailActionResignAllowance is the action for grant records (method
+	// resign-allowance): not a signature at all, so it gets its own action
+	// rather than masquerading as one.
+	TrailActionResignAllowance = "signer.resign_allowance.granted"
 )
 
 // trailEvent is r as services/audit-trail records it. The actor is the
@@ -152,10 +165,12 @@ const (
 // removed from one is still in the other.
 func trailEvent(r *Record) trail.Event {
 	action, outcome := TrailActionError, trail.OutcomeFailure
-	switch r.Outcome {
-	case OutcomeAllowed:
+	switch {
+	case r.Method == MethodResignAllowance:
+		action, outcome = TrailActionResignAllowance, trail.OutcomeSuccess
+	case r.Outcome == OutcomeAllowed:
 		action, outcome = TrailActionAllowed, trail.OutcomeSuccess
-	case OutcomeDenied:
+	case r.Outcome == OutcomeDenied:
 		action, outcome = TrailActionDenied, trail.OutcomeDenied
 	}
 	actor := r.Caller
@@ -207,11 +222,33 @@ var ErrPayloadMismatch = errors.New("correlation id already signed for a differe
 // the handler's pre-check, and only the SERIALIZABLE append sees them both.
 var ErrResignLimit = errors.New("re-sign limit reached for this correlation id")
 
+// ErrAllowanceExists means this correlation id already carries a re-sign
+// allowance that has not expired. A second grant is refused rather than
+// replaced, so "what is the cap right now" never depends on which of two
+// grants won a race — and so the audit chain's grant rows are a truthful
+// history of every grant, not of every grant except the ones somebody
+// overwrote.
+var ErrAllowanceExists = errors.New("an active re-sign allowance already exists for this correlation id")
+
+// Allowance is one runtime raise of the re-sign cap for one correlation.
+type Allowance struct {
+	CorrelationID string
+	Extra         int
+	GrantedBy     string
+	Reason        string
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
+}
+
 // ResignAllowed reports whether one more signature may be added for this
 // correlation. It is the handler's early answer, so a capped request is
 // refused before the key backend is asked for a signature it would only
 // have to throw away; Append re-checks it under SERIALIZABLE and is the one
 // that cannot be raced.
+//
+// The configured cap plus any active allowance's extra (H7) — an allowance
+// that has expired counts for nothing, which is what makes the operator
+// raise temporary rather than permanent.
 func (l *Log) ResignAllowed(ctx context.Context, chain, method, correlationID string) (bool, error) {
 	var signed int
 	if err := l.db.QueryRowContext(ctx, `
@@ -220,7 +257,24 @@ func (l *Log) ResignAllowed(ctx context.Context, chain, method, correlationID st
 		chain, method, correlationID).Scan(&signed); err != nil {
 		return false, err
 	}
-	return signed <= l.maxResigns, nil
+	extra, err := l.allowanceExtra(ctx, correlationID)
+	if err != nil {
+		return false, err
+	}
+	return signed <= l.maxResigns+extra, nil
+}
+
+// allowanceExtra is the active allowance's extra for this correlation, or 0.
+func (l *Log) allowanceExtra(ctx context.Context, correlationID string) (int, error) {
+	var extra int
+	err := l.db.QueryRowContext(ctx, `
+		SELECT coalesce(extra, 0) FROM resign_allowances
+		 WHERE correlation_id = $1 AND expires_at > now()`,
+		correlationID).Scan(&extra)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return extra, err
 }
 
 // Existing returns a previous ALLOWED signature for this correlation, if one
@@ -265,8 +319,17 @@ func (l *Log) Append(ctx context.Context, r *Record) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err := l.appendTx(ctx, tx, r); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// appendTx is Append's body, against a caller's transaction. GrantResignAllowance
+// uses it so the allowance row and the grant's chain record commit together.
+func (l *Log) appendTx(ctx context.Context, tx *sql.Tx, r *Record) error {
 	var prev string
-	err = tx.QueryRowContext(ctx, `SELECT hash FROM signatures ORDER BY seq DESC LIMIT 1`).Scan(&prev)
+	err := tx.QueryRowContext(ctx, `SELECT hash FROM signatures ORDER BY seq DESC LIMIT 1`).Scan(&prev)
 	if errors.Is(err, sql.ErrNoRows) {
 		prev = GenesisHash
 	} else if err != nil {
@@ -282,7 +345,15 @@ func (l *Log) Append(ctx context.Context, r *Record) error {
 	// replicas each one short of the cap would otherwise both read "room for
 	// one more" and both insert. Under SERIALIZABLE each has read the rows
 	// the other inserts, so one of them fails to commit instead.
-	if r.Outcome == OutcomeAllowed && r.CorrelationID != "" {
+	//
+	// An active re-sign allowance (H7) raises the cap by its extra, counted
+	// in the same transaction so a grant and a re-sign cannot disagree about
+	// the effective cap.
+	//
+	// Method resign-allowance skips all of it: a grant row binds no payload
+	// and counts towards no signing cap — its own bound is the table's
+	// one-active-grant rule, enforced in GrantResignAllowance's transaction.
+	if r.Outcome == OutcomeAllowed && r.CorrelationID != "" && r.Method != MethodResignAllowance {
 		var (
 			bound     string
 			signed    int
@@ -297,6 +368,13 @@ func (l *Log) Append(ctx context.Context, r *Record) error {
 			r.Chain, r.Method, r.CorrelationID, r.Digest).Scan(&bound, &signed, &sameBytes); err != nil {
 			return err
 		}
+		var extra int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT coalesce(extra, 0) FROM resign_allowances
+			 WHERE correlation_id = $1 AND expires_at > now()`,
+			r.CorrelationID).Scan(&extra); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		switch {
 		case signed == 0:
 			// The first signature binds the payload.
@@ -309,7 +387,7 @@ func (l *Log) Append(ctx context.Context, r *Record) error {
 			// it authorised beyond its bytes, so nothing but those exact bytes
 			// may follow it.
 			return ErrPayloadMismatch
-		case signed > l.maxResigns:
+		case signed > l.maxResigns+extra:
 			// signed is the first signature plus signed-1 re-signs; this
 			// would be re-sign number signed.
 			return ErrResignLimit
@@ -344,7 +422,92 @@ func (l *Log) Append(ctx context.Context, r *Record) error {
 	if _, err := trail.Enqueue(ctx, tx, trailEvent(r)); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
+}
+
+// GrantResignAllowance raises one correlation's re-sign cap by extra until
+// expiresAt, and records the grant itself in the hash chain.
+//
+// The allowance row and the chain record commit in one SERIALIZABLE
+// transaction: a grant with no audit row (or an audit row for a grant that
+// rolled back) cannot exist, which is the same guarantee Append gives a
+// signature. A grant whose predecessor is still active is refused with
+// ErrAllowanceExists — the chain is the history, and an overwritten grant
+// would leave the chain claiming a cap that no longer holds.
+func (l *Log) GrantResignAllowance(ctx context.Context, correlationID string, extra int, grantedBy, reason string, expiresAt time.Time) (*Allowance, error) {
+	tx, err := l.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var active bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT exists(SELECT 1 FROM resign_allowances
+		               WHERE correlation_id = $1 AND expires_at > now())`,
+		correlationID).Scan(&active); err != nil {
+		return nil, err
+	}
+	if active {
+		return nil, ErrAllowanceExists
+	}
+
+	// An expired row (or none) is replaced: the table holds the *current*
+	// allowance, one per correlation; the grant history lives in the chain.
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM resign_allowances WHERE correlation_id = $1`, correlationID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO resign_allowances (correlation_id, extra, granted_by, reason, created_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		correlationID, extra, grantedBy, reason, now, expiresAt); err != nil {
+		return nil, err
+	}
+
+	record := &Record{
+		Method:        MethodResignAllowance,
+		Caller:        grantedBy,
+		CorrelationID: correlationID,
+		Outcome:       OutcomeAllowed,
+		// The whole grant, machine-readable, in the chained record: how much
+		// extra, until when, and the operator's own words.
+		Reason: fmt.Sprintf("extra=%d until %s; %s", extra, expiresAt.UTC().Format(time.RFC3339), reason),
+	}
+	if err := l.appendTx(ctx, tx, record); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return &Allowance{
+		CorrelationID: correlationID,
+		Extra:         extra,
+		GrantedBy:     grantedBy,
+		Reason:        reason,
+		CreatedAt:     now,
+		ExpiresAt:     expiresAt,
+	}, nil
+}
+
+// ResignAllowance returns the active allowance for this correlation, or nil
+// when there is none. An expired row reads as none — the grant endpoint
+// overwrites it on the next grant, and ResignAllowed ignores it either way.
+func (l *Log) ResignAllowance(ctx context.Context, correlationID string) (*Allowance, error) {
+	var a Allowance
+	err := l.db.QueryRowContext(ctx, `
+		SELECT correlation_id, extra, granted_by, reason, created_at, expires_at
+		  FROM resign_allowances
+		 WHERE correlation_id = $1 AND expires_at > now()`,
+		correlationID).Scan(&a.CorrelationID, &a.Extra, &a.GrantedBy, &a.Reason, &a.CreatedAt, &a.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
 }
 
 // DailyTotal is what the policy's daily limit is checked against: the sum of

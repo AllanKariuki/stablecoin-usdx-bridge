@@ -144,7 +144,7 @@ func main() {
 	// the Publisher seam built in P2 from an HTTP POST into a JetStream
 	// publish without touching a line of domain code — see outbox.Choose.
 	outboxMetrics := outbox.NewMetrics()
-	publisher, closePublisher := outbox.Choose(ctx, logger, cfg.NATSURL, cfg.NATSStream, cfg.OutboxRelayURL, authClient)
+	publisher, closePublisher := outbox.Choose(ctx, logger, cfg.NATSURL, cfg.NATSStream, cfg.NATSUser, cfg.NATSPassword, cfg.OutboxRelayURL, authClient)
 	defer closePublisher()
 	if publisher != nil {
 		relay := outbox.NewRelay(repo.OutboxStore(), publisher, logger).WithMetrics(outboxMetrics)

@@ -3,6 +3,85 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-24 — H7: NATS credentials and per-correlation re-sign allowance
+
+### Changed — NATS authenticates one user per service with per-subject permissions (target bar: real money)
+
+- **`infra/nats/nats.conf` replaces the unauthenticated `-js -sd /data -m 8222`
+  command line.** The broker now declares three users, each with the
+  narrowest subject permissions its role needs: **`core-ledger`** (publish
+  `damp.>`, `$JS.API.INFO` and `$JS.API.STREAM.{CREATE,UPDATE,INFO}.DAMP` for
+  the idempotent DAMP stream create/update; subscribe `_INBOX.>`),
+  **`notifications`** (subscribe `damp.>` and `live.notifications.push.v1`;
+  publish `live.notifications.push.v1` plus `$JS.API.INFO`,
+  `$JS.API.CONSUMER.{CREATE,DURABLE.CREATE,INFO,MSG.NEXT}.DAMP.>`,
+  `$JS.API.STREAM.INFO.DAMP` and `$JS.ACK.DAMP.>`), and **`compliance`**
+  (subscribe only `damp.ledger.chain_enforcement_finalized.v1` plus that same
+  consumer API/ack surface — it cannot publish `damp.>` or live pushes).
+  Passwords are read from env vars in the config (`$NATS_*_PASSWORD`), so no
+  secret is committed; docker-compose passes dev values and keeps the same
+  `natsdata` volume, so the DAMP stream and every consumer cursor survive the
+  switch. The monitor endpoint and healthcheck are unchanged.
+- **Least privilege extends to JetStream administration: no user may delete
+  or purge a stream or consumer.** The API subjects are enumerated per
+  operation each client actually performs (create/update/info for
+  core-ledger; create/durable-create/info/msg-next plus stream-info for the
+  consumers) — there is no `$JS.API.STREAM.DELETE`, `$JS.API.STREAM.PURGE`
+  or `$JS.API.CONSUMER.DELETE` in any allow list, so the forensic value of
+  the DAMP stream cannot be destroyed through the broker by any credential
+  the platform issues. That removed the e2e suite's own cleanup, so
+  notifications' outbox consumer gained an optional
+  `OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS` (unset in every real deployment)
+  and its test durables are created with `inactive_threshold` — the server
+  expires them instead of the test deleting them.
+- **Every client authenticates and fails at boot without credentials.**
+  core-ledger's worker (`NATS_USER`/`NATS_PASSWORD`, validated by
+  `config.validateNATS`), notifications (`NatsService` refuses to start with
+  a URL and no credentials) and compliance (`OutboxConsumer` refuses to
+  start likewise). compliance's consumer is the money path for H6
+  enforcement finality, so its permission or auth failures are logged at
+  **error** on a slow retry beat — a denied consumer must not sit quietly
+  while enforcement events pile up unconsumed.
+- **Tests prove the permissions.** A new guarded integration suite
+  (core-ledger/internal/outbox, `NATS_TEST_URL`) asserts wrong passwords are
+  refused, core-ledger cannot publish outside `damp.>`, and neither
+  notifications nor compliance can publish `damp.>`; notifications' existing
+  NATS e2e suites now connect with credentials (their test publisher
+  connects as `core-ledger`, the only user that may publish `damp.>`).
+- Config/env/k8s updated throughout: `.env`/`.env.example` for the three
+  services, `scripts/stack.sh` host-side overrides, and the k8s manifests
+  (worker, notifications, compliance) read the passwords from a new
+  `nats-credentials` Secret (keys `core-ledger-password`,
+  `notifications-password`, `compliance-password`).
+  `nats-networkpolicy.yaml`'s comment now reflects that it is defence in
+  depth, not the whole story.
+
+### Changed — the signer's re-sign cap can be raised for one correlation at runtime, audited
+
+- **`POST /resign-allowances` and `GET /resign-allowances/:correlationId`**
+  on the signer (HTTP/2 + mTLS like everything else). A body
+  `{correlation_id, extra, reason, granted_by}` grants `extra` (1–10,
+  enforced by the table's CHECK) additional re-signs for that correlation
+  for `RESIGN_ALLOWANCE_TTL` (default 24h). Authorization is policy:
+  `resign_allowance.allowed_callers` in policy.example.yaml (`[ops]`),
+  default deny; `granted_by` must match the authenticated mTLS CN. A second
+  active grant is refused with **409 `RESIGN_ALLOWANCE_EXISTS`** — the chain
+  is the grant history, and an overwritten grant would leave it claiming a
+  cap that no longer holds.
+- **The grant itself is append-only evidence.** New
+  **`resign_allowances` table (signer migration 00004)** holds the current
+  allowance (correlation_id PK, extra 1–10, granted_by, reason, expires_at),
+  and every grant is also written through the hash-chained audit log as
+  method `resign-allowance` (own audit-trail action
+  `signer.resign_allowance.granted`) in the same transaction — erasing a
+  grant breaks the chain detectably. `ResignAllowed` and the in-transaction
+  cap check in `Append` count the active allowance's `extra` on top of
+  `MAX_RESIGNS_PER_CORRELATION`; an expired allowance counts for nothing.
+- **Runbook:** [docs/runbooks/resign-allowance.md](docs/runbooks/resign-allowance.md)
+  walks the operator flow — dead letter carrying `RESIGN_LIMIT_REACHED` →
+  grant the allowance → resolve the dead letter — and what not to do
+  (raising the global cap is not the answer).
+
 ## 2026-11-24 — H6: compliance enforcement reaches the chain
 
 ### Changed — BLACKLIST/UNBLACKLIST/PAUSE/UNPAUSE are submitted on chain through core-ledger, durably and asynchronously (target bar: real money)

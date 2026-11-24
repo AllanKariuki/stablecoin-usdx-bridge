@@ -68,6 +68,7 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly retryMs: number;
   private readonly deliverNew: boolean;
   private readonly startSequence: number | null;
+  private readonly inactiveThresholdMs: number;
   private readonly messagesTotal: Counter<'outcome'>;
 
   private stopped = false;
@@ -97,6 +98,13 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
     // into every fresh durable. Production sets neither key.
     const startSequence = Number(config.get<string | number>('OUTBOX_CONSUMER_START_SEQUENCE') ?? 0);
     this.startSequence = Number.isFinite(startSequence) && startSequence > 0 ? startSequence : null;
+    // Test-facing only, and unset everywhere else: with NATS granting no
+    // client the right to delete a consumer (H7 least privilege), a test
+    // durable would otherwise leak in a developer's broker forever. When set
+    // the server removes this durable after that long with no interest — the
+    // cleanup the test suite can no longer do itself. Production sets no
+    // value, so its durable lives for the life of the stream.
+    this.inactiveThresholdMs = num('OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS', 0);
 
     this.messagesTotal = new Counter({
       name: 'notifications_outbox_messages_total',
@@ -205,6 +213,11 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
       ack_wait: nanos(this.ackWaitMs),
       max_deliver: -1,
       max_ack_pending: 256,
+      // Only when configured (tests): the server removes this durable after
+      // that long idle, so a suite that cannot delete consumers leaves
+      // nothing behind. Production sets nothing, so this field is absent and
+      // the durable behaves exactly as before.
+      ...(this.inactiveThresholdMs > 0 ? { inactive_threshold: nanos(this.inactiveThresholdMs) } : {}),
     });
   }
 

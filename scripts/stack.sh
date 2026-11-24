@@ -247,6 +247,11 @@ service_env() {
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		echo "NATS_URL=nats://localhost:54222"
+		# H7: the broker authenticates per-service users; required whenever
+		# NATS_URL is set (see infra/nats/nats.conf; dev values match the
+		# compose nats service).
+		echo "NATS_USER=core-ledger"
+		echo "NATS_PASSWORD=dev-core-ledger-password"
 		# H4: the server proposes break-glass approvals to services/workflow
 		# (svc-core-ledger carries workflow.propose) and receives the signed
 		# decisions on its own host URL. core-ledger/.env carries the same
@@ -261,6 +266,9 @@ service_env() {
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		echo "NATS_URL=nats://localhost:54222"
+		# H7: the relay's credentials; required whenever NATS_URL is set.
+		echo "NATS_USER=core-ledger"
+		echo "NATS_PASSWORD=dev-core-ledger-password"
 		# H3: the worker's outbound calls (indexer finality, HTTP relay)
 		# carry svc-core-ledger-worker's token.
 		echo "SERVICE_CLIENT_ID=svc-core-ledger-worker"
@@ -306,6 +314,9 @@ service_env() {
 	notifications)
 		echo "PORT=13000"
 		echo "NATS_URL=nats://localhost:54222"
+		# H7: per-service credentials; required whenever NATS_URL is set.
+		echo "NATS_USER=notifications"
+		echo "NATS_PASSWORD=dev-notifications-password"
 		echo "IDENTITY_SERVICE_URL=http://localhost:13001"
 		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
 		echo "AUTH_AUDIENCE=notifications"
@@ -341,6 +352,10 @@ service_env() {
 	compliance)
 		echo "PORT=13004"
 		echo "NATS_URL=nats://localhost:54222"
+		# H7: the enforcement consumer's credentials; required whenever
+		# NATS_URL is set.
+		echo "NATS_USER=compliance"
+		echo "NATS_PASSWORD=dev-compliance-password"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
 		echo "WORKFLOW_URL=http://localhost:13006"
 		echo "SELF_URL=http://localhost:13004"
