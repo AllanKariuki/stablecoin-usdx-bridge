@@ -36,15 +36,26 @@ rules:
     max_amount: "500000000"
     allowed_callers: [core-ledger-worker]
 
-  # Pausing halts every transfer on the chain. The worker that mints must not
-  # be able to — that separation is the point of listing callers at all.
+  # Pausing halts every transfer on the chain. Since H6 compliance submits
+  # through core-ledger (which holds the chain clients and the Signer seam) —
+  # the approved compliance action id is the correlation id — so the caller
+  # here is core-ledger, not compliance directly. The mTLS CN of core-ledger's
+  # client certificate must match this name in a real deployment.
   - chain: ETHEREUM
     method: pause
-    allowed_callers: [compliance]
+    allowed_callers: [core-ledger]
+
+  - chain: ETHEREUM
+    method: unpause
+    allowed_callers: [core-ledger]
 
   - chain: ETHEREUM
     method: blacklist
-    allowed_callers: [compliance]
+    allowed_callers: [core-ledger]
+
+  - chain: ETHEREUM
+    method: unblacklist
+    allowed_callers: [core-ledger]
 
   # ---- Solana -----------------------------------------------------------
   - chain: SOLANA
@@ -56,6 +67,17 @@ rules:
     method: bridgeBurn
     max_amount: "500000000"
     allowed_callers: [core-ledger-worker]
+
+  # Solana's pause is the program's set_paused instruction (AdminOnly); the
+  # signer decodes it as pause/unpause, so the same rule vocabulary governs
+  # both chains.
+  - chain: SOLANA
+    method: pause
+    allowed_callers: [core-ledger]
+
+  - chain: SOLANA
+    method: unpause
+    allowed_callers: [core-ledger]
 
   # Rotating the Solana relayer (the BridgeConfig PDA this phase added).
   - chain: SOLANA

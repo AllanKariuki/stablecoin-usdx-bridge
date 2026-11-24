@@ -45,13 +45,14 @@ function printHelp() {
   console.log(`Usage: node scripts/e2e/money-flows.mjs [--fast] [--only=<step,...>] [--timeout-min=40]
 
   --fast             skip the on-chain steps (issuance, bridge, redeem-eth,
-                     redeem-sol); break-glass self-skips (no in-flight
-                     redemption exists without them)
+                     redeem-sol); break-glass and enforcement self-skip (no
+                     in-flight redemption exists without them; enforcement
+                     submits real transactions)
   --only=step,...    run only the named steps, in order
   --timeout-min=N    saga poll timeout in minutes (default 40)
 
 Steps: wallets, kyc, deposit, p2p, invoice, withdrawal, issuance, bridge,
-       redeem-eth, redeem-sol, break-glass, negatives, reconcile`);
+       redeem-eth, redeem-sol, break-glass, enforcement, negatives, reconcile`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1195,7 +1196,146 @@ async function stepBreakGlass() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 10 — negative checks (always run)
+// Step 10 — enforcement (FULL mode only): blacklist + unblacklist a throwaway
+// ---------------------------------------------------------------------------
+//
+// The real product path for H6: compliance@damp.local raises the action
+// through the gateway, admin@damp.local approves it in workflow (segregation
+// of duties — the proposer is excluded), compliance submits it to core-ledger,
+// core-ledger signs it and waits for finality, and the harness asserts the
+// chain state itself changed. Never a pause: that would halt the shared
+// testnet contract for every other flow. In --fast it self-skips.
+//
+// If the relayer lacks COMPLIANCE_ROLE the step SKIPs with the exact grant
+// command an admin would run — it does not run it.
+
+/** The relayer address core-ledger signs with, derived without ever printing the key. */
+function relayerAddress() {
+  if (!coreLedgerEnv.ETH_RELAYER_PRIVATE_KEY) {
+    throw new StepError('no ETH_RELAYER_PRIVATE_KEY in core-ledger/.env (a remote signer?); the enforcement step needs the relayer address to check its roles');
+  }
+  try {
+    return execFileSync('cast', ['wallet', 'address', '--private-key', coreLedgerEnv.ETH_RELAYER_PRIVATE_KEY], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    // The error text would echo the command line (and the key); say nothing.
+    throw new StepError('could not derive the relayer address from ETH_RELAYER_PRIVATE_KEY');
+  }
+}
+
+/** Read-only role check on the USDX proxy. */
+function ethHasRole(roleName, holder) {
+  const role = execFileSync('cast', ['keccak', roleName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  const out = execFileSync(
+    'cast',
+    ['call', USDX_PROXY_ADDRESS, 'hasRole(bytes32,address)(bool)', role, holder, '--rpc-url', ETH_RPC_URL],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  ).trim();
+  return out.split(/\s+/)[0] === 'true';
+}
+
+/** Read-only blacklist state on the USDX proxy. */
+function ethIsBlacklisted(addr) {
+  const out = execFileSync(
+    'cast',
+    ['call', USDX_PROXY_ADDRESS, 'isBlacklisted(address)(bool)', addr, '--rpc-url', ETH_RPC_URL],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  ).trim();
+  return out.split(/\s+/)[0] === 'true';
+}
+
+async function stepEnforcement() {
+  if (opts.fast) {
+    throw new StepSkip(
+      '--fast: enforcement submits real blacklist/unblacklist transactions on Sepolia and waits for finality; run the full flow instead',
+    );
+  }
+
+  // A freshly generated throwaway address — never a real holder, never a
+  // custody account, and never the shared contract's pause switch.
+  const throwaway = '0x' + crypto.randomBytes(20).toString('hex');
+
+  // The submission reverts without COMPLIANCE_ROLE on the relayer, so check
+  // it first (read-only) and SKIP with the exact grant command an admin
+  // would run — this harness never sends it.
+  const relayer = relayerAddress();
+  if (!ethHasRole('COMPLIANCE_ROLE', relayer)) {
+    throw new StepSkip(
+      `the relayer ${relayer} lacks COMPLIANCE_ROLE on the USDX proxy ${USDX_PROXY_ADDRESS}; an admin can grant it with:\n` +
+        `  cast send ${USDX_PROXY_ADDRESS} "grantRole(bytes32,address)" $(cast keccak "COMPLIANCE_ROLE") ${relayer} \\\n` +
+        `    --rpc-url ${ETH_RPC_URL} --private-key <a-key-holding-DEFAULT_ADMIN_ROLE>`,
+    );
+  }
+
+  // One full enforcement round: raise through the gateway, approve as a
+  // different person, wait for compliance to execute on chain.
+  const raise = async (kind) => {
+    const proposed = await api(USERS.compliance, 'POST', '/compliance/enforcement', {
+      kind,
+      chain: 'ETHEREUM',
+      target: throwaway,
+      reason: ref(`e2e ${kind.toLowerCase()} throwaway ${throwaway}`),
+    });
+    assert(proposed.status === 200 || proposed.status === 201,
+      `${kind} proposal -> ${proposed.status}`, { status: proposed.status, body: proposed.body });
+    assert(proposed.body?.status === 'PENDING_APPROVAL', `${kind} proposal is ${proposed.body?.status}`, { body: proposed.body });
+    const actionId = proposed.body?.id;
+    const approvalRequestId = proposed.body?.approvalRequestId;
+    assert(actionId && approvalRequestId, 'proposal carries no id/approvalRequestId', { body: proposed.body });
+
+    // Segregation of duties: the proposer cannot approve their own request.
+    const self = await api(USERS.compliance, 'POST', `/approval-requests/${approvalRequestId}/approve`, { comment: 'self-approval attempt' });
+    assert(self.status === 403, `compliance self-approval -> ${self.status}, want 403`, { status: self.status, body: self.body });
+
+    // A different person: admin (approvals:decide + in the blacklist pool).
+    const approval = await api(USERS.admin, 'POST', `/approval-requests/${approvalRequestId}/approve`, { comment: ref(`e2e ${kind} approval`) });
+    assert(approval.status === 200, `admin approve -> ${approval.status}`, { status: approval.status, body: approval.body });
+
+    // compliance executes after workflow's callback — recording SUBMITTED —
+    // and core-ledger's worker watches the chain until finality before the
+    // finalized event marks the action EXECUTED. Sepolia finality trails the
+    // head by ~13–18 minutes, so each action can take that long; the poll
+    // budget is the run's --timeout-min.
+    const final = await poll(
+      () => api(USERS.compliance, 'GET', '/compliance/enforcement'),
+      (res) => {
+        const action = res.body?.actions?.find((a) => a.id === actionId);
+        return action && (action.status === 'EXECUTED' || action.status === 'FAILED');
+      },
+      opts.timeoutMin * 60_000, 5_000, `${kind} enforcement action`,
+    );
+    const action = final.body.actions.find((a) => a.id === actionId);
+    assert(action.status === 'EXECUTED',
+      `${kind} ended ${action.status}: ${action.failureReason ?? 'no failure reason'}`, { body: action });
+    assert(action.chainTxHash, `${kind} recorded no chain tx hash`, { body: action });
+    return { actionId, approvalRequestId, txHash: action.chainTxHash };
+  };
+
+  const black = await raise('BLACKLIST');
+  const blacklisted = ethIsBlacklisted(throwaway);
+  assert(blacklisted === true,
+    `isBlacklisted(${throwaway}) is ${blacklisted} on chain after BLACKLIST, want true`, { txHash: black.txHash });
+
+  const unblack = await raise('UNBLACKLIST');
+  const unblacklisted = ethIsBlacklisted(throwaway);
+  assert(unblacklisted === false,
+    `isBlacklisted(${throwaway}) is ${unblacklisted} on chain after UNBLACKLIST, want false`, { txHash: unblack.txHash });
+
+  return {
+    ids: {
+      blacklistActionId: black.actionId,
+      unblacklistActionId: unblack.actionId,
+      blacklistTxHash: black.txHash,
+      unblacklistTxHash: unblack.txHash,
+    },
+    note: `blacklist + unblacklist of throwaway ${throwaway} reached the chain through compliance -> workflow -> core-ledger`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Step 11 — negative checks (always run)
 // ---------------------------------------------------------------------------
 
 function subcheck(name, ok, extra) {
@@ -1631,6 +1771,7 @@ const STEPS = [
   { name: 'redeem-eth', fn: stepRedeemEth, money: true, onchain: true },
   { name: 'redeem-sol', fn: stepRedeemSol, money: true, onchain: true },
   { name: 'break-glass', fn: stepBreakGlass, money: false, onchain: false },
+  { name: 'enforcement', fn: stepEnforcement, money: false, onchain: false },
   { name: 'negatives', fn: stepNegatives, money: false, onchain: false },
   { name: 'reconcile', fn: stepReconcile, money: false, onchain: false },
 ];

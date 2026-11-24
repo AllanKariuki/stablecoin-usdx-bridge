@@ -3,6 +3,101 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-24 — H6: compliance enforcement reaches the chain
+
+### Changed — BLACKLIST/UNBLACKLIST/PAUSE/UNPAUSE are submitted on chain through core-ledger, durably and asynchronously (target bar: real money)
+
+- **core-ledger gains `POST /chain/enforcement` and `GET /chain/enforcement/:reference`**,
+  guarded by a new client role `ledger.enforcement` granted to
+  `svc-compliance` alone. The POST validates hard (unknown action/chain →
+  422; `(UN)BLACKLIST` needs a valid address and is Ethereum-only — 422
+  `UNSUPPORTED_ON_CHAIN` on Solana; `PAUSE`/`UNPAUSE` pre-check the pause
+  authority by reading the chain — Ethereum `PAUSER_ROLE`, Solana
+  `BridgeConfig.admin` vs the signer — and refuse with 422 `NOT_CHAIN_ADMIN`
+  rather than pay gas for a reverting transaction), then records one row in
+  the new **`chain_enforcements` table (migration 00009)** keyed by the
+  compliance action id and answers **202 SUBMITTED as soon as the
+  transaction is broadcast**. It never waits for finality inside the HTTP
+  request — Sepolia's finalized checkpoint trails the head by two epochs,
+  and the first (synchronous) cut proved it: the wait expired, the caller
+  saw a 502, and a retry would have submitted the action twice. The row is
+  the dedupe: **a reference that ever obtained a tx hash is never
+  resubmitted**; a retried request reads the stored state (200 for
+  FINAL/FAILED, 202 for SUBMITTED) and submits nothing. A transient submit
+  failure with no hash deletes the row so a retry can start clean; a
+  terminal refusal marks it FAILED and answers 409. Each submission is
+  audited on the outbox (`ledger.chain.enforcement_submitted`).
+- **The worker owns finality** — a new sweep (`internal/enforcement`,
+  running in `cmd/worker`) claims due SUBMITTED rows the saga queue's way
+  (FOR UPDATE SKIP LOCKED, `next_check_at` as the lease, `attempts` as the
+  budget) and asks the chain exactly one immediate question per row via the
+  new **`FinalityStatus`** method on the enforcement client interface
+  (Ethereum: receipt + depth check, no polling; Solana: one
+  `getSignatureStatuses` at `finalized`). FINAL (or a mined revert, or a
+  spent ~2-hour budget) flips the row **and enqueues
+  `damp.ledger.chain_enforcement_finalized.v1` in the same transaction** —
+  the outbox guarantee: compliance is told exactly when the chain state is
+  known.
+- **services/compliance marks EXECUTED when the chain is final.** The
+  ingest door (HTTP `/internal/outbox`, and a new JetStream consumer
+  `compliance-enforcement` filtering
+  `damp.ledger.chain_enforcement_finalized.v1` — the local stack's relay
+  publishes to NATS, so without it the event would sit in the stream
+  forever) routes the event to the enforcement service, which looks the
+  action up by reference and records EXECUTED (with the tx hash) or FAILED
+  (with the reason) plus its audit event — idempotent on redelivery,
+  unknown references ignored. On 202 the action records **SUBMITTED**
+  (new status, migration 003); on a terminal 409 it records FAILED; on a
+  transient failure it stays APPROVED with a retryable reason — safe
+  because core-ledger dedupes on the action id.
+- **Both chain clients grow the enforcement surface.** Ethereum:
+  `Blacklist`, `Unblacklist`, `Pause`, `Unpause` via the abigen binding,
+  signed through the Signer seam with the method names a remote signer's
+  policy matches (`blacklist`/`unblacklist`/`pause`/`unpause`) and the
+  compliance action id as the correlation id. Solana: `Pause`/`Unpause` map
+  to the program's `set_paused` instruction (`AdminOnly` account order);
+  `IsPauseAuthority` compares the signer to the on-chain `BridgeConfig.admin`.
+- **services/signer learns the new methods.** `unblacklist` joins the
+  Ethereum decoder; the Solana decoder recognises `set_paused` (config PDA +
+  fee-payer-admin checks, one Borsh bool) and reports it as
+  `pause`/`unpause` so one policy vocabulary covers both chains.
+  `policy.example.yaml`: the enforcement rules list
+  `allowed_callers: [core-ledger]` — compliance acts through core-ledger,
+  not directly. (`core-ledger` must be the mTLS CN of core-ledger's client
+  certificate in a real deployment.)
+- **Keycloak:** `ledger.enforcement` role on the `core-ledger` resource
+  client, scope-granted to `svc-compliance` (template + `make keycloak-realm`
+  output + `scripts/keycloak-sync.sh` data).
+- **workflow's seeded `compliance.blacklist` pool gains `admin`** (migration
+  003 fixes existing databases) — the previous pool had no second person who
+  could approve, since the proposer is excluded.
+- **e2e harness gains an `enforcement` step** (FULL mode; self-skips in
+  `--fast`): generates a throwaway address, checks (read-only) that the
+  relayer holds `COMPLIANCE_ROLE` — if not, it SKIPs with the exact
+  `cast send … grantRole` command an admin would run and does not run it —
+  then drives BLACKLIST and UNBLACKLIST through the real product path
+  (compliance raises via the gateway, a self-approval is refused, admin
+  approves, the action records SUBMITTED, and the poll to EXECUTED — with
+  the run's `--timeout-min` budget — rides the worker's finality sweep) and
+  asserts `isBlacklisted()` flipped on chain. Never pauses the shared
+  testnet contract.
+
+
+### Fixed — found by the live run
+- The first version waited for chain finality inside the HTTP request
+  (5-minute cap; Sepolia takes ~15). It returned 502, and a retry would have
+  submitted the transaction a second time. That is why it was redesigned to
+  run asynchronously, as described above.
+- compliance's JetStream consumer never started locally, because `NATS_URL`
+  was unset for it. The core-ledger worker only relays to NATS, so the
+  finality event never reached compliance and the action sat at SUBMITTED
+  although the blacklist was final on chain. `stack.sh`, `.env.example` and
+  the k8s manifest now set it, and the NATS NetworkPolicy admits compliance.
+- The consumer used `DeliverPolicy.New`, so any event finalized before the
+  durable first existed was lost for good. It now uses `DeliverPolicy.All`:
+  the subject filter keeps the backlog to enforcement events, and applying an
+  outcome is idempotent. On restart the stuck action above recovered by
+  itself.
 ## 2026-11-24 — H5: KYC gates every money movement
 
 ### Changed — no money moves for a party whose KYC tier is below the configured minimum (target bar: real money)

@@ -73,6 +73,7 @@ core-ledger~ledger.user-proxy~services/bff: full user-facing + operator surface
 core-ledger~ledger.settlement~services/payments: POST /wallets, /deposits, /withdrawals, /transfers
 core-ledger~ledger.wallet-provision~services/identity: POST /wallets
 core-ledger~ledger.wallet-status~services/kyc + services/compliance: wallet list + status
+core-ledger~ledger.enforcement~services/compliance only: POST /chain/enforcement (H6 on-chain blacklist/pause)
 core-ledger~ledger.reserves.custodian~services/rms: custodian snapshots + reserve status
 core-ledger~ledger.reserves.chain-supply~services/indexer: chain supply snapshots
 core-ledger~ledger.reports.read~services/reporting: report GET surface
@@ -166,6 +167,7 @@ core-ledger~svc-payments~ledger.settlement
 core-ledger~identity-service~ledger.wallet-provision
 core-ledger~svc-kyc~ledger.wallet-status
 core-ledger~svc-compliance~ledger.wallet-status
+core-ledger~svc-compliance~ledger.enforcement
 core-ledger~svc-rms~ledger.reserves.custodian
 core-ledger~svc-reporting~ledger.reports.read
 core-ledger~svc-indexer~ledger.reserves.chain-supply

@@ -17,6 +17,7 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/chainclients"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/config"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/enforcement"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/outbox"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/serviceauth"
@@ -130,6 +131,13 @@ func main() {
 		defer close(stopped)
 		w.Run(ctx)
 	}()
+
+	// H6: the enforcement finality sweep, beside the saga worker. It never
+	// waits on the chain — each check is one immediate FinalityStatus call —
+	// and every terminal transition enqueues the outbox event compliance
+	// consumes. The relay below delivers it.
+	enforcementSweep := enforcement.NewSweep(repo, clients.Router, logger, enforcement.DefaultConfig())
+	go enforcementSweep.Run(ctx)
 
 	// The relay is optional and its absence is not a degraded state: the
 	// outbox keeping every event durably is exactly what it is for. P3 turns

@@ -11,11 +11,12 @@ import { EnforcementService } from './enforcement/enforcement.service';
 import { WorkflowClient } from './enforcement/workflow.client';
 import { IngestController } from './ingest/ingest.controller';
 import { IngestService } from './ingest/ingest.service';
+import { OutboxConsumer } from './ingest/outbox-consumer';
 import { ScreeningService } from './screening/screening.service';
 
 @Module({
   controllers: [CasesController, IngestController, ApprovalsController],
-  providers: [IngestService, ScreeningService, EnforcementService, WorkflowClient, CoreLedgerClient, ServiceTokenClient],
+  providers: [IngestService, ScreeningService, EnforcementService, WorkflowClient, CoreLedgerClient, ServiceTokenClient, OutboxConsumer],
 })
 export class ComplianceModule {}
 

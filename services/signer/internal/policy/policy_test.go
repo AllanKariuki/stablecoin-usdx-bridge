@@ -28,7 +28,32 @@ func testPolicy() Policy {
 			{
 				Chain:          "ETHEREUM",
 				Method:         MethodPause,
-				AllowedCallers: []string{"compliance"},
+				AllowedCallers: []string{"core-ledger"},
+			},
+			{
+				Chain:          "ETHEREUM",
+				Method:         MethodUnpause,
+				AllowedCallers: []string{"core-ledger"},
+			},
+			{
+				Chain:          "ETHEREUM",
+				Method:         MethodBlacklist,
+				AllowedCallers: []string{"core-ledger"},
+			},
+			{
+				Chain:          "ETHEREUM",
+				Method:         MethodUnblacklist,
+				AllowedCallers: []string{"core-ledger"},
+			},
+			{
+				Chain:          "SOLANA",
+				Method:         MethodPause,
+				AllowedCallers: []string{"core-ledger"},
+			},
+			{
+				Chain:          "SOLANA",
+				Method:         MethodUnpause,
+				AllowedCallers: []string{"core-ledger"},
 			},
 		},
 		DailyLimits: map[string]*big.Int{
@@ -150,23 +175,72 @@ func TestAllowsAValuelessMethodWithNoAmount(t *testing.T) {
 	d := testPolicy().Evaluate(Request{
 		Chain:  "ETHEREUM",
 		Method: MethodPause,
-		Caller: "compliance",
+		Caller: "core-ledger",
 	}, nil)
 	if !d.Allowed {
 		t.Fatalf("pause was refused: %s", d.Reason)
 	}
 }
 
-func TestPauseIsRestrictedToCompliance(t *testing.T) {
+func TestPauseIsRestrictedToCoreLedger(t *testing.T) {
 	// Pausing halts every transfer on the chain. The worker that mints must
-	// not be able to.
-	d := testPolicy().Evaluate(Request{
-		Chain:  "ETHEREUM",
-		Method: MethodPause,
-		Caller: "core-ledger-worker",
-	}, nil)
+	// not be able to — and neither may the old direct-caller identity, since
+	// H6 routes enforcement through core-ledger.
+	for _, caller := range []string{"core-ledger-worker", "compliance", "bff"} {
+		d := testPolicy().Evaluate(Request{
+			Chain:  "ETHEREUM",
+			Method: MethodPause,
+			Caller: caller,
+		}, nil)
+		if d.Allowed {
+			t.Fatalf("%q was permitted to pause the contract", caller)
+		}
+	}
+}
+
+// H6: the four enforcement methods are all core-ledger's, on both chains —
+// and each is its own rule, so forgetting one refuses rather than signs.
+func TestEnforcementMethodsAreAllCoreLedgerOnly(t *testing.T) {
+	allowed := []struct {
+		chain  string
+		method Method
+	}{
+		{"ETHEREUM", MethodPause},
+		{"ETHEREUM", MethodUnpause},
+		{"ETHEREUM", MethodBlacklist},
+		{"ETHEREUM", MethodUnblacklist},
+		{"SOLANA", MethodPause},
+		{"SOLANA", MethodUnpause},
+	}
+	for _, tc := range allowed {
+		d := testPolicy().Evaluate(Request{Chain: tc.chain, Method: tc.method, Caller: "core-ledger"}, nil)
+		if !d.Allowed {
+			t.Fatalf("%s %s was refused for core-ledger: %s", tc.chain, tc.method, d.Reason)
+		}
+		d = testPolicy().Evaluate(Request{Chain: tc.chain, Method: tc.method, Caller: "compliance"}, nil)
+		if d.Allowed {
+			t.Fatalf("%s %s was signed for compliance, which no longer calls the signer directly", tc.chain, tc.method)
+		}
+	}
+}
+
+func TestBlacklistCarriesItsDestinationThroughPolicy(t *testing.T) {
+	// The blacklist target is the request's destination, so a deployment that
+	// wants an allowlist on who may be blacklisted gets the same control the
+	// mint rules have.
+	p := Policy{Rules: []Rule{{
+		Chain:               "ETHEREUM",
+		Method:              MethodBlacklist,
+		AllowedCallers:      []string{"core-ledger"},
+		AllowedDestinations: []string{"0xAAA"},
+	}}}
+	d := p.Evaluate(Request{Chain: "ETHEREUM", Method: MethodBlacklist, To: "0xAAA", Caller: "core-ledger"}, nil)
+	if !d.Allowed {
+		t.Fatalf("a blacklist on an allowlisted address was refused: %s", d.Reason)
+	}
+	d = p.Evaluate(Request{Chain: "ETHEREUM", Method: MethodBlacklist, To: "0xATTACKER", Caller: "core-ledger"}, nil)
 	if d.Allowed {
-		t.Fatal("the minting worker was permitted to pause the contract")
+		t.Fatal("a blacklist outside the destination allowlist was signed")
 	}
 }
 

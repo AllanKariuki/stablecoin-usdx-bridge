@@ -24,12 +24,14 @@ import (
 type Method string
 
 const (
-	MethodBridgeMint Method = "bridgeMint"
-	MethodBridgeBurn Method = "bridgeBurn"
-	MethodBlacklist  Method = "blacklist"
-	MethodPause      Method = "pause"
-	MethodSetRelayer Method = "setRelayer"
-	MethodTransfer   Method = "transfer"
+	MethodBridgeMint  Method = "bridgeMint"
+	MethodBridgeBurn  Method = "bridgeBurn"
+	MethodBlacklist   Method = "blacklist"
+	MethodUnblacklist Method = "unblacklist"
+	MethodPause       Method = "pause"
+	MethodUnpause     Method = "unpause"
+	MethodSetRelayer  Method = "setRelayer"
+	MethodTransfer    Method = "transfer"
 )
 
 // Request is a decoded signing request: what chain, what method, how much, to

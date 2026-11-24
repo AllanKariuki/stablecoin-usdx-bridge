@@ -356,6 +356,17 @@ func (r *Repository) AuditStore() (*audit.Store, error) {
 	return audit.NewStore(sqlDB), nil
 }
 
+// EnqueueAuditEvent records one audit event in its own transaction. It exists
+// for routes whose whole action is an outbox event: H6's enforcement
+// submission moves no ledger money, so there is no posting transaction for
+// its audit event to ride on — the event is its own transaction, committed
+// atomically like any other.
+func (r *Repository) EnqueueAuditEvent(ctx context.Context, e audit.Event) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return enqueueAudit(ctx, tx, e)
+	})
+}
+
 func (r *Repository) Closures(ctx context.Context) ([]LedgerClosure, error) {
 	var cs []LedgerClosure
 	err := r.db.WithContext(ctx).Order("closing_date DESC").Find(&cs).Error

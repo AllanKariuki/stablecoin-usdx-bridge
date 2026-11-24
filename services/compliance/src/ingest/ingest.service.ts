@@ -4,9 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { DbService } from '../db/db.service';
 import { Context, Movement, Rule, evaluate } from '../rules/engine';
 import { ScreeningService } from '../screening/screening.service';
+import { EnforcementService } from '../enforcement/enforcement.service';
 
 /**
- * Consuming `damp.ledger.transaction_posted.v1`.
+ * Consuming core-ledger's outbox: `damp.ledger.transaction_posted.v1` and
+ * `damp.ledger.chain_enforcement_finalized.v1`.
  *
  * Every posting in the journal arrives here, in commit order, because the
  * event is written inside the same `SERIALIZABLE` transaction that wrote the
@@ -14,11 +16,18 @@ import { ScreeningService } from '../screening/screening.service';
  * not told — which is the property the outbox was built for in P2, a phase
  * before anything consumed it.
  *
+ * Since H6 the enforcement finality event also arrives here: core-ledger's
+ * worker watches each submitted enforcement transaction and, once it is
+ * FINAL or FAILED on chain, enqueues the event in the same transaction that
+ * flips the row — so this service marks the enforcement action EXECUTED (or
+ * FAILED) exactly when the chain state is known.
+ *
  * The consequence for this service is that it must be idempotent, because
  * at-least-once delivery means the same posting arrives more than once as a
  * matter of routine. The `UNIQUE (rule_id, transaction_id)` on alerts is
- * where that is enforced: a re-delivered event re-evaluates the rules and
- * inserts nothing new.
+ * where that is enforced for transactions; for enforcement, the action's
+ * status is the guard — a redelivered event finds the action already
+ * EXECUTED/FAILED and changes nothing.
  */
 @Injectable()
 export class IngestService {
@@ -28,9 +37,33 @@ export class IngestService {
   constructor(
     private readonly db: DbService,
     private readonly screening: ScreeningService,
+    private readonly enforcement: EnforcementService,
     config: ConfigService,
   ) {
     this.historyWindowMinutes = config.get<number>('HISTORY_WINDOW_MINUTES', { infer: true }) ?? 1440;
+  }
+
+  /**
+   * core-ledger's chain_enforcement_finalized event: the submitted action's
+   * transaction reached finality or failed on chain. The reference is the
+   * compliance action id — the enforcement service owns the transition and
+   * its audit event; this method only routes and validates.
+   */
+  async onEnforcementFinalized(payload: Record<string, any>): Promise<{ applied: boolean; reason?: string }> {
+    const reference = String(payload.reference ?? '');
+    const status = String(payload.status ?? '');
+    if (!reference) {
+      return { applied: false, reason: 'the event carries no reference' };
+    }
+    if (status !== 'FINAL' && status !== 'FAILED') {
+      return { applied: false, reason: `unknown enforcement status ${status}` };
+    }
+    return this.enforcement.applyChainOutcome({
+      reference,
+      status,
+      txHash: String(payload.tx_hash ?? ''),
+      failureReason: String(payload.failure_reason ?? ''),
+    });
   }
 
   async onTransactionPosted(payload: Record<string, any>): Promise<{ alerts: number }> {

@@ -71,6 +71,23 @@ func TestEthereumDecodesWhatTheBytesSay(t *testing.T) {
 	}
 }
 
+// H6: unblacklist carries its address exactly the way blacklist does, so a
+// policy allowlist can name either.
+func TestEthereumDecodesUnblacklist(t *testing.T) {
+	data := append([]byte{}, selUnblacklist[:]...)
+	data = append(data, common.LeftPadBytes(alice.Bytes(), 32)...)
+	tx := ethTx(usdx, big.NewInt(0), data, 11155111)
+	raw, digest := ethArgs(t, tx)
+
+	d, err := Ethereum(raw, digest, dep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Method != "unblacklist" || !strings.EqualFold(d.Destination, alice.Hex()) {
+		t.Fatalf("decoded %+v", d)
+	}
+}
+
 // The attack this package exists for: a caller that describes a large mint as
 // a small one.
 func TestEthereumRefusesAClaimThatDisagreesWithTheTransaction(t *testing.T) {
@@ -291,6 +308,98 @@ func TestSolanaRefusesWhatItCannotProve(t *testing.T) {
 			return e
 		},
 		"empty": func() error { _, e := Solana(nil, dep, wallet.String()); return e },
+	}
+	for name, run := range cases {
+		if run() == nil {
+			t.Errorf("%s: expected a refusal", name)
+		}
+	}
+}
+
+// ---- set_paused (H6) -------------------------------------------------------
+
+// setPausedData is the discriminator plus the Borsh bool (and any trailing
+// bytes a refusal fixture smuggles in).
+func setPausedData(paused bool, extra ...byte) []byte {
+	disc := anchorDisc("set_paused")
+	data := append([]byte{}, disc[:]...)
+	if paused {
+		data = append(data, 1)
+	} else {
+		data = append(data, 0)
+	}
+	return append(data, extra...)
+}
+
+// setPausedIx mirrors the account order core-ledger's Solana client builds:
+// the BridgeConfig PDA first, the admin signer second, one Borsh bool.
+func setPausedIx(paused bool) solanago.Instruction {
+	configPDA, _, _ := solanago.FindProgramAddress([][]byte{[]byte(configSeed)}, program)
+	return solanago.NewInstruction(program, solanago.AccountMetaSlice{
+		solanago.Meta(configPDA).WRITE(),
+		solanago.Meta(relayer).SIGNER(),
+	}, setPausedData(paused))
+}
+
+func TestSolanaDecodesSetPaused(t *testing.T) {
+	d, err := Solana(message(t, setPausedIx(true)), dep, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Method != "pause" {
+		t.Fatalf("paused=true decoded as %q, want pause", d.Method)
+	}
+
+	d, err = Solana(message(t, setPausedIx(false)), dep, "")
+	if err != nil || d.Method != "unpause" {
+		t.Fatalf("paused=false decoded as %+v (%v), want unpause", d, err)
+	}
+	// Pause moves nothing: no amount, no destination, no mint, no on-chain id
+	// to bind a correlation to.
+	if d.Amount != nil || d.OnChainID != nil || d.Destination != "" || d.Mint != "" {
+		t.Fatalf("a pause decoded with bridge fields: %+v", d)
+	}
+}
+
+func TestSolanaSetPausedRefusesWhatItCannotProve(t *testing.T) {
+	configPDA, _, _ := solanago.FindProgramAddress([][]byte{[]byte(configSeed)}, program)
+	stranger := solanago.NewWallet().PublicKey()
+
+	cases := map[string]func() error{
+		"config is not the BridgeConfig PDA": func() error {
+			ix := solanago.NewInstruction(program, solanago.AccountMetaSlice{
+				solanago.Meta(stranger).WRITE(),
+				solanago.Meta(relayer).SIGNER(),
+			}, setPausedData(true))
+			_, e := Solana(message(t, ix), dep, "")
+			return e
+		},
+		"admin is not the fee payer": func() error {
+			ix := solanago.NewInstruction(program, solanago.AccountMetaSlice{
+				solanago.Meta(configPDA).WRITE(),
+				solanago.Meta(stranger).SIGNER(),
+			}, setPausedData(true))
+			_, e := Solana(message(t, ix), dep, "")
+			return e
+		},
+		"trailing bytes": func() error {
+			ix := solanago.NewInstruction(program, solanago.AccountMetaSlice{
+				solanago.Meta(configPDA).WRITE(),
+				solanago.Meta(relayer).SIGNER(),
+			}, setPausedData(true, 0))
+			_, e := Solana(message(t, ix), dep, "")
+			return e
+		},
+		"accompanied by an ATA create": func() error {
+			_, e := Solana(message(t,
+				associatedtokenaccount.NewCreateIdempotentInstruction(relayer, wallet, mint).Build(),
+				setPausedIx(true)), dep, "")
+			return e
+		},
+		"nothing configured": func() error {
+			_, e := Solana(message(t, setPausedIx(true)), Deployment{}, "")
+			return e
+		},
 	}
 	for name, run := range cases {
 		if run() == nil {

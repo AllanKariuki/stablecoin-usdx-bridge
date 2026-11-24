@@ -24,7 +24,8 @@ export class ComplianceConfig {
 
   // --- Service-to-service auth (H2). Every core-ledger call carries
   // compliance's own service-account token; core-ledger verifies it and
-  // checks ledger.wallet-status.
+  // checks ledger.wallet-status (wallet freeze) or ledger.enforcement (H6
+  // on-chain enforcement).
   @IsString()
   @IsNotEmpty()
   SERVICE_CLIENT_ID!: string;
@@ -80,6 +81,18 @@ export class ComplianceConfig {
   @IsInt()
   @Min(1)
   SCREENING_TTL_HOURS = 24;
+
+  // --- H6: core-ledger's enforcement finality events. When NATS_URL is set
+  // the outbox consumer reads damp.ledger.chain_enforcement_finalized.v1
+  // from JetStream (the local stack's path); unset, they arrive over HTTP at
+  // POST /internal/outbox instead. Both are the same supported states.
+  @IsOptional()
+  @IsString()
+  NATS_URL = '';
+
+  @IsOptional()
+  @IsString()
+  NATS_STREAM = 'DAMP';
 
   // The longest window any rule looks back over. It bounds the history query
   // that runs on every posting, so it is configuration rather than a

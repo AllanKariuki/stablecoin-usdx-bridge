@@ -23,10 +23,17 @@ export class IngestController {
   @RequireServiceRole('compliance.ingest')
   @HttpCode(200)
   async outbox(@Headers('x-event-type') eventType: string, @Body() payload: Record<string, unknown>) {
-    if (eventType !== 'damp.ledger.transaction_posted.v1') {
-      return { accepted: true, evaluated: false, reason: `compliance does not consume ${eventType}` };
+    switch (eventType) {
+      case 'damp.ledger.transaction_posted.v1': {
+        const result = await this.ingest.onTransactionPosted(payload);
+        return { accepted: true, evaluated: true, ...result };
+      }
+      case 'damp.ledger.chain_enforcement_finalized.v1': {
+        const result = await this.ingest.onEnforcementFinalized(payload);
+        return { accepted: true, ...result };
+      }
+      default:
+        return { accepted: true, evaluated: false, reason: `compliance does not consume ${eventType}` };
     }
-    const result = await this.ingest.onTransactionPosted(payload);
-    return { accepted: true, evaluated: true, ...result };
   }
 }

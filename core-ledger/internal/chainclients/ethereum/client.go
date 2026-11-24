@@ -2,6 +2,7 @@ package ethereum
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -134,6 +135,99 @@ func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) 
 		return "", fmt.Errorf("bridgeBurn tx: %w", err)
 	}
 	return tx.Hash().Hex(), nil
+}
+
+// Blacklist adds addr to the USD-X blacklist — the on-chain half of a
+// compliance enforcement action (H6). The call needs COMPLIANCE_ROLE, which
+// the chain enforces; reference is the compliance action id, carried to the
+// signer as the correlation id so a retry re-signs the same authorisation.
+func (c *Client) Blacklist(addr, reference string) (string, error) {
+	return c.enforcementTx("blacklist", reference, addr, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.contract.Blacklist(opts, common.HexToAddress(addr))
+	})
+}
+
+// Unblacklist lifts addr off the blacklist (COMPLIANCE_ROLE).
+func (c *Client) Unblacklist(addr, reference string) (string, error) {
+	return c.enforcementTx("unblacklist", reference, addr, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.contract.Unblacklist(opts, common.HexToAddress(addr))
+	})
+}
+
+// Pause halts every transfer on the chain (PAUSER_ROLE).
+func (c *Client) Pause(reference string) (string, error) {
+	return c.enforcementTx("pause", reference, "", func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.contract.Pause(opts)
+	})
+}
+
+// Unpause resumes transfers (PAUSER_ROLE).
+func (c *Client) Unpause(reference string) (string, error) {
+	return c.enforcementTx("unpause", reference, "", func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.contract.Unpause(opts)
+	})
+}
+
+// enforcementTx is the shared path for the four role-gated methods: it builds
+// the transactor with the method name and reference a remote signer's policy
+// is written against (blacklist/unblacklist/pause/unpause), runs call, and
+// returns the transaction hash.
+func (c *Client) enforcementTx(method, reference, addr string, call func(*bind.TransactOpts) (*types.Transaction, error)) (string, error) {
+	opts, err := c.transactor(context.Background(), method, reference, nil, addr)
+	if err != nil {
+		return "", err
+	}
+	tx, err := call(opts)
+	if err != nil {
+		return "", fmt.Errorf("%s tx: %w", method, err)
+	}
+	return tx.Hash().Hex(), nil
+}
+
+// IsPauseAuthority reads PAUSER_ROLE from the contract and reports whether
+// this client's signer holds it — a read, never a write, so a PAUSE request
+// whose relayer lacks the role is refused by the API with a clear 422
+// instead of paying gas for a transaction that reverts.
+func (c *Client) IsPauseAuthority(ctx context.Context) (bool, error) {
+	role, err := c.contract.PAUSERROLE(&bind.CallOpts{Context: ctx})
+	if err != nil {
+		return false, fmt.Errorf("reading PAUSER_ROLE: %w", err)
+	}
+	has, err := c.contract.HasRole(&bind.CallOpts{Context: ctx}, role, c.signer.Address())
+	if err != nil {
+		return false, fmt.Errorf("checking PAUSER_ROLE for %s: %w", c.signer.Address(), err)
+	}
+	return has, nil
+}
+
+// FinalityStatus is the non-blocking half of WaitForFinality, for the
+// enforcement sweep: receipt lookup and depth check, each one call, no
+// polling. final=false and nil error means "not there yet — ask again on the
+// sweep's schedule"; a mined revert wraps ErrTxFailedOnChain so the sweep can
+// mark the row FAILED without guessing from error text.
+func (c *Client) FinalityStatus(txHash string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	hash := common.HexToHash(txHash)
+	receipt, err := c.ec.TransactionReceipt(ctx, hash)
+	if err == ethereum.NotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("fetching receipt for %s: %w", txHash, err)
+	}
+	if receipt.Status == 0 {
+		return false, fmt.Errorf("tx %s reverted: %w", txHash, bridge.ErrTxFailedOnChain)
+	}
+	if err := c.requireFinal(ctx, receipt.BlockNumber); err != nil {
+		if errors.Is(err, bridge.ErrBurnNotFinal) {
+			// Included but not deep enough yet: not final, nothing wrong.
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // WaitForFinality matches bridge.ChainClient's signature (the same string

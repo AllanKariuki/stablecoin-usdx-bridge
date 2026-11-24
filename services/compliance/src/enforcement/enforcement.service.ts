@@ -25,12 +25,15 @@ export type EnforcementKind =
  * clicking a button, and the seeded policy for `compliance.pause` requires
  * two approvals.
  *
- * The on-chain half is deliberately *not* implemented here. Submitting a
- * `blacklist()` or `pause()` transaction means holding a key with
- * COMPLIANCE_ROLE, and P6 is where key custody is solved — until then this
- * service records an APPROVED action and stops, which is visibly incomplete
- * rather than quietly wrong. Wallet freezes, which need no key, execute
- * immediately.
+ * Since H6 the on-chain half is real and asynchronous: after the approval,
+ * the action is submitted through core-ledger's POST /chain/enforcement —
+ * the service that holds the signer and the chain clients — which broadcasts
+ * and answers 202. The action records SUBMITTED (with the tx hash), and
+ * core-ledger's worker watches the chain; when the transaction reaches
+ * finality, its outbox event (damp.ledger.chain_enforcement_finalized.v1)
+ * lands here via the ingest service, which marks EXECUTED or FAILED. Wallet
+ * freezes, which need no key, execute immediately through core-ledger's
+ * wallet status.
  */
 @Injectable()
 export class EnforcementService {
@@ -262,21 +265,143 @@ export class EnforcementService {
         return;
       }
 
-      default:
-        // BLACKLIST / PAUSE and their inverses need a key holding
-        // COMPLIANCE_ROLE or PAUSER_ROLE. P6 is where key custody is solved;
-        // until then the action sits APPROVED with an explicit reason rather
-        // than being marked EXECUTED on the strength of nothing having
-        // happened.
-        await this.db.query(
-          `UPDATE enforcement_actions SET status = 'APPROVED',
-                  failure_reason = 'approved, awaiting on-chain submission: signing is services/signer (P6)'
-            WHERE id = $1`,
-          [action.id],
-        );
-        this.logger.warn(
-          `${action.kind} ${action.target} is approved but cannot be submitted: no signer is configured (P6)`,
-        );
+      default: {
+        // BLACKLIST / PAUSE and their inverses: submit through core-ledger,
+        // which holds the signer and the chain clients (H6). The action id is
+        // core-ledger's dedupe key, so nothing double-submits on a retry, and
+        // the FINAL/FAILED outcome arrives later via core-ledger's outbox
+        // event (see the ingest service) — a 202 here only records SUBMITTED.
+        const outcome = await this.ledger.enforce({
+          action: action.kind as 'BLACKLIST' | 'UNBLACKLIST' | 'PAUSE' | 'UNPAUSE',
+          chain: action.chain,
+          address: action.target || undefined,
+          reference: action.id,
+        });
+
+        switch (outcome.status) {
+          case 'SUBMITTED':
+            // Broadcast; the ingest event finishes the job. Nothing here is
+            // final, so nothing here is audited as if it were.
+            await this.db.query(
+              `UPDATE enforcement_actions
+                  SET status = 'SUBMITTED', chain_tx_hash = COALESCE($2, chain_tx_hash), failure_reason = ''
+                WHERE id = $1`,
+              [action.id, outcome.txHash],
+            );
+            this.logger.log(`${action.kind} ${action.target} submitted on chain: ${outcome.txHash}`);
+            return;
+
+          case 'FINAL':
+          case 'FAILED': {
+            // A retried call found a reference core-ledger already knows —
+            // usually because the ingest event raced this retry. Record it
+            // exactly as the event would have.
+            await this.recordExecution(
+              action,
+              outcome.status === 'FINAL',
+              outcome.status === 'FINAL' ? '' : outcome.reason,
+              outcome.status === 'FINAL' ? outcome.txHash : null,
+            );
+            return;
+          }
+
+          case 'TERMINAL_FAILED':
+            await this.recordExecution(action, false, outcome.reason, null);
+            return;
+
+          case 'TRANSIENT':
+            // Nothing was confirmed on chain, so the action stays APPROVED
+            // with a reason that says what happened. Retrying is safe:
+            // core-ledger dedupes on the action id, and a redelivered
+            // workflow callback or a re-raise would hit the same row. (There
+            // is still no automated retry loop — none was added — so the
+            // action needs a re-raise to move again.)
+            await this.db.query(
+              `UPDATE enforcement_actions
+                  SET failure_reason = $2
+                WHERE id = $1`,
+              [action.id, `${outcome.reason} — nothing was confirmed on chain; a retry is safe (core-ledger dedupes on the action id)`],
+            );
+            this.logger.warn(`${action.kind} ${action.target} submission failed transiently; the action stays APPROVED`);
+            return;
+        }
+        return;
+      }
+    }
+  }
+
+  /**
+   * core-ledger's outbox delivers the finality outcome here (routed by the
+   * ingest service): the transaction reached finality (or failed on chain),
+   * and the action's stored state catches up. Idempotent — a redelivery of
+   * an already-recorded outcome changes nothing, and an unknown reference is
+   * ignored rather than invented.
+   */
+  async applyChainOutcome(input: {
+    reference: string;
+    status: 'FINAL' | 'FAILED';
+    txHash: string;
+    failureReason: string;
+  }): Promise<{ applied: boolean; reason?: string }> {
+    const { rows } = await this.db.query<Record<string, any>>(
+      'SELECT * FROM enforcement_actions WHERE id = $1',
+      [input.reference],
+    );
+    const action = rows[0];
+    if (!action) {
+      this.logger.warn(`finality event for unknown enforcement action ${input.reference}; ignoring`);
+      return { applied: false, reason: 'no such enforcement action' };
+    }
+    if (action.status === 'EXECUTED' || action.status === 'FAILED' || action.status === 'REJECTED') {
+      return { applied: false, reason: `action is ${action.status}` };
+    }
+    await this.recordExecution(action, input.status === 'FINAL', input.failureReason, input.txHash || null);
+    return { applied: true };
+  }
+
+  /**
+   * Records a known on-chain outcome (from core-ledger's outbox event via the
+   * ingest service, or from a retried submission finding the reference already
+   * known) with its audit event, in one transaction.
+   */
+  private async recordExecution(
+    action: Record<string, any>,
+    executed: boolean,
+    failureReason: string,
+    txHash: string | null,
+  ): Promise<void> {
+    await this.db.transaction(async (client) => {
+      await client.query(
+        `UPDATE enforcement_actions
+            SET status = $2, executed_at = CASE WHEN $2 = 'EXECUTED' THEN now() ELSE executed_at END,
+                chain_tx_hash = COALESCE($3, chain_tx_hash), failure_reason = $4
+          WHERE id = $1`,
+        [action.id, executed ? 'EXECUTED' : 'FAILED', txHash, failureReason],
+      );
+      await enqueueAuditEvent(client, {
+        actor: WORKFLOW_ACTOR,
+        action: AUDIT.enforcementExecuted,
+        service: SERVICE,
+        outcome: executed ? 'SUCCESS' : 'FAILURE',
+        subjectType: 'ENFORCEMENT_ACTION',
+        subjectId: action.id,
+        // The state the action was in when the outcome arrived: SUBMITTED
+        // for the ingest event, APPROVED for a submit-stage terminal refusal.
+        beforeState: { status: action.status },
+        afterState: { status: executed ? 'EXECUTED' : 'FAILED' },
+        metadata: {
+          kind: action.kind,
+          target: action.target,
+          chain: action.chain,
+          chainTxHash: txHash,
+          failureReason: executed ? null : failureReason,
+        },
+      });
+    });
+    if (executed) {
+      this.logger.log(`${action.kind} ${action.target} executed on chain: ${txHash}`);
+    } else {
+      this.logger.error(`${action.kind} ${action.target} failed on chain: ${failureReason}`);
     }
   }
 

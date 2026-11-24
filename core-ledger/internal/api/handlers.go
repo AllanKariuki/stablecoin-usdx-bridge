@@ -93,6 +93,11 @@ func (h *Handlers) Register(app *fiber.App) {
 	// HMAC itself.
 	app.Post(workflowclient.CallbackPath(), h.approvalCallback)
 
+	// Chain enforcement (H6): compliance's approved actions, submitted with
+	// the relayer's keys — 202 on broadcast, finality by the worker's sweep.
+	app.Post("/chain/enforcement", h.idempotent, h.enforcement)
+	app.Get("/chain/enforcement/:reference", h.getEnforcement)
+
 	// Journal
 	app.Get("/transactions", h.listTransactions)
 	app.Get("/transactions/:transactionId", h.getTransaction)
