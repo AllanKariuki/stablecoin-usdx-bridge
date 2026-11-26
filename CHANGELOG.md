@@ -3,6 +3,41 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-26 — Multi-asset ledger (slice 1 of multi-asset wallets)
+
+### Added — custodial BTC/ETH/SOL, crypto FX and pay-with-conversion in core-ledger
+
+- `DefaultCurrencies()` gains BTC (8dp), ETH (18dp) and SOL (9dp). These are
+  custodial: the chain comes from the currency (BTC→`BITCOIN`, ETH→`ETHEREUM`,
+  SOL→`SOLANA`), and a wallet carries no address (`WRONG_CHAIN`,
+  `UNEXPECTED_ADDRESS`). Each gets an FX position, an FX spread, a "Crypto
+  at custodian" and a "Crypto in transit" account. USD-X's chart and wallet
+  rules are unchanged.
+- `Convert` now accepts every pair except those involving USD-X, which still
+  crosses only through issuance and redemption (`USDX_USES_ISSUANCE`).
+  Before, it accepted fiat↔fiat only.
+- New `PayConverted` flow and `POST /fx/payments` (role `ledger.settlement`).
+  One journal debits the payer in one currency and credits a different
+  owner's wallet in another, across a quote. This is the basis for paying
+  with any wallet.
+- Default wallets: `wallets.is_default`, at most one per (user, currency),
+  set via `PATCH /wallets/:walletId`, which also renames a wallet (labels are
+  trimmed, with a 64-rune maximum).
+- Migration `00010_multi_asset.sql`.
+
+### Changed — FX quotes can no longer be set by users or reused
+
+- `POST /fx/quotes` is reachable only with the new `ledger.pricing` role
+  (added to the Keycloak realm template). bff's user-proxy role can no
+  longer choose its own rate.
+- A quote is single-use: a partial unique index on
+  `transactions(fx_quote_id)` covers FX conversions and payments; reversals
+  are excluded. Reuse fails with `QUOTE_ALREADY_USED` (409), while an
+  idempotent replay still returns the original transaction.
+- A quote can be pinned to an exact `from_amount` and a `party_id`
+  (`QUOTE_AMOUNT_MISMATCH`, `QUOTE_PARTY_MISMATCH`), so the pricing service's
+  exposure check covers exactly one movement.
+
 ## 2026-11-26 — Hardening H1–H7 brought into main
 
 ### Changed — the stacked hardening branches reach `main`

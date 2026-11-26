@@ -69,6 +69,12 @@
           "clientRole": true
         },
         {
+          "name": "ledger.pricing",
+          "description": "services/pricing: POST /fx/quotes (issue the rates conversions and FX payments consume)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
           "name": "ledger.reserves.custodian",
           "description": "services/rms: POST /reserves/custodian-snapshots, GET /reserves/status",
           "composite": false,

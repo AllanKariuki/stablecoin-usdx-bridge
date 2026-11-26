@@ -32,6 +32,11 @@ const (
 	// roleSettlement is services/payments' role: the routes a payment intent
 	// settles through.
 	roleSettlement = "ledger.settlement"
+	// rolePricing is services/pricing's role: issue FX quotes. Quote creation
+	// is locked to this single role so no other caller — including the
+	// user-facing surface — can mint a rate; a conversion is only as honest
+	// as the quote it consumes.
+	rolePricing = "ledger.pricing"
 	// roleWalletProvision is services/identity's role: create a party's
 	// default wallet.
 	roleWalletProvision = "ledger.wallet-provision"
@@ -128,6 +133,7 @@ var routeTable = authzTable{
 	compile("POST", "/wallets", roleWalletProvision, roleSettlement, roleUserProxy),
 	compile("GET", "/users/:userId/wallets", roleWalletStatus, roleUserProxy),
 	compile("GET", "/wallets/:walletId", roleUserProxy),
+	compile("PATCH", "/wallets/:walletId", roleUserProxy),
 	compile("GET", "/wallets/:walletId/statement", roleUserProxy, roleReportsRead),
 	compile("POST", "/wallets/:walletId/status", roleWalletStatus, roleUserProxy),
 
@@ -141,8 +147,9 @@ var routeTable = authzTable{
 	compile("POST", "/deposits", roleSettlement, roleUserProxy),
 	compile("POST", "/withdrawals", roleSettlement, roleUserProxy),
 	compile("POST", "/transfers", roleSettlement, roleUserProxy),
-	compile("POST", "/fx/quotes", roleUserProxy),
+	compile("POST", "/fx/quotes", rolePricing),
 	compile("POST", "/fx/conversions", roleUserProxy),
+	compile("POST", "/fx/payments", roleSettlement),
 	compile("POST", "/issuances", roleUserProxy),
 	compile("POST", "/redemptions", roleUserProxy),
 	// confirmRedemption is operator break-glass (see handlers.go); it stays

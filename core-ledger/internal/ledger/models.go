@@ -34,7 +34,7 @@ type CurrencyKind string
 
 const (
 	CurrencyFiat   CurrencyKind = "FIAT"   // USD, EUR, KES — held at a custodian
-	CurrencyCrypto CurrencyKind = "CRYPTO" // USDX — held on-chain
+	CurrencyCrypto CurrencyKind = "CRYPTO" // BTC, ETH, SOL, USDX — held on-chain
 )
 
 // Currency replaces what used to be a hard-coded USDXDecimals constant. Scale
@@ -42,7 +42,7 @@ const (
 // between a decimal string and smallest units without saying which currency it
 // is talking about.
 type Currency struct {
-	Code     string       `gorm:"column:code;primaryKey"` // ISO 4217 for fiat, "USDX" for the token
+	Code     string       `gorm:"column:code;primaryKey"` // ISO 4217 for fiat, the ticker for crypto
 	Kind     CurrencyKind `gorm:"column:kind"`
 	Decimals int32        `gorm:"column:decimals"`
 	Name     string       `gorm:"column:name"`
@@ -53,6 +53,32 @@ func (Currency) TableName() string { return "currencies" }
 
 // USDXCode is the one currency this platform issues rather than custodies.
 const USDXCode = "USDX"
+
+// NativeChain is the single chain a custodial crypto currency lives on, or
+// "" when the currency has none: fiat has no chain, and USD-X exists on both
+// Ethereum and Solana so no one chain is native to it. Custodial crypto is
+// the inverse case — BTC, ETH and SOL each live on exactly one chain, which
+// is what lets a wallet in them default its chain instead of asking.
+func NativeChain(code string) string {
+	switch code {
+	case "BTC":
+		return "BITCOIN"
+	case "ETH":
+		return "ETHEREUM"
+	case "SOL":
+		return "SOLANA"
+	}
+	return ""
+}
+
+// IsCustodialCrypto reports whether a currency is crypto the platform
+// custodies, as opposed to USD-X, which it issues. The two kinds differ in
+// exactly the places EnsureWallet and the chart care about: custodial crypto
+// has one native chain, no user-supplied address, and custody/FX accounts;
+// USD-X has none of those.
+func IsCustodialCrypto(code string) bool {
+	return code != USDXCode && NativeChain(code) != ""
+}
 
 // PegCurrency is the fiat currency USD-X is issued 1:1 against. Issuance and
 // redemption always run through it; any other fiat currency has to be
@@ -200,6 +226,7 @@ const (
 	TxUSDXIssue       TxType = "USDX_ISSUE"        // fiat claim -> USDX claim (mint)
 	TxUSDXRedeem      TxType = "USDX_REDEEM"       // USDX claim -> fiat claim (burn)
 	TxFXConversion    TxType = "FX_CONVERSION"     // fiat -> fiat across a quote
+	TxFXPayment       TxType = "FX_PAYMENT"        // wallet -> wallet across a quote, owners may differ
 	TxInternalXfer    TxType = "INTERNAL_TRANSFER" // wallet -> wallet, same currency
 	TxChainBridgeOut  TxType = "CHAIN_BRIDGE_OUT"  // burn leg: wallet -> bridge suspense
 	TxChainBridgeIn   TxType = "CHAIN_BRIDGE_IN"   // mint leg: bridge suspense -> wallet
@@ -212,7 +239,7 @@ const (
 func (t TxType) Valid() bool {
 	switch t {
 	case TxFiatDeposit, TxFiatWithdrawal, TxUSDXIssue, TxUSDXRedeem, TxFXConversion,
-		TxInternalXfer, TxChainBridgeOut, TxChainBridgeIn, TxBridgeCompensat,
+		TxFXPayment, TxInternalXfer, TxChainBridgeOut, TxChainBridgeIn, TxBridgeCompensat,
 		TxFee, TxManualJournal, TxReversal:
 		return true
 	}
@@ -402,10 +429,17 @@ type Wallet struct {
 	// for fiat wallets.
 	Address string `gorm:"column:address"`
 
-	Status    WalletStatus `gorm:"column:status"`
-	Label     string       `gorm:"column:label"`
-	CreatedAt time.Time    `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt time.Time    `gorm:"column:updated_at;autoUpdateTime"`
+	Status WalletStatus `gorm:"column:status"`
+	Label  string       `gorm:"column:label"`
+
+	// IsDefault marks the user's default wallet in this currency — the one a
+	// payment lands in when the payer names only a currency. At most one
+	// wallet per (user, currency) carries it, enforced by a partial unique
+	// index (00010_multi_asset.sql) rather than by application code.
+	IsDefault bool `gorm:"column:is_default"`
+
+	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt time.Time `gorm:"column:updated_at;autoUpdateTime"`
 }
 
 func (Wallet) TableName() string { return "wallets" }
@@ -417,6 +451,12 @@ func (Wallet) TableName() string { return "wallets" }
 // Rate is scaled by 10^FxRateScale and reads as "1 BaseCcy = Rate QuoteCcy",
 // before spread. SpreadBps is taken out of the quote-side proceeds and booked
 // to REVENUE:FX_SPREAD.
+//
+// A quote is single-use: the pricing service bounds its exposure per quote,
+// so the ledger enforces that a quote is consumed by exactly one conversion
+// or payment (00010_multi_asset.sql's partial unique index on transactions),
+// and lets a quote be pinned to one amount and/or one party so the bound is
+// real rather than a convention.
 type FxQuote struct {
 	ID        string   `gorm:"column:id;primaryKey"`
 	BaseCcy   string   `gorm:"column:base_ccy"`
@@ -424,6 +464,14 @@ type FxQuote struct {
 	Rate      *big.Int `gorm:"column:rate;serializer:bigint"`
 	SpreadBps int32    `gorm:"column:spread_bps"`
 	Source    string   `gorm:"column:source"` // rate provider
+
+	// FromAmount, when set, pins the quote to one exact source amount (base
+	// currency's smallest units). Nil means "any amount".
+	FromAmount *big.Int `gorm:"column:from_amount;serializer:bigint"`
+
+	// PartyID, when set, pins the quote to one wallet owner. Nil means
+	// "any party".
+	PartyID *string `gorm:"column:party_id"`
 
 	QuotedAt  time.Time `gorm:"column:quoted_at"`
 	ExpiresAt time.Time `gorm:"column:expires_at"`
