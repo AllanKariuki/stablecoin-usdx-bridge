@@ -2,7 +2,7 @@ import http, { Server } from 'node:http';
 import { AddressInfo } from 'node:net';
 import { ConfigService } from '@nestjs/config';
 import { ServiceTokenClient } from '@damp/nest-platform';
-import { CoreLedgerClient } from '../src/core-ledger/core-ledger.client';
+import { CoreLedgerClient, rebalanceIdempotencyKey } from '../src/core-ledger/core-ledger.client';
 
 /**
  * H2: rms' reads and writes to core-ledger must carry rms' own
@@ -96,6 +96,100 @@ describe('CoreLedgerClient service-account auth', () => {
       expect(seen.actor).toBe('rms');
       // The pre-H2 X-Service-Token plumbing is gone, not just unused.
       expect(seen.serviceToken).toBeUndefined();
+    } finally {
+      await close(ledger);
+      await close(keycloak);
+    }
+  });
+
+  it('posts a rebalance with the ledger body and a deterministic Idempotency-Key', async () => {
+    const seen: { body?: string; idempotencyKey?: string; path?: string } = {};
+
+    const ledger = http.createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://internal');
+      if (req.method === 'POST' && url.pathname === '/treasury/rebalances') {
+        seen.path = url.pathname;
+        seen.idempotencyKey = header(req, 'idempotency-key');
+        let raw = '';
+        req.on('data', (chunk: Buffer) => (raw += chunk.toString()));
+        req.on('end', () => {
+          seen.body = raw;
+          const payload = JSON.stringify({ id: 'tx-1' });
+          res.writeHead(201, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) });
+          res.end(payload);
+        });
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    const ledgerUrl = await listen(ledger);
+
+    const keycloak = http.createServer((_req, res) => {
+      const payload = JSON.stringify({ access_token: 'tok-svc-rms', expires_in: 300, token_type: 'Bearer' });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) });
+      res.end(payload);
+    });
+    const keycloakUrl = await listen(keycloak);
+
+    try {
+      const config = {
+        get: (key: string) =>
+          ({
+            CORE_LEDGER_URL: ledgerUrl,
+            KEYCLOAK_BASE_URL: keycloakUrl,
+            KEYCLOAK_REALM: 'damp',
+            SERVICE_CLIENT_ID: 'svc-rms',
+            SERVICE_CLIENT_SECRET: 'dev-svc-rms-secret',
+          })[key],
+      } as unknown as ConfigService;
+
+      const client = new CoreLedgerClient(config, new ServiceTokenClient(config));
+      const trade = {
+        side: 'BUY' as const,
+        currency: 'BTC',
+        amount: '0.00260000',
+        fiatCurrency: 'KES',
+        fiatAmount: '130000.00',
+        custodianRef: 'TRADE-1',
+        note: 'closing the demo short',
+      };
+      await expect(client.postTreasuryRebalance(trade)).resolves.toEqual({ id: 'tx-1' });
+
+      // The body is the ledger's snake_case shape, exactly.
+      expect(JSON.parse(seen.body ?? '{}')).toEqual({
+        side: 'BUY',
+        currency: 'BTC',
+        amount: '0.00260000',
+        fiat_currency: 'KES',
+        fiat_amount: '130000.00',
+        custodian_ref: 'TRADE-1',
+        note: 'closing the demo short',
+      });
+
+      // Same trade, same key — a retry replays the first journal instead of
+      // trading twice.
+      await client.postTreasuryRebalance(trade);
+      expect(seen.idempotencyKey).toBe(rebalanceIdempotencyKey(trade));
+      // And the note stays out of the digest: it is a comment, not the trade.
+      const withOtherNote = rebalanceIdempotencyKey({
+        side: trade.side,
+        currency: trade.currency,
+        amount: trade.amount,
+        fiatCurrency: trade.fiatCurrency,
+        fiatAmount: trade.fiatAmount,
+        custodianRef: trade.custodianRef,
+      });
+      expect(withOtherNote).toBe(rebalanceIdempotencyKey(trade));
+      // ...while every trade-defining field is part of it.
+      const differentTrade = rebalanceIdempotencyKey({
+        side: trade.side,
+        currency: trade.currency,
+        amount: '0.00260001',
+        fiatCurrency: trade.fiatCurrency,
+        fiatAmount: trade.fiatAmount,
+        custodianRef: trade.custodianRef,
+      });
+      expect(differentTrade).not.toBe(rebalanceIdempotencyKey(trade));
     } finally {
       await close(ledger);
       await close(keycloak);

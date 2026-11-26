@@ -25,6 +25,11 @@ const CURRENCY_DECIMALS: Record<string, number> = {
   EUR: 2,
   KES: 2,
   USDX: 6,
+  // Custodial crypto (slice 4a): a cross-asset payment may move BTC, ETH or
+  // SOL — the same scales core-ledger's chart and services/pricing use.
+  BTC: 8,
+  ETH: 18,
+  SOL: 9,
 };
 
 const CURRENCY_SYMBOLS: Record<string, string> = {

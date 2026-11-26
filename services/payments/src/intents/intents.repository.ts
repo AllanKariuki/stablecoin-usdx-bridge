@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { DbService, Queryable } from '../db/db.service';
 
 export type IntentDirection = 'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER';
-export type IntentStatus = 'REQUIRES_ACTION' | 'PROCESSING' | 'SETTLED' | 'FAILED' | 'CANCELLED';
+export type IntentStatus = 'REQUIRES_ACTION' | 'PROCESSING' | 'CONVERTING' | 'SETTLED' | 'FAILED' | 'CANCELLED';
 
 export interface PaymentIntent {
   id: string;
@@ -25,6 +25,13 @@ export interface PaymentIntent {
   metadata: Record<string, unknown>;
   createdAt: Date;
   settledAt: Date | null;
+  // --- Cross-asset source (004_cross_asset_intents.sql). All null/empty
+  // unless the intent settles from a wallet the payer picked explicitly. ---
+  sourceWalletId: string | null;
+  sourceCurrency: string | null;
+  quoteId: string | null;
+  sourceAmount: string | null;
+  conversionRef: string;
 }
 
 interface IntentRow {
@@ -47,6 +54,11 @@ interface IntentRow {
   metadata: Record<string, unknown>;
   created_at: Date;
   settled_at: Date | null;
+  source_wallet_id: string | null;
+  source_currency: string | null;
+  quote_id: string | null;
+  source_amount: string | null;
+  conversion_ref: string;
 }
 
 @Injectable()
@@ -77,14 +89,21 @@ export class IntentsRepository {
       idempotencyKey: string;
       description?: string;
       metadata?: Record<string, unknown>;
+      status?: IntentStatus;
+      sourceWalletId?: string | null;
+      sourceCurrency?: string | null;
+      quoteId?: string | null;
+      sourceAmount?: string | null;
+      conversionRef?: string;
     },
     q: Queryable = this.db,
   ): Promise<{ intent: PaymentIntent; created: boolean }> {
     const { rows } = await q.query<IntentRow & { inserted: boolean }>(
       `INSERT INTO payment_intents
          (id, party_id, direction, amount, currency, wallet_id, bank_account_id,
-          beneficiary_id, invoice_id, rail, idempotency_key, description, metadata)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+          beneficiary_id, invoice_id, rail, idempotency_key, description, metadata,
+          status, source_wallet_id, source_currency, quote_id, source_amount, conversion_ref)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
        ON CONFLICT (idempotency_key) DO UPDATE SET updated_at = payment_intents.updated_at
        RETURNING *, (xmax = 0) AS inserted`,
       [
@@ -101,6 +120,12 @@ export class IntentsRepository {
         input.idempotencyKey,
         input.description ?? '',
         input.metadata ?? {},
+        input.status ?? 'REQUIRES_ACTION',
+        input.sourceWalletId ?? null,
+        input.sourceCurrency ?? null,
+        input.quoteId ?? null,
+        input.sourceAmount ?? null,
+        input.conversionRef ?? '',
       ],
     );
     return { intent: toIntent(rows[0]), created: rows[0].inserted };
@@ -188,6 +213,46 @@ export class IntentsRepository {
     );
     return rows.length > 0;
   }
+
+  /**
+   * Records the redemption saga's correlation id, once. The empty-guard makes
+   * the write idempotent: the create flow and the poller's recovery both post
+   * the same redemption (same idempotency key), and whoever stores the id
+   * first wins.
+   */
+  async setConversionRef(id: string, conversionRef: string): Promise<boolean> {
+    const { rows } = await this.db.query<{ id: string }>(
+      `UPDATE payment_intents SET conversion_ref = $2, updated_at = now()
+        WHERE id = $1 AND conversion_ref = ''
+        RETURNING id`,
+      [id, conversionRef],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * Claims CONVERTING intents whose poll lease is due — the conversion
+   * poller's work queue. `FOR UPDATE SKIP LOCKED` with a bumped
+   * `conversion_next_poll_at` is the outbox claim's shape, for the same
+   * reason: every payments replica can run a poller without blocking on, or
+   * double-working, another's rows, and a poller that dies mid-intent leaves
+   * its rows due again once the lease runs out.
+   */
+  async claimConverting(limit: number, leaseSeconds: number): Promise<PaymentIntent[]> {
+    const { rows } = await this.db.query<IntentRow>(
+      `UPDATE payment_intents
+          SET conversion_next_poll_at = now() + make_interval(secs => $2)
+        WHERE id IN (
+              SELECT id FROM payment_intents
+               WHERE status = 'CONVERTING' AND conversion_next_poll_at <= now()
+               ORDER BY conversion_next_poll_at
+               FOR UPDATE SKIP LOCKED
+               LIMIT $1)
+      RETURNING *`,
+      [limit, leaseSeconds],
+    );
+    return rows.map(toIntent);
+  }
 }
 
 function toIntent(row: IntentRow): PaymentIntent {
@@ -211,5 +276,10 @@ function toIntent(row: IntentRow): PaymentIntent {
     metadata: row.metadata ?? {},
     createdAt: row.created_at,
     settledAt: row.settled_at,
+    sourceWalletId: row.source_wallet_id ?? null,
+    sourceCurrency: row.source_currency ?? null,
+    quoteId: row.quote_id ?? null,
+    sourceAmount: row.source_amount ?? null,
+    conversionRef: row.conversion_ref ?? '',
   };
 }

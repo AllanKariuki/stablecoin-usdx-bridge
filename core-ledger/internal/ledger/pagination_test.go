@@ -34,7 +34,7 @@ func TestIntegrationListTransactionsPage_KeysetPaginationHasNoGapsOrOverlap(t *t
 		created = append(created, tx.ID)
 	}
 
-	firstPage, err := repo.ListTransactionsPage(ctx, user, time.Time{}, "", 3)
+	firstPage, err := repo.ListTransactionsPage(ctx, user, nil, time.Time{}, "", 3)
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestIntegrationListTransactionsPage_KeysetPaginationHasNoGapsOrOverlap(t *t
 	}
 
 	last := firstPage[len(firstPage)-1]
-	secondPage, err := repo.ListTransactionsPage(ctx, user, last.CreatedAt, last.ID, 10)
+	secondPage, err := repo.ListTransactionsPage(ctx, user, nil, last.CreatedAt, last.ID, 10)
 	if err != nil {
 		t.Fatalf("second page: %v", err)
 	}
@@ -96,12 +96,74 @@ func TestIntegrationListTransactionsPage_FiltersByUserID(t *testing.T) {
 		t.Fatalf("Deposit B: %v", err)
 	}
 
-	page, err := repo.ListTransactionsPage(ctx, userA, time.Time{}, "", 50)
+	page, err := repo.ListTransactionsPage(ctx, userA, nil, time.Time{}, "", 50)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(page) != 1 || page[0].ID != txA.ID {
 		t.Fatalf("expected exactly userA's one transaction (%s), got %d rows", txA.ID, len(page))
+	}
+}
+
+// TestIntegrationListTransactionsPage_FiltersByType exercises the type
+// filter the BFF's GET /conversions relies on: the filter runs in the query
+// (before the limit), so a page of one type is a page of matches even when
+// many other transactions sit alongside it in the same feed.
+func TestIntegrationListTransactionsPage_FiltersByType(t *testing.T) {
+	repo, svc, ctx := testRepo(t)
+	user := uniqueUser(t)
+
+	w, err := repo.EnsureWallet(ctx, user, "USD", "", "", "Main", "test")
+	if err != nil {
+		t.Fatalf("EnsureWallet: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := svc.Deposit(ctx, DepositRequest{
+			WalletID: w.ID, Amount: n(10_00), IdempotencyKey: key(t, "dep"+string(rune('a'+i))),
+		}); err != nil {
+			t.Fatalf("Deposit %d: %v", i, err)
+		}
+	}
+
+	// A type this test never created: the filter must return nothing, not
+	// fall back to the unfiltered feed.
+	none, err := repo.ListTransactionsPage(ctx, user, []TxType{TxFXConversion, TxUSDXIssue}, time.Time{}, "", 50)
+	if err != nil {
+		t.Fatalf("filtered list: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("expected no FX_CONVERSION rows for a deposits-only user, got %d", len(none))
+	}
+
+	deposits, err := repo.ListTransactionsPage(ctx, user, []TxType{TxFiatDeposit}, time.Time{}, "", 50)
+	if err != nil {
+		t.Fatalf("filtered list: %v", err)
+	}
+	if len(deposits) != 3 {
+		t.Fatalf("expected the user's 3 deposits, got %d", len(deposits))
+	}
+	for _, tx := range deposits {
+		if tx.Type != TxFiatDeposit {
+			t.Fatalf("filter returned a %s transaction", tx.Type)
+		}
+	}
+
+	// The filter composes with the keyset cursor: two pages of one match
+	// each, disjoint.
+	first, err := repo.ListTransactionsPage(ctx, user, []TxType{TxFiatDeposit}, time.Time{}, "", 2)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	last := first[len(first)-1]
+	second, err := repo.ListTransactionsPage(ctx, user, []TxType{TxFiatDeposit}, last.CreatedAt, last.ID, 2)
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if len(first) != 2 || len(second) != 1 {
+		t.Fatalf("expected 2 then 1 rows, got %d then %d", len(first), len(second))
+	}
+	if second[0].ID == first[0].ID || second[0].ID == first[1].ID {
+		t.Fatal("filtered pages overlapped")
 	}
 }
 

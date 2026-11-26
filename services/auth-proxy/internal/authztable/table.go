@@ -97,6 +97,13 @@ var Default = Table{
 	compile("POST", "/wallets/:walletId/status", authz.PermissionWalletsStatusManage),
 	// Opens the caller's own USD-X wallet (bff-only; always the caller's, so no :any variant).
 	compile("POST", "/wallets/usdx", authz.PermissionWalletsWriteOwn),
+	// Slice 4b: opening any other wallet and editing its metadata are own-
+	// wallet writes like /transfers; ownership of the :walletId is checked
+	// downstream in bff, never here.
+	compile("POST", "/wallets", authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny),
+	compile("PATCH", "/wallets/:walletId", authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny),
+	// The supported-currency set the portal renders (core-ledger's chart).
+	compile("GET", "/currencies", authz.PermissionWalletsReadOwn),
 
 	// Dashboard (bff-only aggregation, no core-ledger equivalent)
 	compile("GET", "/dashboard", authz.PermissionWalletsReadOwn, authz.PermissionWalletsReadAny),
@@ -123,6 +130,19 @@ var Default = Table{
 	// treasury and admin hold; customers have neither).
 	compile("GET", "/redemptions/:transactionId/break-glass", authz.PermissionLedgerRead),
 	compile("POST", "/bridges", authz.PermissionBridgeCreate),
+
+	// Slice 4b: the customer-facing quote/conversion surface. /conversions
+	// and /quotes are bff routes (the ledger's own /fx/* shapes stay under
+	// the permissions they already have); the wallet ownership every one of
+	// them depends on is enforced downstream in bff.
+	compile("POST", "/quotes", authz.PermissionFxQuote),
+	compile("POST", "/conversions", authz.PermissionFxConvert),
+	// The caller's own conversion history — the same shape as GET /transactions.
+	compile("GET", "/conversions", authz.PermissionTransactionsReadOwn),
+	// The portal's price chart and rates board (services/pricing, through
+	// bff's proxy — distinct from the ops console's /pricing/* paths above).
+	compile("GET", "/rates", authz.PermissionWalletsReadOwn),
+	compile("GET", "/rates/history", authz.PermissionWalletsReadOwn),
 
 	// Journal / ledger
 	compile("GET", "/transactions", authz.PermissionTransactionsReadOwn, authz.PermissionTransactionsReadAny),
@@ -159,6 +179,21 @@ var Default = Table{
 	compile("POST", "/custodians/:custodianId/drift", authz.PermissionReservesManage),
 	compile("POST", "/attestations", authz.PermissionReservesManage),
 	compile("POST", "/attestations/:attestationId/publish", authz.PermissionReservesManage),
+
+	// Crypto exposure & treasury desk (services/rms) and the pricing pair
+	// policy (services/pricing), both reached through bff's upstream proxy.
+	// The exposure/rebalance reads and pricing reads sit with the other
+	// treasury reads on reserves:read; the writes (setting a mandate, posting
+	// a rebalance, tuning a pair) are reserves:manage — the same segregation
+	// as the reserve targets above, and admin deliberately does not hold it.
+	compile("GET", "/exposure", authz.PermissionReservesRead),
+	compile("GET", "/exposure/limits/:currency", authz.PermissionReservesRead),
+	compile("GET", "/treasury/rebalances", authz.PermissionReservesRead),
+	compile("PUT", "/exposure/limits/:currency", authz.PermissionReservesManage),
+	compile("POST", "/treasury/rebalances", authz.PermissionReservesManage),
+	compile("GET", "/pricing/pairs", authz.PermissionReservesRead),
+	compile("GET", "/pricing/rates", authz.PermissionReservesRead),
+	compile("PATCH", "/pricing/pairs/:base/:quote", authz.PermissionReservesManage),
 
 	// Payments (P4). services/payments, reached through bff's upstream proxy.
 	//

@@ -86,6 +86,15 @@ export class PaymentsConfig {
   @Min(1)
   OUTBOX_RELAY_SECONDS = 5;
 
+  // How often the conversion poller sweeps CONVERTING intents — payments
+  // funded from a USD-X wallet, waiting on the redemption burn saga. A burn
+  // takes minutes to confirm, so this bounds latency, not correctness: the
+  // poll is idempotent and the saga itself is polled in the ledger.
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  CONVERTING_POLL_SECONDS = 10;
+
   // Attempts before an event is marked DEAD. Backoff caps at five minutes, so
   // the default of 100 rides out roughly eight hours of notifications being
   // unreachable.

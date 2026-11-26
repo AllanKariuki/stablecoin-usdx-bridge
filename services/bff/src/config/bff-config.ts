@@ -99,4 +99,10 @@ export class BffConfig {
   // services/rms/src/config). Empty answers 503 like the others.
   @IsString()
   RMS_URL = '';
+
+  // services/pricing's pair policy and indicative rates, for the Ops
+  // Console's treasury workspace. pricing listens on 3009 (see
+  // services/pricing/src/config). Empty answers 503 like the others.
+  @IsString()
+  PRICING_URL = '';
 }
