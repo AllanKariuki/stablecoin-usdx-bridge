@@ -10,6 +10,8 @@ var (
 	usd  = Currency{Code: "USD", Kind: CurrencyFiat, Decimals: 2}
 	kes  = Currency{Code: "KES", Kind: CurrencyFiat, Decimals: 2}
 	usdx = Currency{Code: USDXCode, Kind: CurrencyCrypto, Decimals: 6}
+	eth  = Currency{Code: "ETH", Kind: CurrencyCrypto, Decimals: 18}
+	btc  = Currency{Code: "BTC", Kind: CurrencyCrypto, Decimals: 8}
 )
 
 func quote(base, quoteCcy, rate string, spreadBps int32, t *testing.T) *FxQuote {
@@ -97,6 +99,61 @@ func TestApplyBps(t *testing.T) {
 	}
 }
 
+// The 18-decimal ETH -> 2-decimal USD hop is the widest scale change a
+// conversion can make. The single division must land exactly on a round
+// dollar amount, and the spread must come out of the proceeds so net + fee
+// still equals gross — the invariant the journal's USD leg depends on.
+func TestConvertCryptoToFiatExactness(t *testing.T) {
+	// 1 ETH at 3,500.00 USD, 25 bps spread.
+	q := quote("ETH", "USD", "3500", 25, t)
+	conv := Convert(q, pow10(18), eth, usd)
+
+	if got := conv.Gross.String(); got != "350000" {
+		t.Errorf("gross = %s, want 350000 (3500.00 USD)", got)
+	}
+	if got := conv.Fee.String(); got != "875" {
+		t.Errorf("fee = %s, want 875 (25bps of 3500.00)", got)
+	}
+	if got := conv.Net.String(); got != "349125" {
+		t.Errorf("net = %s, want 349125", got)
+	}
+	if sum := new(big.Int).Add(conv.Net, conv.Fee); sum.Cmp(conv.Gross) != 0 {
+		t.Errorf("net + fee = %s, must equal gross %s or the USD leg cannot balance", sum, conv.Gross)
+	}
+}
+
+// USD -> BTC at 8 decimals: 100.00 USD at 1 USD = 0.00001 BTC is exactly
+// 100,000 satoshis before the spread.
+func TestConvertFiatToBTCExactness(t *testing.T) {
+	q := quote("USD", "BTC", "0.00001", 10, t)
+	conv := Convert(q, n(100_00), usd, btc)
+
+	if got := conv.Gross.String(); got != "100000" {
+		t.Errorf("gross = %s, want 100000 (0.001 BTC)", got)
+	}
+	if got := conv.Fee.String(); got != "100" {
+		t.Errorf("fee = %s, want 100 (10bps of 100000 sat)", got)
+	}
+	if got := conv.Net.String(); got != "99900" {
+		t.Errorf("net = %s, want 99900", got)
+	}
+	if sum := new(big.Int).Add(conv.Net, conv.Fee); sum.Cmp(conv.Gross) != 0 {
+		t.Errorf("net + fee = %s, must equal gross %s or the BTC leg cannot balance", sum, conv.Gross)
+	}
+}
+
+// A sub-satoshi residue is truncated, not rounded up: the fractional amount
+// stays in the FX position rather than being invented for the user.
+func TestConvertResidueTruncatesAtTheEnd(t *testing.T) {
+	// 1 USD cent at 1 USD = 0.000012345678901234 BTC = 12.345678901234 sat.
+	q := quote("USD", "BTC", "0.000012345678901234", 0, t)
+	conv := Convert(q, n(1), usd, btc)
+
+	if got := conv.Gross.String(); got != "12" {
+		t.Errorf("gross = %s, want 12 (fraction left in the FX position)", got)
+	}
+}
+
 func TestUsableQuoteRejectsTheWrongPairAndStaleRates(t *testing.T) {
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	q := quote("KES", "USD", "0.0077", 50, t)
@@ -113,6 +170,34 @@ func TestUsableQuoteRejectsTheWrongPairAndStaleRates(t *testing.T) {
 	// USD->KES conversion needs its own quote rather than this one flipped.
 	wantCode(t, UsableQuote(q, "USD", "KES", now), "QUOTE_PAIR_MISMATCH")
 	wantCode(t, UsableQuote(nil, "KES", "USD", now), "MISSING_QUOTE")
+}
+
+// A quote pinned to one amount or one party is refused on anything else:
+// the pricing service bounds its exposure per quote, and the ledger is what
+// makes that bound real.
+func TestQuoteUsableForRequestAmountAndParty(t *testing.T) {
+	q := quote("KES", "USD", "0.0077", 50, t)
+
+	// Unpinned: any amount, any party.
+	if err := q.UsableForRequest(n(100_00), "u-1", kes); err != nil {
+		t.Fatalf("an unpinned quote should accept any request, got %v", err)
+	}
+
+	// Pinned amount: only that exact amount may consume it.
+	q.FromAmount = n(100_00)
+	if err := q.UsableForRequest(n(100_00), "u-1", kes); err != nil {
+		t.Fatalf("matching amount should pass, got %v", err)
+	}
+	wantCode(t, q.UsableForRequest(n(200_00), "u-1", kes), "QUOTE_AMOUNT_MISMATCH")
+
+	// Pinned party: only that owner's wallet may be the source.
+	q.FromAmount = nil
+	party := "u-2"
+	q.PartyID = &party
+	if err := q.UsableForRequest(n(100_00), "u-2", kes); err != nil {
+		t.Fatalf("matching party should pass, got %v", err)
+	}
+	wantCode(t, q.UsableForRequest(n(100_00), "u-1", kes), "QUOTE_PARTY_MISMATCH")
 }
 
 func TestDecimalRoundTripsAtEachCurrencyScale(t *testing.T) {

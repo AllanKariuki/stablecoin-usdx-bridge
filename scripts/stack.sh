@@ -68,6 +68,7 @@ kyc:node:13007
 compliance:node:13004
 reporting:node:13008
 rms:node:13005
+pricing:node:13009
 bff:node:13002
 auth-proxy:go:18090"
 
@@ -451,6 +452,28 @@ service_env() {
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
 		echo "AUTH_AUDIENCE=rms"
+		;;
+	pricing)
+		echo "PORT=13009"
+		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
+		echo "RMS_URL=http://localhost:13005"
+		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
+		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
+		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
+		echo "AUTH_AUDIENCE=pricing"
+		# H2 outbound: core-ledger requires svc-pricing's token (ledger.pricing).
+		echo "SERVICE_CLIENT_ID=svc-pricing"
+		echo "SERVICE_CLIENT_SECRET=dev-svc-pricing-secret"
+		echo "KEYCLOAK_BASE_URL=http://localhost:8080"
+		echo "KEYCLOAK_REALM=damp"
+		# Local dev prices from fixed stub rates so the stack runs offline
+		# (and deterministically — a live quote is the last thing a money-flow
+		# demo should depend on). One stub feed can never satisfy the
+		# two-source crypto minimum, so the floor drops to one; the deviation
+		# breaker still applies whenever two feeds are enabled.
+		echo "PRICING_FEEDS=stub"
+		echo "PRICING_MIN_SOURCES=1"
+		echo 'PRICING_STUB_RATES={"BTC/USD":"100000.00","ETH/USD":"3500.00","SOL/USD":"200.00","USD/EUR":"0.92","USD/GBP":"0.79","USD/KES":"129.50"}'
 		;;
 	bff)
 		echo "PORT=13002"

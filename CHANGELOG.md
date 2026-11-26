@@ -3,6 +3,157 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-26 — Treasury and exposure for custodial crypto (slice 3a)
+
+### Added — ledger treasury positions and the rebalance journal (core-ledger)
+
+- `GET /treasury/positions` reports, per active custodial crypto currency
+  (BTC/ETH/SOL), the customer liabilities (the `GLWalletParent(C)` subtree
+  sum — a new `SubtreeBalance` rollup over the materialized hierarchy),
+  custody holdings, FX position and `net_exposure =
+  custody_holdings - customer_liabilities` (negative = the house is short)
+  as decimal strings. Roles: `ledger.reserves.custodian` (rms),
+  `ledger.user-proxy`, `ledger.reports.read`.
+- `POST /treasury/rebalances` (idempotent) posts the journal for one
+  treasury desk trade, new `TREASURY_REBALANCE` transaction type and
+  `TREASURY_REBALANCE` entity type. BUY: DR crypto-at-custodian / CR FX
+  position (crypto), DR FX position / CR trust bank (fiat); SELL is the
+  exact mirror. The posting engine floors the two real asset accounts
+  (trust bank on BUY, custody on SELL) so a trade cannot manufacture a
+  negative asset balance. Writes are locked to the new `ledger.treasury`
+  role — held by rms alone, mirroring the reserves writers' isolation.
+
+### Added — exposure policy, crypto custodian reconciliation and the treasury desk surface (services/rms)
+
+- New migration (`003_exposure.sql`): `exposure_limits` (max_short/max_long
+  per currency, seeded 5 BTC / 100 ETH / 5000 SOL both sides) and
+  `treasury_rebalances` (the desk's own record, unique on `ledger_tx_id`).
+  The `custodians` table now accepts BTC/ETH/SOL via a check constraint,
+  and BTC/ETH/SOL stub custodians are seeded.
+- The stub custodian now reports the ledger's own custody holdings (from
+  `GET /treasury/positions`) for crypto custodians, plus the same
+  configurable drift. Crypto statements stay in rms — they are never
+  posted to `/reserves/custodian-snapshots`, which is the USD-X peg leg —
+  and reconcile in rms: `GET /exposure` computes a per-currency
+  MATCH/DRIFT status (abs diff vs `CRYPTO_RECON_TOLERANCE`, default 0),
+  alongside positions, limits, utilisation in bps and the latest custodian
+  snapshot.
+- `POST /exposure/check` (role `rms.exposure.check`, held by svc-pricing)
+  takes the signed change in customer liabilities a quote would cause and
+  refuses with `422 EXPOSURE_LIMIT_EXCEEDED` if the projected position
+  breaches -max_short or +max_long. It fails closed: a currency with no
+  `exposure_limits` row is refused with `422 NO_EXPOSURE_POLICY` rather
+  than quoted unbounded — treasury must set a mandate before that currency
+  can be quoted.
+- Known limitation: the check compares against the ledger's *booked*
+  positions, so quotes issued but not yet consumed are not counted. The
+  gap is bounded by quote TTL and pricing's per-party outstanding cap, not
+  by this check.
+- `GET/PUT /exposure/limits/:currency` (audited via the audit relay) and
+  `POST /treasury/rebalances` — validates the trade, calls core-ledger
+  under a deterministic Idempotency-Key derived from the trade content (so
+  retries replay, never double-trade), records it and audits it in one
+  transaction; replays return the existing row without double-auditing.
+  `GET /treasury/rebalances` lists.
+
+### Added — the rms exposure gate in the quote flow (services/pricing)
+
+- `RmsExposureGuard` replaces the slice-3 placeholder: before the local
+  reservation, every crypto-legged quote asks rms `POST /exposure/check`
+  with svc-pricing's own token (rms audience via a new
+  `aud-mapper-rms`). If `to` is custodial crypto, delta = +gross units of
+  `to`; if `from` is custodial crypto, delta = -amount of `from`; fiat legs
+  are not checked. rms refusal → `422 EXPOSURE_LIMIT_EXCEEDED`;
+  unreachable → `503 RMS_UNAVAILABLE`, fail closed. The guard composes with
+  `DbExposureGuard` under the existing `EXPOSURE_GUARD` token, so the
+  quotes flow needed no changes.
+- `RMS_URL` config wired through pricing's config class, `.env.example`,
+  `scripts/stack.sh` (http://localhost:13005) and the k8s deployment
+  (rms.default.svc.cluster.local:3005).
+
+### Changed — Keycloak realm template
+
+- core-ledger client: new `ledger.treasury` role, granted to svc-rms
+  (scope mapping + service account) beside `ledger.reserves.custodian`.
+- rms client: new `rms.exposure.check` role, granted to svc-pricing; and
+  svc-pricing's tokens now carry the rms audience via `aud-mapper-rms`.
+
+## 2026-11-26 — services/pricing: the only issuer of FX quotes
+
+### Added — a pricing service that owns every rate the platform quotes
+
+- `services/pricing` (NestJS, modeled on services/rms): prices
+  USD/EUR/GBP/KES/BTC/ETH/SOL from Coinbase + Kraken tickers and an
+  er-api-shaped fiat feed (or a fixed-rate stub for local/e2e), all in
+  BigInt fixed-point arithmetic at the ledger's 18-decimal rate scale.
+- Aggregation policy: crypto symbols need two fresh sources (median), fiat
+  one; a deviation circuit breaker trips a symbol when any two sources
+  disagree by more than 150bps and refuses to quote until they agree again;
+  cross rates are computed through USD, with inverted legs truncating
+  toward the house.
+- `POST /quotes` mints single-use quotes pinned to one amount and one party
+  in core-ledger via `POST /fx/quotes` under `ledger.pricing`, after an
+  exposure guard enforces the pair's `max_notional_usd` and a per-party cap
+  on *outstanding* (unexpired) quoted notional, so abandoned re-quotes don't
+  use up a user's allowance. The guard reserves first: a per-party advisory
+  lock, the cap check and a `RESERVED` row commit together before the ledger
+  call, and the row then becomes `ISSUED`, or is deleted if the ledger fails.
+  Concurrent requests therefore can't overshoot the cap. Daily and tier spend
+  limits stay with bff and KYC tiers. USD-X is refused with `422 USDX_USES_ISSUANCE`. The
+  response's gross/fee/net use core-ledger's exact `Convert()` arithmetic
+  (unit-tested for parity with `fx_test.go`).
+- `GET /rates`, `GET /pairs`, `PATCH /pairs/:base/:quote` (audited),
+  behind the new `pricing` resource client's roles (`pricing.quote`,
+  `pricing.read`, `pricing.admin`). Own database (`pricing` /
+  `pricing_test`), own migrations, audit outbox relay.
+
+### Changed — wiring
+
+- Keycloak realm template: the `pricing` bearer-only resource client with
+  its roles; the confidential `svc-pricing` service account holding
+  `ledger.pricing` (the role's only holder); svc-bff and svc-payments get
+  pricing.quote/pricing.read, and svc-bff also gets pricing.admin and the
+  user-proxy role for audited pair changes.
+- `scripts/stack.sh` starts pricing on host port 13009 with the stub feed;
+  `infra/postgres/init/07-pricing-database.sql` and CI's database step
+  create its databases; `infra/k8s/pricing-deployment.yaml` deploys it on
+  port 3006 with live feeds.
+
+## 2026-11-26 — Multi-asset ledger (slice 1 of multi-asset wallets)
+
+### Added — custodial BTC/ETH/SOL, crypto FX and pay-with-conversion in core-ledger
+
+- `DefaultCurrencies()` gains BTC (8dp), ETH (18dp) and SOL (9dp). These are
+  custodial: the chain comes from the currency (BTC→`BITCOIN`, ETH→`ETHEREUM`,
+  SOL→`SOLANA`), and a wallet carries no address (`WRONG_CHAIN`,
+  `UNEXPECTED_ADDRESS`). Each gets an FX position, an FX spread, a "Crypto
+  at custodian" and a "Crypto in transit" account. USD-X's chart and wallet
+  rules are unchanged.
+- `Convert` now accepts every pair except those involving USD-X, which still
+  crosses only through issuance and redemption (`USDX_USES_ISSUANCE`).
+  Before, it accepted fiat↔fiat only.
+- New `PayConverted` flow and `POST /fx/payments` (role `ledger.settlement`).
+  One journal debits the payer in one currency and credits a different
+  owner's wallet in another, across a quote. This is the basis for paying
+  with any wallet.
+- Default wallets: `wallets.is_default`, at most one per (user, currency),
+  set via `PATCH /wallets/:walletId`, which also renames a wallet (labels are
+  trimmed, with a 64-rune maximum).
+- Migration `00010_multi_asset.sql`.
+
+### Changed — FX quotes can no longer be set by users or reused
+
+- `POST /fx/quotes` is reachable only with the new `ledger.pricing` role
+  (added to the Keycloak realm template). bff's user-proxy role can no
+  longer choose its own rate.
+- A quote is single-use: a partial unique index on
+  `transactions(fx_quote_id)` covers FX conversions and payments; reversals
+  are excluded. Reuse fails with `QUOTE_ALREADY_USED` (409), while an
+  idempotent replay still returns the original transaction.
+- A quote can be pinned to an exact `from_amount` and a `party_id`
+  (`QUOTE_AMOUNT_MISMATCH`, `QUOTE_PARTY_MISMATCH`), so the pricing service's
+  exposure check covers exactly one movement.
+
 ## 2026-11-26 — Hardening H1–H7 brought into main
 
 ### Changed — the stacked hardening branches reach `main`

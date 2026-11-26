@@ -222,6 +222,38 @@ func (r *Repository) Statement(ctx context.Context, accountID string, from, to t
 	return entries, err
 }
 
+// SubtreeBalance sums the current balance of every account beneath a GL code,
+// using the materialized hierarchy path — the rollup trick VerifyRunningBalances
+// uses per account (each account's latest running_balance via a LATERAL join),
+// applied to a whole branch instead of one leaf.
+//
+// It is how the treasury positions are computed: every descendant of
+// GLWalletParent(C) is a customer wallet in C (a LIABILITY whose running
+// balance reads positive in its normal side), so the subtree sum is exactly
+// "total owed to customers in C" — the liability side of the house's exposure.
+func (r *Repository) SubtreeBalance(ctx context.Context, glCode string) (*big.Int, error) {
+	root, err := r.AccountByGLCode(ctx, glCode)
+	if err != nil {
+		return nil, err
+	}
+	var row struct{ Total *string }
+	err = r.db.WithContext(ctx).Raw(`
+		SELECT COALESCE(SUM(latest.running_balance), 0)::text AS total
+		FROM accounts a
+		LEFT JOIN LATERAL (
+			SELECT e.running_balance
+			FROM journal_entries e
+			WHERE e.account_id = a.id
+			ORDER BY e.seq DESC
+			LIMIT 1
+		) latest ON true
+		WHERE a.hierarchy LIKE ?`, root.Hierarchy+"%").Scan(&row).Error
+	if err != nil {
+		return nil, err
+	}
+	return parseNumeric(row.Total)
+}
+
 func parseNumeric(s *string) (*big.Int, error) {
 	if s == nil || *s == "" {
 		return big.NewInt(0), nil

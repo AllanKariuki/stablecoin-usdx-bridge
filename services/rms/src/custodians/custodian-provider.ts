@@ -38,14 +38,17 @@ export interface CustodianProvider {
 }
 
 /**
- * StubCustodianProvider reports what core-ledger says the platform's cash
- * position should be, plus a configurable drift.
+ * StubCustodianProvider reports what the ledger says the custodian should
+ * hold, plus a configurable drift.
  *
- * Deriving the base figure from the ledger rather than from a random number
- * is what makes the stub useful: with drift at zero, Leg C passes for the
- * right reason, and the demo is "change one number and watch a control
- * fire" rather than "watch a control fire because the fake data never
- * agreed with anything".
+ * Which ledger figure that is depends on the custodian's currency — cash at
+ * custodian for fiat, crypto custody holdings for BTC/ETH/SOL — and the
+ * caller supplies it as a closure (CustodiansService wires
+ * CoreLedgerClient.stubBaseline). Deriving the base figure from the ledger
+ * rather than from a random number is what makes the stub useful: with
+ * drift at zero, reconciliation passes for the right reason, and the demo
+ * is "change one number and watch a control fire" rather than "watch a
+ * control fire because the fake data never agreed with anything".
  *
  * The drift is the point. A reconciliation leg nobody has ever seen break
  * is a leg nobody knows works — R7 in the risk register is precisely that
@@ -61,7 +64,7 @@ export class StubCustodianProvider implements CustodianProvider {
   readonly name = 'stub';
   private readonly logger = new Logger(StubCustodianProvider.name);
 
-  constructor(private readonly ledgerCash: (currency: string) => Promise<Money>) {}
+  constructor(private readonly ledgerBalance: (currency: string) => Promise<Money>) {}
 
   async fetchBalance(custodian: {
     id: string;
@@ -69,7 +72,7 @@ export class StubCustodianProvider implements CustodianProvider {
     accountRef: string;
     config: Record<string, unknown>;
   }): Promise<CustodianBalance> {
-    const base = await this.ledgerCash(custodian.currency);
+    const base = await this.ledgerBalance(custodian.currency);
     const drift = typeof custodian.config.drift === 'string' ? custodian.config.drift : '0';
 
     const balance = addDecimal(base, drift);
