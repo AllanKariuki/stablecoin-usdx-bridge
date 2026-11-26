@@ -89,9 +89,23 @@ type Policy struct {
 	// individually under the limit.
 	DailyLimits map[string]*big.Int
 
+	// ResignAllowanceCallers (H7) is the allowlist of mTLS client identities
+	// permitted to raise one correlation's re-sign cap at runtime
+	// (POST /resign-allowances). Default deny: empty means nobody may — the
+	// endpoint answers 403. It is policy, not code, because who may raise a
+	// cap is exactly the kind of decision a reviewed file should carry.
+	ResignAllowanceCallers []string
+
 	// Which contracts and programs are ours is not policy: it is deployment
 	// configuration (decode.Deployment), shared with core-ledger and checked
 	// by the decoder before a request ever reaches Evaluate.
+}
+
+// MayGrantResignAllowance reports whether this mTLS identity may grant a
+// re-sign allowance. An unlisted (or, with an empty list, any) caller may
+// not — default deny, like an unmatched signing rule.
+func (p Policy) MayGrantResignAllowance(caller string) bool {
+	return contains(p.ResignAllowanceCallers, caller)
 }
 
 // Decision is why a request was allowed or refused. The reason travels to the

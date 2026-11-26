@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/signer/internal/decode"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
@@ -55,6 +56,13 @@ type Config struct {
 	// for an operator. Keep in step with audit.DefaultMaxResigns, which says
 	// why five; 0 disables re-signing entirely.
 	MaxResigns int `env:"MAX_RESIGNS_PER_CORRELATION" default:"5"`
+
+	// ResignAllowanceTTL is how long a runtime re-sign allowance (H7) stays
+	// in effect. Temporary on purpose: an allowance exists to get ONE stuck
+	// movement past a bad run of RPC trouble, and one that never expires is
+	// a cap raise with extra steps — the operator should raise
+	// MAX_RESIGNS_PER_CORRELATION instead and review it as a policy change.
+	ResignAllowanceTTL time.Duration `env:"RESIGN_ALLOWANCE_TTL" default:"24h"`
 
 	// --- deployment: which contracts are ours ---
 	//
@@ -110,6 +118,17 @@ func (c Config) ResignCap() (int, error) {
 		return 0, fmt.Errorf("MAX_RESIGNS_PER_CORRELATION must be 0 or more, got %d", c.MaxResigns)
 	}
 	return c.MaxResigns, nil
+}
+
+// ResignAllowanceTTLSeconds validates ResignAllowanceTTL. Zero or negative
+// would make every grant expire as it is issued, which turns a runtime
+// raise into a silent no-op — refused at boot instead.
+func (c Config) ResignAllowanceTTLSeconds() (int64, error) {
+	seconds := int64(c.ResignAllowanceTTL.Seconds())
+	if seconds <= 0 {
+		return 0, fmt.Errorf("RESIGN_ALLOWANCE_TTL must be positive, got %s", c.ResignAllowanceTTL)
+	}
+	return seconds, nil
 }
 
 // MTLSConfigured reports whether a certificate triple is present.

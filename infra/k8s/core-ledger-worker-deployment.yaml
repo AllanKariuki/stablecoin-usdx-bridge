@@ -71,6 +71,17 @@ spec:
                 secretKeyRef:
                   name: audit-trail-ingest
                   key: token
+            # H7: NATS authenticates one user per service with per-subject
+            # permissions (see infra/nats/nats.conf); the worker refuses to
+            # boot with NATS_URL set and these missing. NATS_URL itself
+            # arrives through core-ledger-secrets above.
+            - name: NATS_USER
+              value: "core-ledger"
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nats-credentials
+                  key: core-ledger-password
           resources:
             requests:
               memory: "64Mi"

@@ -24,6 +24,16 @@ import { WebhooksService } from '../src/webhooks/webhooks.service';
  * NewNATSPublisher configures DAMP.
  */
 const NATS_URL = process.env.NOTIFICATIONS_TEST_NATS_URL ?? 'nats://localhost:54222';
+// H7: the broker authenticates per-service users. NatsService refuses to
+// start with a URL and no credentials, so every config below carries this
+// suite's own — and the publisher connection simulates core-ledger's relay,
+// which is the only user that may publish damp.>, so it connects as
+// core-ledger. The dev defaults keep the suite working against both the
+// compose broker and (an unauthenticated one, which ignores credentials).
+const NATS_USER = process.env.NOTIFICATIONS_TEST_NATS_USER ?? 'notifications';
+const NATS_PASSWORD = process.env.NOTIFICATIONS_TEST_NATS_PASSWORD ?? 'dev-notifications-password';
+const PUBLISHER_USER = process.env.NOTIFICATIONS_TEST_PUBLISHER_NATS_USER ?? 'core-ledger';
+const PUBLISHER_PASSWORD = process.env.NOTIFICATIONS_TEST_PUBLISHER_NATS_PASSWORD ?? 'dev-core-ledger-password';
 const TEST_DATABASE_URL =
   process.env.NOTIFICATIONS_TEST_DATABASE_URL ??
   'postgres://notifications:notifications@localhost:55433/notifications_test?sslmode=disable';
@@ -66,7 +76,7 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
   let handler: OutboxHandler;
   let publisher: NatsConnection;
   let jsm: JetStreamManager;
-  /** Whether this suite created DAMP, and so may remove it afterwards. */
+  /** Whether this suite created DAMP — used to skip the "before the stream" staging. */
   let ownsStream = false;
   /** Where this test's durables start: one past the stream's position as it began. */
   let startSequence: string | undefined;
@@ -87,6 +97,8 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
     if (!durables.includes(name)) durables.push(name);
     const values = {
       NATS_URL,
+      NATS_USER,
+      NATS_PASSWORD,
       NATS_STREAM: STREAM,
       OUTBOX_CONSUMER_DURABLE: name,
       OUTBOX_CONSUMER_ACK_WAIT_MS: 2_000,
@@ -103,6 +115,10 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
       // cursor. The backlog test, which publishes beforehand, passes
       // undefined to get `deliver policy all` instead.
       OUTBOX_CONSUMER_START_SEQUENCE: startSequence,
+      // Since H7 no NATS user may delete a consumer, so this suite cannot
+      // clean up its own durables. Give them an inactive_threshold and the
+      // server removes each one a minute after the test stops pulling.
+      OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS: 60_000,
       ...overrides,
     };
     const nats = new NatsService(config(values));
@@ -171,15 +187,23 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
     delivery = new DeliveryService(db, live as never, email as never, webhooks, config({ PENDING_STALE_SECONDS: 60 }));
     handler = new OutboxHandler(delivery);
 
-    publisher = await connect({ servers: NATS_URL, name: 'notifications-test-publisher' });
+    publisher = await connect({
+      servers: NATS_URL,
+      name: 'notifications-test-publisher',
+      user: PUBLISHER_USER,
+      pass: PUBLISHER_PASSWORD,
+    });
     jsm = await publisher.jetstreamManager();
     ownsStream = !(await jsm.streams.info(STREAM).then(() => true).catch(() => false));
   });
 
   afterAll(async () => {
-    // Leave the broker as it was found. A DAMP that was already there is
-    // core-ledger's (or a developer's) and is not this suite's to remove.
-    if (ownsStream) await jsm.streams.delete(STREAM).catch(() => undefined);
+    // Neither the stream nor this suite's durables can be removed from here:
+    // since H7 no NATS user may delete or purge either (infra/nats/nats.conf
+    // grants only the create/info/consume surface), so a delete call would be
+    // a silent violation. The durables carry OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS
+    // and the server expires them; a DAMP this suite created goes with the
+    // ephemeral CI broker it was created on.
     await publisher.drain();
     await db.onModuleDestroy();
     await raw.end();
@@ -193,7 +217,10 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
       await r.consumer.onModuleDestroy();
       await r.nats.close();
     }
-    for (const d of durables.splice(0)) await jsm.consumers.delete(STREAM, d).catch(() => undefined);
+    // No delete of this test's durables: since H7 no NATS user may remove a
+    // consumer. Each one carries OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS and
+    // expires on the server once this test stops pulling it.
+    durables.splice(0);
   });
 
   beforeEach(async () => {

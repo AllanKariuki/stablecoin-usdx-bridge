@@ -105,6 +105,13 @@ func main() {
 	}
 	auditLog.LimitResigns(resignCap)
 
+	allowanceTTLSeconds, err := cfg.ResignAllowanceTTLSeconds()
+	if err != nil {
+		logger.Error("invalid re-sign allowance TTL", slog.Any("error", err))
+		os.Exit(1)
+	}
+	logger.Info("re-sign allowance TTL", slog.Int64("seconds", allowanceTTLSeconds))
+
 	// The chain is verified at boot. If the log has been tampered with, that
 	// is something to know before signing anything else into it — a break
 	// discovered later cannot be dated, because every row after the break is
@@ -153,7 +160,7 @@ func main() {
 	app.Use(api.ClientIdentity())
 	health.Register(app)
 	app.Get("/metrics", metrics.Handler())
-	api.New(backend, signingPolicy, deployment, auditLog, logger).Register(app)
+	api.New(backend, signingPolicy, deployment, auditLog, logger, cfg.ResignAllowanceTTL).Register(app)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 

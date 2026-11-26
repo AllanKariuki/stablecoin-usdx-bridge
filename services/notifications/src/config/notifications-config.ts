@@ -153,6 +153,17 @@ export class NotificationsConfig {
   @IsString()
   NATS_STREAM = 'DAMP';
 
+  // --- H7: this service's NATS credentials. infra/nats/nats.conf declares
+  // one user per service with per-subject permissions; NatsService refuses
+  // to start when NATS_URL is set and either is missing.
+  @IsOptional()
+  @IsString()
+  NATS_USER = '';
+
+  @IsOptional()
+  @IsString()
+  NATS_PASSWORD = '';
+
   /**
    * The durable consumer's name. Every replica must use the same one — that
    * is what makes them share the work rather than each receive everything.
@@ -174,6 +185,18 @@ export class NotificationsConfig {
   @IsInt()
   @Min(1)
   OUTBOX_CONSUMER_MAX_DELIVERIES = 10;
+
+  /**
+   * When > 0, the durable is created with this `inactive_threshold`, so the
+   * server removes it after that long with no interest. Unset (0) in every
+   * real deployment — the durable must outlive restarts — and set only by
+   * the e2e suite, which cannot delete its test durables any more (no NATS
+   * user may delete a consumer since H7).
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS = 0;
 
   /**
    * How old a PENDING delivery's lease must be before a replay or the sweeper

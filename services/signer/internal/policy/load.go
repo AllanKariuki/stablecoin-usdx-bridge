@@ -32,6 +32,13 @@ type file struct {
 	// Targets is no longer read — see Load. Parsed only so its presence can
 	// be refused rather than silently ignored.
 	Targets map[string][]string `yaml:"targets"`
+	// ResignAllowance (H7) is parsed only so a malformed section is refused
+	// rather than silently ignored; the callers list lands on
+	// Policy.ResignAllowanceCallers. Absent (or empty) means nobody may
+	// grant — default deny.
+	ResignAllowance struct {
+		AllowedCallers []string `yaml:"allowed_callers"`
+	} `yaml:"resign_allowance"`
 }
 
 // Load reads a policy file. A missing or unparseable file is an error, never
@@ -62,7 +69,7 @@ func Load(path string) (Policy, error) {
 			"set USDX_PROXY_ADDRESS, USDX_PROGRAM_ID and USDX_MINT_ADDRESS instead and remove it", path)
 	}
 
-	p := Policy{DailyLimits: map[string]*big.Int{}}
+	p := Policy{DailyLimits: map[string]*big.Int{}, ResignAllowanceCallers: parsed.ResignAllowance.AllowedCallers}
 	for i, r := range parsed.Rules {
 		if r.Method == "" {
 			return Policy{}, fmt.Errorf("policy rule %d has no method", i+1)

@@ -51,8 +51,13 @@
         </div>
 
         <div class="damp-brand-copy damp-rise">
+            <#if client?? && client.clientId == "damp-ops">
+            <p class="damp-brand-title">${msg("damp.staff.tagline")}</p>
+            <p class="damp-brand-lede">${msg("damp.staff.lede")}</p>
+            <#else>
             <p class="damp-brand-title">${msg("damp.brand.tagline")}</p>
             <p class="damp-brand-lede">${msg("damp.brand.lede")}</p>
+            </#if>
         </div>
 
         <div class="damp-brand-preview damp-rise-late" aria-hidden="true">

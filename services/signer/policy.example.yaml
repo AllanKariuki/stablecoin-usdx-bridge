@@ -93,3 +93,11 @@ daily_limits:
   "ETHEREUM:bridgeBurn": "10000000000"
   "SOLANA:bridgeMint": "10000000000"
   "SOLANA:bridgeBurn": "10000000000"
+
+# H7: who may raise ONE correlation's re-sign cap at runtime
+# (POST /resign-allowances) — a temporary, audited allowance instead of a
+# restart with a bigger global MAX_RESIGNS_PER_CORRELATION. Default deny:
+# absent or empty means nobody may. The caller's mTLS CN must match an entry
+# here; ops consoles hold such a certificate, core-ledger's worker does not.
+resign_allowance:
+  allowed_callers: [ops]

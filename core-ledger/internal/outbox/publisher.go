@@ -22,9 +22,9 @@ import (
 // degraded one: events accumulate durably in the outbox and are delivered
 // whenever a destination appears, which is the entire reason the table was
 // built before there was anything to publish to.
-func Choose(ctx context.Context, logger *slog.Logger, natsURL, natsStream, httpURL string, authClient *http.Client) (Publisher, func()) {
+func Choose(ctx context.Context, logger *slog.Logger, natsURL, natsStream, natsUser, natsPassword, httpURL string, authClient *http.Client) (Publisher, func()) {
 	if natsURL != "" {
-		p, err := NewNATSPublisher(ctx, natsURL, natsStream)
+		p, err := NewNATSPublisher(ctx, natsURL, natsStream, natsUser, natsPassword)
 		if err != nil {
 			// Not fatal. The ledger's job is to post journals correctly; a
 			// broker that isn't up yet must not stop it, and the outbox is

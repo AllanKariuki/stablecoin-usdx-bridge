@@ -23,7 +23,8 @@ func allowedCount(t *testing.T, log *Log, correlationID string) int {
 	t.Helper()
 	var n int
 	if err := log.db.QueryRow(`
-		SELECT count(*) FROM signatures WHERE correlation_id = $1 AND outcome = 'ALLOWED'`,
+		SELECT count(*) FROM signatures
+		 WHERE correlation_id = $1 AND outcome = 'ALLOWED' AND method <> '`+MethodResignAllowance+`'`,
 		correlationID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}

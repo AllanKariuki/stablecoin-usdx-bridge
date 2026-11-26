@@ -44,6 +44,11 @@ type AuditLog interface {
 	Append(ctx context.Context, r *audit.Record) error
 	Recent(ctx context.Context, limit int) ([]audit.Record, error)
 	Verify(ctx context.Context) (ok bool, brokenAt string, checked int, err error)
+	// H7: runtime re-sign allowances. GrantResignAllowance writes the
+	// allowance row and its chain record in one transaction;
+	// ResignAllowance reads the active one back.
+	GrantResignAllowance(ctx context.Context, correlationID string, extra int, grantedBy, reason string, expiresAt time.Time) (*audit.Allowance, error)
+	ResignAllowance(ctx context.Context, correlationID string) (*audit.Allowance, error)
 }
 
 type Handlers struct {
@@ -52,10 +57,13 @@ type Handlers struct {
 	deployment decode.Deployment
 	log        AuditLog
 	logger     *slog.Logger
+	// allowanceTTL is how long a runtime re-sign allowance stays in effect
+	// (config.RESIGN_ALLOWANCE_TTL). Temporary on purpose — see config.
+	allowanceTTL time.Duration
 }
 
-func New(backend keystore.Backend, p policy.Policy, dep decode.Deployment, log AuditLog, logger *slog.Logger) *Handlers {
-	return &Handlers{backend: backend, policy: p, deployment: dep, log: log, logger: logger}
+func New(backend keystore.Backend, p policy.Policy, dep decode.Deployment, log AuditLog, logger *slog.Logger, allowanceTTL time.Duration) *Handlers {
+	return &Handlers{backend: backend, policy: p, deployment: dep, log: log, logger: logger, allowanceTTL: allowanceTTL}
 }
 
 func (h *Handlers) Register(app *fiber.App) {
@@ -63,6 +71,8 @@ func (h *Handlers) Register(app *fiber.App) {
 	app.Get("/keys", h.keys)
 	app.Get("/audit", h.recent)
 	app.Get("/audit/verify", h.verify)
+	app.Post("/resign-allowances", h.grantResignAllowance)
+	app.Get("/resign-allowances/:correlationId", h.getResignAllowance)
 }
 
 type signRequest struct {
@@ -455,6 +465,108 @@ func (h *Handlers) verify(c *fiber.Ctx) error {
 		"records":      checked,
 		"first_broken": brokenAt,
 	})
+}
+
+// maxAllowanceExtra mirrors the resign_allowances.extra CHECK constraint
+// (1..10, migration 00004): a runtime raise is deliberately small — it
+// exists to get ONE stuck movement past a bad run of RPC trouble, and every
+// extra re-sign that does not land reverts at the relayer's expense.
+const maxAllowanceExtra = 10
+
+// resignAllowanceRequest is the body of POST /resign-allowances.
+//
+// granted_by is optional in the wire format but never authoritative: the
+// authenticated identity is the mTLS certificate's CN, and a body claiming
+// a different grantor is refused. An empty granted_by is filled with the
+// CN, so the recorded row always names the identity the TLS handshake
+// proved.
+type resignAllowanceRequest struct {
+	CorrelationID string `json:"correlation_id"`
+	Extra         int    `json:"extra"`
+	Reason        string `json:"reason"`
+	GrantedBy     string `json:"granted_by"`
+}
+
+// grantResignAllowance raises one correlation's re-sign cap at runtime, for
+// the configured TTL, with the grant itself recorded in the hash-chained
+// audit log. Who may call it is policy (resign_allowance.allowed_callers);
+// default deny, like a signing rule with no match.
+func (h *Handlers) grantResignAllowance(c *fiber.Ctx) error {
+	caller := CallerFrom(c)
+	if caller == "" {
+		// Unreachable behind mTLS, for the same reason as on /sign.
+		return platform.WriteError(c, fiber.StatusUnauthorized, "NO_CLIENT_IDENTITY",
+			"no authenticated client certificate; this service only accepts mTLS connections")
+	}
+
+	if !h.policy.MayGrantResignAllowance(caller) {
+		h.logger.Warn("refused to grant a re-sign allowance",
+			slog.String("caller", caller))
+		return platform.WriteError(c, fiber.StatusForbidden, "RESIGN_ALLOWANCE_FORBIDDEN",
+			fmt.Sprintf("caller %q is not permitted to grant re-sign allowances", caller))
+	}
+
+	var req resignAllowanceRequest
+	if err := c.BodyParser(&req); err != nil {
+		return platform.WriteError(c, fiber.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
+	}
+	if req.CorrelationID == "" {
+		return platform.WriteError(c, fiber.StatusBadRequest, "INVALID_CORRELATION_ID", "correlation_id is required")
+	}
+	if req.Extra < 1 || req.Extra > maxAllowanceExtra {
+		return platform.WriteError(c, fiber.StatusBadRequest, "INVALID_EXTRA",
+			fmt.Sprintf("extra must be between 1 and %d", maxAllowanceExtra))
+	}
+	if req.GrantedBy == "" {
+		req.GrantedBy = caller
+	}
+	if req.GrantedBy != caller {
+		return platform.WriteError(c, fiber.StatusForbidden, "GRANTED_BY_MISMATCH",
+			"granted_by must be the authenticated client identity (mTLS CN) or empty")
+	}
+
+	allowance, err := h.log.GrantResignAllowance(c.Context(), req.CorrelationID, req.Extra, caller, req.Reason,
+		time.Now().UTC().Add(h.allowanceTTL))
+	if errors.Is(err, audit.ErrAllowanceExists) {
+		h.logger.Warn("refused to replace an active re-sign allowance",
+			slog.String("caller", caller), slog.String("correlation_id", req.CorrelationID))
+		return platform.WriteError(c, fiber.StatusConflict, "RESIGN_ALLOWANCE_EXISTS",
+			"an active re-sign allowance already exists for this correlation id; let it expire or use the existing one")
+	}
+	if err != nil {
+		h.logger.Error("could not grant the re-sign allowance",
+			slog.String("caller", caller), slog.String("correlation_id", req.CorrelationID), slog.Any("error", err))
+		return platform.WriteError(c, fiber.StatusInternalServerError, "INTERNAL",
+			"could not record the re-sign allowance; refusing to grant it without an audit record")
+	}
+
+	h.logger.Info("granted a re-sign allowance",
+		slog.String("caller", caller), slog.String("correlation_id", req.CorrelationID),
+		slog.Int("extra", req.Extra), slog.Time("expires_at", allowance.ExpiresAt))
+	return c.JSON(allowanceJSON(allowance))
+}
+
+func (h *Handlers) getResignAllowance(c *fiber.Ctx) error {
+	allowance, err := h.log.ResignAllowance(c.Context(), c.Params("correlationId"))
+	if err != nil {
+		return platform.WriteError(c, fiber.StatusInternalServerError, "INTERNAL", "could not read the re-sign allowance")
+	}
+	if allowance == nil {
+		return platform.WriteError(c, fiber.StatusNotFound, "RESIGN_ALLOWANCE_NOT_FOUND",
+			"no active re-sign allowance for this correlation id")
+	}
+	return c.JSON(allowanceJSON(allowance))
+}
+
+func allowanceJSON(a *audit.Allowance) fiber.Map {
+	return fiber.Map{
+		"correlation_id": a.CorrelationID,
+		"extra":          a.Extra,
+		"granted_by":     a.GrantedBy,
+		"reason":         a.Reason,
+		"created_at":     a.CreatedAt.UTC().Format(time.RFC3339),
+		"expires_at":     a.ExpiresAt.UTC().Format(time.RFC3339),
+	}
 }
 
 func (h *Handlers) publicKeyFor(c *fiber.Ctx, keyID string) string {

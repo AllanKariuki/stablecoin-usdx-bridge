@@ -264,6 +264,15 @@ spec:
             # compliance-enforcement, filtered to the enforcement subject).
             - name: NATS_URL
               value: "nats://nats.default.svc.cluster.local:4222"
+            # H7: the broker authenticates one user per service with
+            # per-subject permissions (infra/nats/nats.conf); the consumer
+            # fails boot when NATS_URL is set and these are missing — its
+            # subscription is the money path for enforcement finality.
+            - name: NATS_USER
+              value: "compliance"
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: nats-credentials, key: compliance-password }
             - name: WORKFLOW_URL
               value: "http://workflow.default.svc.cluster.local:3006"
             - name: SELF_URL

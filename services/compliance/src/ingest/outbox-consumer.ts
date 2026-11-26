@@ -40,6 +40,8 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly maxDeliveries: number;
   private readonly ackWaitMs: number;
   private readonly retryMs: number;
+  private readonly user: string;
+  private readonly password: string;
 
   private nc: NatsConnection | null = null;
   private stopped = false;
@@ -57,6 +59,8 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
     this.maxDeliveries = Number(config.get('ENFORCEMENT_CONSUMER_MAX_DELIVERIES', { infer: true }) ?? 10);
     this.ackWaitMs = Number(config.get('ENFORCEMENT_CONSUMER_ACK_WAIT_MS', { infer: true }) ?? 60_000);
     this.retryMs = Number(config.get('ENFORCEMENT_CONSUMER_RETRY_MS', { infer: true }) ?? 2_000);
+    this.user = config.get<string>('NATS_USER', { infer: true }) ?? '';
+    this.password = config.get<string>('NATS_PASSWORD', { infer: true }) ?? '';
   }
 
   get enabled(): boolean {
@@ -67,6 +71,16 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
     if (!this.enabled) {
       this.logger.log('NATS_URL is unset; core-ledger outbox events arrive over HTTP at /internal/outbox only');
       return;
+    }
+    // H7: the broker authenticates per-service users. This consumer is the
+    // money path for enforcement finality — an anonymous connection the
+    // broker refuses on every subscription would otherwise sit in its retry
+    // loop, silently, while enforcement actions stay SUBMITTED forever. A
+    // URL with no credentials is a misconfiguration and fails boot.
+    if (!this.user || !this.password) {
+      throw new Error(
+        'NATS_USER and NATS_PASSWORD are required when NATS_URL is set (the broker authenticates per-service users — see infra/nats/nats.conf)',
+      );
     }
     this.loop = this.run();
   }
@@ -81,13 +95,26 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
 
   private async run(): Promise<void> {
     while (!this.stopped) {
+      let delay = this.retryMs;
       if (!this.nc || this.nc.isClosed()) {
-        await this.connect();
+        try {
+          await this.connect();
+        } catch (err) {
+          // An auth refusal (wrong credentials, missing user in nats.conf)
+          // fails connect outright rather than surfacing as a permission
+          // error per operation — and it is the same money-path problem:
+          // log it at error, loudly, and retry on a slow beat.
+          const message = err instanceof Error ? err.message : String(err);
+          this.logger.error(
+            `enforcement outbox consumer could not connect to the broker — finality events are NOT being consumed: ${message}`,
+          );
+          delay = 30_000;
+        }
         // Reconnect storms are fine: the outbox is durable, and this side
         // only misses time, never events.
         await new Promise<void>((resolve) => {
           this.wake = resolve;
-          setTimeout(resolve, this.retryMs).unref();
+          setTimeout(resolve, delay).unref();
         });
         continue;
       }
@@ -100,6 +127,18 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
           // core-ledger owns the stream and creates it when its relay first
           // connects. Until then there is nothing to consume.
           this.logger.log(`stream ${this.stream} does not exist yet; waiting for core-ledger's relay to create it`);
+        } else if (/permissions violation|authorization violation/i.test(message)) {
+          // H7: a permission refusal is not the same class of problem as a
+          // broker restart. The consumer is connected but not allowed to do
+          // its job, so enforcement finality events are piling up in the
+          // stream while actions sit SUBMITTED — that is an error an
+          // operator must act on (credentials or nats.conf), logged at
+          // error and retried on a slower beat rather than every two
+          // seconds.
+          this.logger.error(
+            `enforcement outbox consumer is refused by the broker — finality events are NOT being consumed: ${message}`,
+          );
+          delay = 30_000;
         } else {
           this.logger.warn(`enforcement outbox consumer interrupted, restarting: ${message}`);
         }
@@ -107,7 +146,7 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
       if (!this.stopped) {
         await new Promise<void>((resolve) => {
           this.wake = resolve;
-          setTimeout(resolve, this.retryMs).unref();
+          setTimeout(resolve, delay).unref();
         });
       }
     }
@@ -119,6 +158,8 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
     this.nc = await connect({
       servers: [this.url],
       name: 'compliance-enforcement-consumer',
+      user: this.user,
+      pass: this.password,
       maxReconnectAttempts: -1,
       reconnectTimeWait: 2_000,
     });

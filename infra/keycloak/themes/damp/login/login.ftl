@@ -1,9 +1,15 @@
 <#import "template.ftl" as layout>
-<@layout.registrationLayout displayMessage=!messagesPerField.existsError('username','password') displayInfo=realm.password && realm.registrationAllowed && !registrationDisabled??; section>
+<#-- The Ops Console (damp-ops) gets a staff variant: staff accounts are issued
+     by an administrator, so it never offers self-registration. -->
+<#assign staffLogin = (client?? && client.clientId == "damp-ops")>
+<#assign canRegister = (realm.password && realm.registrationAllowed && !registrationDisabled?? && !staffLogin)>
+<@layout.registrationLayout displayMessage=!messagesPerField.existsError('username','password') displayInfo=(canRegister || staffLogin); section>
     <#if section = "header">
-        ${msg("loginAccountTitle")}
+        <#if staffLogin>${msg("damp.staff.title")}<#else>${msg("loginAccountTitle")}</#if>
     <#elseif section = "form">
-        <#if realm.password && realm.registrationAllowed && !registrationDisabled??>
+        <#if staffLogin>
+            <p class="damp-subtitle">${msg("damp.staff.subtitle")}</p>
+        <#elseif canRegister>
             <p class="damp-subtitle">${msg("noAccount")} <a href="${url.registrationUrl}">${msg("doRegister")}</a></p>
         </#if>
         <#if realm.password>
@@ -56,7 +62,9 @@
         </#if>
         <script type="module" src="${url.resourcesPath}/js/passwordVisibility.js"></script>
     <#elseif section = "info">
-        <#if realm.password && realm.registrationAllowed && !registrationDisabled??>
+        <#if staffLogin>
+            <p class="damp-note">${msg("damp.staff.note")}</p>
+        <#elseif canRegister>
             <p id="kc-registration" class="damp-note">${msg("damp.register.business")}</p>
         </#if>
     <#elseif section = "socialProviders">
