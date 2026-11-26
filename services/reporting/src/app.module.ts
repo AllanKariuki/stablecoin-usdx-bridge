@@ -1,5 +1,5 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { PlatformConfigModule, PlatformModule, ServiceTokenClient } from '@damp/nest-platform';
 import { AuditRelayService } from './audit/audit-relay.service';
 import { ReportingConfig } from './config/reporting-config';
 import { DbModule } from './db/db.module';
@@ -9,7 +9,7 @@ import { SupersetService } from './superset/superset.service';
 
 @Module({
   controllers: [ReportsController],
-  providers: [ReportsService, SupersetService],
+  providers: [ReportsService, SupersetService, ServiceTokenClient],
 })
 export class ReportingModule {}
 

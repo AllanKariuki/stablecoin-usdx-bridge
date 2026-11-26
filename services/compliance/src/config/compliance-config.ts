@@ -22,6 +22,24 @@ export class ComplianceConfig {
   @IsNotEmpty()
   CORE_LEDGER_URL!: string;
 
+  // --- Service-to-service auth (H2). Every core-ledger call carries
+  // compliance's own service-account token; core-ledger verifies it and
+  // checks ledger.wallet-status.
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_ID!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_SECRET!: string;
+
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  KEYCLOAK_BASE_URL!: string;
+
+  @IsString()
+  KEYCLOAK_REALM = 'damp';
+
   // Blacklisting and pausing go through maker-checker first. Unset means an
   // enforcement action can be proposed and never executed, which is the
   // correct failure: the alternative is a service that can freeze a

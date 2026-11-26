@@ -10,8 +10,8 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/auth-proxy/internal/api"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/auth-proxy/internal/authztable"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/auth-proxy/internal/identityclient"
-	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/auth-proxy/internal/oidcverify"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/oidcverify"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"

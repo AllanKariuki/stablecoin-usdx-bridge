@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PlatformException } from '@damp/nest-platform';
+import { PlatformException, ServiceTokenClient } from '@damp/nest-platform';
 
 /** The {error, code} shape core-ledger's own envelope carries (see
  * core-ledger/internal/api/handlers.go's fail()/badRequest(), which now go
@@ -32,7 +32,10 @@ export interface RequestOptions {
 export class CoreLedgerClient {
   private readonly baseUrl: string;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    private readonly serviceTokens: ServiceTokenClient,
+  ) {
     // Validated as a required, well-formed URL by BffConfig — non-null by
     // the time DI constructs anything downstream of PlatformConfigModule.
     this.baseUrl = config.get<string>('CORE_LEDGER_URL', { infer: true })!;
@@ -56,7 +59,14 @@ export class CoreLedgerClient {
       }
     }
 
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    // Every request carries bff's own service-account token: core-ledger
+    // authenticates every call (H2) and bff holds ledger.user-proxy, the
+    // role that opens its whole surface. The user's identity still travels
+    // as X-User-Id (options.actor) for the journal's initiated_by.
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${await this.serviceTokens.accessToken()}`,
+    };
     if (options?.idempotencyKey) {
       headers['Idempotency-Key'] = options.idempotencyKey;
     }

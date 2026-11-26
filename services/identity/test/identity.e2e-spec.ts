@@ -76,4 +76,12 @@ describe('identity (e2e, against a fake Keycloak + fake core-ledger, real Postgr
   it('GET /parties/:id 404s for an unknown id', async () => {
     await request(app.getHttpServer()).get('/parties/does-not-exist').expect(404);
   });
+
+  it('carries identity-service bearer authorization on the core-ledger wallet call (H2)', async () => {
+    // The provisioning calls above already minted and cached the token via
+    // the shared ServiceTokenClient (the fake Keycloak issues
+    // 'fake-token'); assert the wire shape on a fresh resolve.
+    await request(app.getHttpServer()).get('/internal/parties/by-subject/kc-alice').expect(200);
+    expect(coreLedger.lastAuth).toBe('Bearer fake-token');
+  });
 });

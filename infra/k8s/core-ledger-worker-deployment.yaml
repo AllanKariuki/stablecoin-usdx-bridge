@@ -38,6 +38,11 @@ spec:
           env:
             - name: WORKER_PORT
               value: "8181"
+            # Required by the shared core-ledger config even though the
+            # worker never serves the API — config.Load validates the whole
+            # surface for every binary.
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ServiceTokenClient } from '@damp/nest-platform';
 
 export interface LedgerTransaction {
   id: string;
@@ -34,11 +35,12 @@ export interface LedgerWallet {
 @Injectable()
 export class CoreLedgerClient {
   private readonly baseUrl: string;
-  private readonly serviceToken: string;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    private readonly serviceTokens: ServiceTokenClient,
+  ) {
     this.baseUrl = config.get<string>('CORE_LEDGER_URL', { infer: true })!;
-    this.serviceToken = config.get<string>('CORE_LEDGER_SERVICE_TOKEN', { infer: true }) ?? '';
   }
 
   async deposit(input: {
@@ -97,7 +99,7 @@ export class CoreLedgerClient {
   async ensureWallet(partyId: string, currency: string): Promise<LedgerWallet> {
     const res = await fetch(new URL('/wallets', this.baseUrl), {
       method: 'POST',
-      headers: { ...this.headers(partyId), 'Content-Type': 'application/json' },
+      headers: { ...(await this.headers(partyId)), 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: partyId, currency, label: 'Main' }),
     });
     if (!res.ok) {
@@ -115,7 +117,7 @@ export class CoreLedgerClient {
     const res = await fetch(new URL(path, this.baseUrl), {
       method: 'POST',
       headers: {
-        ...this.headers(actor),
+        ...(await this.headers(actor)),
         'Content-Type': 'application/json',
         // Derived from the intent, never generated: a retried settlement must
         // replay the first call's bytes rather than post a second journal
@@ -133,10 +135,14 @@ export class CoreLedgerClient {
     return JSON.parse(text) as LedgerTransaction;
   }
 
-  private headers(actor: string): Record<string, string> {
-    const headers: Record<string, string> = { 'X-User-Id': actor };
-    if (this.serviceToken) headers['X-Service-Token'] = this.serviceToken;
-    return headers;
+  // The party a settlement acts for (X-User-Id, so the journal names the
+  // customer) plus payments' own service-account bearer: core-ledger
+  // authenticates every call (H2) and payments holds ledger.settlement.
+  private async headers(actor: string): Promise<Record<string, string>> {
+    return {
+      'X-User-Id': actor,
+      Authorization: `Bearer ${await this.serviceTokens.accessToken()}`,
+    };
   }
 }
 

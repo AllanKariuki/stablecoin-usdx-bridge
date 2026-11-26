@@ -80,7 +80,8 @@ func main() {
 	}
 
 	obs := metrics.New()
-	ledger := ledgerclient.New(cfg.CoreLedgerURL, cfg.CoreLedgerSvcToken)
+	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", cfg.KeycloakBaseURL, cfg.KeycloakRealm)
+	ledger := ledgerclient.New(cfg.CoreLedgerURL, cfg.ServiceClientID, cfg.ServiceClientSecret, tokenURL)
 
 	// ---- HTTP first ------------------------------------------------------
 	//

@@ -27,8 +27,23 @@ export class PaymentsConfig {
   @IsNotEmpty()
   CORE_LEDGER_URL!: string;
 
+  // --- Service-to-service auth (H2). Every core-ledger call carries
+  // payments' own service-account token; core-ledger verifies it and checks
+  // ledger.settlement.
   @IsString()
-  CORE_LEDGER_SERVICE_TOKEN = '';
+  @IsNotEmpty()
+  SERVICE_CLIENT_ID!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_SECRET!: string;
+
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  KEYCLOAK_BASE_URL!: string;
+
+  @IsString()
+  KEYCLOAK_REALM = 'damp';
 
   // Where the outbox relay delivers payment events. Empty is fine: events
   // queue in the outbox and are delivered once it is set. Either way a

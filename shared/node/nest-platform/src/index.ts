@@ -3,6 +3,9 @@ export { PlatformConfigModule, PlatformConfigOptions } from './config/config.mod
 export { PlatformConfigError } from './config/config.error';
 export { createConfigValidator, flattenValidationErrors, ClassConstructor } from './config/config.validate';
 
+// Auth (service-to-service)
+export { ServiceTokenClient } from './auth/service-token.client';
+
 // Logging
 export { PlatformLoggingModule, PlatformLoggingOptions } from './logging/logging.module';
 export { RequestIdInterceptor } from './logging/request-id.interceptor';

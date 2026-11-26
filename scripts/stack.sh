@@ -529,6 +529,17 @@ cmd_up() {
 		echo "warning: usdx-postgres did not report healthy within 90s — continuing anyway" >&2
 	fi
 
+	# H2: the service-to-service auth surface (core-ledger resource client,
+	# svc-* service accounts, roles, scope mappings). Idempotent, and it is
+	# what makes an existing dev volume — which Keycloak's --import-realm
+	# skips — converge with the realm template. It waits on Keycloak's
+	# well-known endpoint itself, so by the time it returns, core-ledger can
+	# complete its OIDC discovery at boot.
+	echo "== keycloak sync (service-account clients + roles)"
+	if ! bash "$SCRIPT_DIR/keycloak-sync.sh"; then
+		echo "warning: keycloak sync failed — services that call core-ledger will 401 until it succeeds" >&2
+	fi
+
 	echo "== host services"
 	# Job control: each background launch gets its own process group, so
 	# `down` can signal a service together with the children it spawns

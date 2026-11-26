@@ -5,6 +5,12 @@
 // through this client into the ledger, which is the only place value exists —
 // a second process with INSERT rights on a reconciliation input is a second
 // place the peg can be lied to from.
+//
+// H2: every post carries the indexer's own Keycloak service-account token
+// (svc-indexer, ledger.reserves.chain-supply), minted by
+// golang.org/x/oauth2/clientcredentials and refreshed by the same library.
+// core-ledger authenticates every call; there is no unauthenticated mode and
+// no service-token fallback.
 package ledgerclient
 
 import (
@@ -17,6 +23,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 // USDXDecimals mirrors core-ledger's currencies row for USD-X. It is here
@@ -26,16 +34,29 @@ import (
 const USDXDecimals = 6
 
 type Client struct {
-	baseURL      string
-	http         *http.Client
-	serviceToken string
+	baseURL string
+	http    *http.Client
 }
 
-func New(baseURL, serviceToken string) *Client {
+// New wires the client-credentials token source onto the indexer's HTTP
+// client. TokenURL is the realm's token endpoint
+// (<keycloak>/realms/<realm>/protocol/openid-connect/token).
+func New(baseURL, clientID, clientSecret, tokenURL string) *Client {
+	config := clientcredentials.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		TokenURL:     tokenURL,
+	}
+	// cfg.Client's transport mints (and caches, until ~expiry) a token on
+	// every request and attaches it as Authorization: Bearer — a failed
+	// grant surfaces as a failed post, never as a silently unauthenticated
+	// one.
+	httpClient := config.Client(context.Background())
+	httpClient.Timeout = 15 * time.Second
+
 	return &Client{
-		baseURL:      strings.TrimRight(baseURL, "/"),
-		http:         &http.Client{Timeout: 15 * time.Second},
-		serviceToken: serviceToken,
+		baseURL: strings.TrimRight(baseURL, "/"),
+		http:    httpClient,
 	}
 }
 
@@ -70,14 +91,9 @@ func (c *Client) post(ctx context.Context, path, idempotencyKey string, body any
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", idempotencyKey)
-	// core-ledger does no authorization (deliberately — see the plan's
-	// "core-ledger does no authorization" decision); the service token is the
-	// check that the caller is inside the cluster, and X-User-Id is what lands
-	// in the row's `source` and in the audit trail.
+	// X-User-Id is what lands in the row's `source` and in the audit trail;
+	// the Authorization header is added by the oauth2 transport (see New).
 	req.Header.Set("X-User-Id", "indexer")
-	if c.serviceToken != "" {
-		req.Header.Set("X-Service-Token", c.serviceToken)
-	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

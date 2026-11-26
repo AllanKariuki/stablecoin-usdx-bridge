@@ -14,6 +14,8 @@ import (
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/oidcverify"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/oidcverify/oidctest"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/testdb"
 
 	"github.com/gofiber/fiber/v2"
@@ -41,6 +43,12 @@ type harness struct {
 	svc  *ledger.Service
 	ctx  context.Context
 
+	// The fake OIDC issuer the app's auth middleware verifies against, and a
+	// valid ledger.user-proxy bearer token requests carry — the same call
+	// shape bff makes after H2.
+	issuer *oidctest.Server
+	bearer string
+
 	user       string
 	usd        *ledger.Wallet
 	usdPayee   *ledger.Wallet
@@ -65,10 +73,26 @@ func newHarness(t *testing.T) *harness {
 	ctx := context.Background()
 	svc := ledger.NewService(apiRepo, ledger.FeeSchedule{})
 
+	// The same auth boundary cmd/server installs: every request below must
+	// carry a valid service-account token, or the middleware rejects it
+	// before the handler — which is the production behaviour, not a test
+	// convenience to skip.
+	issuer := oidctest.New(t)
+	verifier, err := oidcverify.New(ctx, issuer.URL, testAuthAudience)
+	if err != nil {
+		t.Fatalf("building verifier: %v", err)
+	}
+
 	app := fiber.New(fiber.Config{DisableStartupMessage: true, ErrorHandler: platform.ErrorHandler})
+	app.Use(AuthMiddleware(verifier))
 	NewHandlers(apiRepo, svc, slog.New(slog.NewTextHandler(io.Discard, nil)), nil).Register(app)
 
 	h := &harness{app: app, repo: apiRepo, svc: svc, ctx: ctx,
+		issuer: issuer,
+		bearer: issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+			Azp:         "svc-bff",
+			ClientRoles: map[string][]string{authClient: {roleUserProxy}},
+		}),
 		user: "api-" + t.Name() + "-" + time.Now().UTC().Format("20060102150405.000000000")}
 
 	h.usd = h.wallet(t, "USD", "", "")
@@ -135,6 +159,7 @@ func (h *harness) post(t *testing.T, path, key string, payload any) response {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", key)
+	req.Header.Set("Authorization", "Bearer "+h.bearer)
 	req.Header.Set("X-User-Id", h.user)
 
 	// Generous timeout: these run a SERIALIZABLE posting against a real

@@ -12,6 +12,7 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/oidcverify"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -88,11 +89,26 @@ func main() {
 
 	metrics := platform.NewMetrics(serviceName)
 
+	// The one authentication boundary for the whole API: every route below
+	// (except the probes and /metrics) requires a Keycloak service-account
+	// token whose client role authorizes it. Failing to reach the issuer at
+	// boot is fatal, same as any other required dependency — there is no
+	// degraded unauthenticated mode.
+	verifier, err := oidcverify.New(context.Background(), cfg.AuthIssuerURL, cfg.AuthAudience)
+	if err != nil {
+		logger.Error("oidc discovery failed", slog.Any("error", err))
+		os.Exit(1)
+	}
+	logger.Info("oidc discovery complete", slog.String("issuer", cfg.AuthIssuerURL))
+
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		ErrorHandler:          platform.ErrorHandler,
 	})
 	platform.Chain(app, platform.ChainConfig{Service: serviceName, Logger: logger, Metrics: metrics})
+	// Before the audit middleware, so a call that cannot authenticate is
+	// rejected before anything that could record it runs.
+	app.Use(api.AuthMiddleware(verifier))
 	// After Chain, so the request id it captures is the one Chain assigned.
 	// What it captures rides on the request context down to the repository,
 	// where the audit event is written inside the action's own transaction.

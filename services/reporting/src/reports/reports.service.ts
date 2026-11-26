@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomUUID } from 'node:crypto';
-import { AuditRequest, enqueueAuditEvent, Queryable } from '@damp/nest-platform';
+import { AuditRequest, enqueueAuditEvent, Queryable, ServiceTokenClient } from '@damp/nest-platform';
 import { AUDIT, SERVICE } from '../audit/audit-actions';
 import { DbService } from '../db/db.service';
 
@@ -61,6 +61,7 @@ export class ReportsService {
   constructor(
     private readonly db: DbService,
     config: ConfigService,
+    private readonly serviceTokens: ServiceTokenClient,
   ) {
     this.coreLedgerUrl = config.get<string>('CORE_LEDGER_URL', { infer: true })!;
     this.auditTrailUrl = config.get<string>('AUDIT_TRAIL_URL', { infer: true }) ?? '';
@@ -218,7 +219,7 @@ export class ReportsService {
 
   private async trialBalance(params: Record<string, unknown>) {
     const currency = String(params.currency ?? 'USD');
-    const body = await this.getJson(`${this.coreLedgerUrl}/ledger/trial-balance?currency=${currency}`);
+    const body = await this.getJson(`${this.coreLedgerUrl}/ledger/trial-balance?currency=${currency}`, { serviceAuth: true });
     return {
       columns: ['gl_code', 'name', 'type', 'debits', 'credits', 'balance'],
       rows: (body.lines as Array<Record<string, unknown>>) ?? [],
@@ -244,7 +245,7 @@ export class ReportsService {
     if (params.to) query.set('to', String(params.to));
     query.set('limit', String(params.limit ?? 500));
 
-    const body = await this.getJson(`${this.coreLedgerUrl}/wallets/${walletId}/statement?${query}`);
+    const body = await this.getJson(`${this.coreLedgerUrl}/wallets/${walletId}/statement?${query}`, { serviceAuth: true });
     return {
       columns: ['seq', 'value_date', 'transaction_id', 'direction', 'amount', 'running_balance', 'description'],
       rows: (body.entries as Array<Record<string, unknown>>) ?? [],
@@ -254,8 +255,8 @@ export class ReportsService {
 
   private async reconciliationPack(params: Record<string, unknown>) {
     const limit = Number(params.limit ?? 50);
-    const runs = await this.getJson(`${this.coreLedgerUrl}/reserves/reconciliation-runs?limit=${limit}`);
-    const breaks = await this.getJson(`${this.coreLedgerUrl}/reserves/reconciliation-breaks`);
+    const runs = await this.getJson(`${this.coreLedgerUrl}/reserves/reconciliation-runs?limit=${limit}`, { serviceAuth: true });
+    const breaks = await this.getJson(`${this.coreLedgerUrl}/reserves/reconciliation-breaks`, { serviceAuth: true });
 
     return {
       columns: ['id', 'status', 'started_at', 'leg_a_ok', 'leg_b_ok', 'leg_c_ok', 'break_count', 'issued', 'backing'],
@@ -270,7 +271,7 @@ export class ReportsService {
   }
 
   private async reserveAttestation() {
-    const status = await this.getJson(`${this.coreLedgerUrl}/reserves/status`);
+    const status = await this.getJson(`${this.coreLedgerUrl}/reserves/status`, { serviceAuth: true });
     return {
       columns: ['metric', 'value'],
       rows: [
@@ -297,7 +298,7 @@ export class ReportsService {
     const query = new URLSearchParams({ limit: String(params.limit ?? 200) });
     if (params.userId) query.set('user_id', String(params.userId));
 
-    const body = await this.getJson(`${this.coreLedgerUrl}/transactions?${query}`);
+    const body = await this.getJson(`${this.coreLedgerUrl}/transactions?${query}`, { serviceAuth: true });
     const rows = ((body.transactions as Array<Record<string, any>>) ?? []).map((tx) => ({
       id: tx.id,
       type: tx.type,
@@ -343,8 +344,16 @@ export class ReportsService {
     };
   }
 
-  private async getJson(url: string): Promise<Record<string, any>> {
-    const res = await fetch(url, { headers: { 'X-User-Id': 'reporting' } });
+  private async getJson(url: string, opts: { serviceAuth?: boolean } = {}): Promise<Record<string, any>> {
+    // H2: calls to core-ledger carry reporting's own service-account bearer
+    // (ledger.reports.read). Calls to audit-trail are a different boundary
+    // with its own token rules, so serviceAuth is per-call rather than
+    // applied to every URL this helper fetches.
+    const headers: Record<string, string> = { 'X-User-Id': 'reporting' };
+    if (opts.serviceAuth) {
+      headers.Authorization = `Bearer ${await this.serviceTokens.accessToken()}`;
+    }
+    const res = await fetch(url, { headers });
     if (!res.ok) {
       throw new Error(`${url} returned ${res.status}`);
     }

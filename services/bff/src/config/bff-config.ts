@@ -26,6 +26,24 @@ export class BffConfig {
   @IsNotEmpty()
   CORE_LEDGER_URL!: string;
 
+  // --- Service-to-service auth (H2). Every core-ledger call (the client
+  // above and the operations proxy) carries bff's own service-account
+  // token; core-ledger verifies it and checks ledger.user-proxy.
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_ID!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_SECRET!: string;
+
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  KEYCLOAK_BASE_URL!: string;
+
+  @IsString()
+  KEYCLOAK_REALM = 'damp';
+
   // Explorer links for the saga's tx hashes, `{hash}` substituted. Server
   // config rather than frontend config because which network a hash lives on
   // is a property of the core-ledger this bff talks to. Empty disables the

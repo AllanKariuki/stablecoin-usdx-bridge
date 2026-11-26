@@ -33,9 +33,55 @@
   "accessTokenLifespan": 300,
   "ssoSessionIdleTimeout": 1800,
   "ssoSessionMaxLifespan": 36000,
-  "_comment_roles": "roles.realm is injected from shared/authz/generated/keycloak-roles.json by `make keycloak-realm` — see permissions.yaml, the single source for DAMP's RBAC model. Do not hand-edit a roles list here; it will be overwritten.",
+  "_comment_roles": "roles.realm is injected from shared/authz/generated/keycloak-roles.json by `make keycloak-realm` — see permissions.yaml, the single source for DAMP's RBAC model. Do not hand-edit a roles list here; it will be overwritten. roles.client is NOT overwritten: the core-ledger client roles below are the service-to-service RBAC model (H2), whose source of truth is this template and core-ledger's route table (core-ledger/internal/api/auth.go).",
   "roles": {
-    "realm": []
+    "realm": [],
+    "client": {
+      "core-ledger": [
+        {
+          "name": "ledger.user-proxy",
+          "description": "services/bff: every user-facing route plus the operator surface (fx/*, ledger/fees, ledger/journals, dead-letters)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.settlement",
+          "description": "services/payments: POST /wallets, /deposits, /withdrawals, /transfers",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.wallet-provision",
+          "description": "services/identity: POST /wallets (default wallet on provisioning)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.wallet-status",
+          "description": "services/kyc + services/compliance: GET /users/:id/wallets, POST /wallets/:id/status",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.reserves.custodian",
+          "description": "services/rms: POST /reserves/custodian-snapshots, GET /reserves/status",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.reserves.chain-supply",
+          "description": "services/indexer: POST /reserves/chain-supply-snapshots",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.reports.read",
+          "description": "services/reporting: the GET surface a report run assembles (statements, transactions, trial-balance, reserves)",
+          "composite": false,
+          "clientRole": true
+        }
+      ]
+    }
   },
   "_comment_groups": "Orgs live under /orgs/<slug> as Groups, created at runtime by services/identity when an organization is onboarded (POST to the Keycloak Admin API) — not seeded here. The parent group exists so every org has a consistent path prefix and so the org_id attribute mapper below has somewhere to read from. damp-demo-co is one seed example so 'company@damp.local' below has an org_id to log in with.",
   "groups": [
@@ -162,7 +208,7 @@
     {
       "clientId": "identity-service",
       "name": "services/identity (confidential)",
-      "description": "Service account with Keycloak Admin API access, scoped to exactly the realm-management roles services/identity needs (fullScopeAllowed off).",
+      "description": "Service account with Keycloak Admin API access, scoped to exactly the realm-management roles services/identity needs (fullScopeAllowed off). Also carries ledger.wallet-provision for its core-ledger POST /wallets call (H2).",
       "enabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
@@ -171,10 +217,232 @@
       "serviceAccountsEnabled": true,
       "fullScopeAllowed": false,
       "secret": "__CHANGE_ME_IN_A_REAL_ENVIRONMENT__",
-      "_comment_secret": "Dev-only placeholder. A real environment injects this via a secrets manager, never commits it — see docs/building-plan.md's P6 key-custody phase for the pattern the rest of the platform's secrets follow."
+      "_comment_secret": "Dev-only placeholder. A real environment injects this via a secrets manager, never commits it — see docs/building-plan.md's P6 key-custody phase for the pattern the rest of the platform's secrets follow.",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "Makes this service's tokens carry aud: core-ledger, which core-ledger's verifier requires (AUTH_AUDIENCE) — same day-one-bug the P1 note below the portal client describes."
+        }
+      ]
+    },
+    {
+      "clientId": "core-ledger",
+      "name": "core-ledger API (resource)",
+      "description": "Bearer-only resource client. No flows, no service account: it exists to hold the client roles (see roles.client) that authorize calls to core-ledger's HTTP API, and to be the aud every service-account token names.",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "svc-bff",
+      "name": "services/bff (confidential)",
+      "description": "Service account for services/bff: client-credentials only, carrying ledger.user-proxy for its core-ledger calls (H2).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-bff-secret",
+      "_comment_secret": "Dev-only value, deterministic so scripts/keycloak-sync.sh and the services' .env files agree. A real environment injects secrets via a secrets manager — never commit a real one.",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "core-ledger verifies aud=core-ledger; without this mapper the service's tokens carry aud: [\"account\"] and every call 401s."
+        }
+      ]
+    },
+    {
+      "clientId": "svc-payments",
+      "name": "services/payments (confidential)",
+      "description": "Service account for services/payments: client-credentials only, carrying ledger.settlement (POST /wallets, /deposits, /withdrawals, /transfers).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-payments-secret",
+      "_comment_secret": "Dev-only value, deterministic so scripts/keycloak-sync.sh and the services' .env files agree. A real environment injects secrets via a secrets manager — never commit a real one.",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "core-ledger verifies aud=core-ledger; without this mapper the service's tokens carry aud: [\"account\"] and every call 401s."
+        }
+      ]
+    },
+    {
+      "clientId": "svc-kyc",
+      "name": "services/kyc (confidential)",
+      "description": "Service account for services/kyc: client-credentials only, carrying ledger.wallet-status (list a party's wallets, freeze/thaw).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-kyc-secret",
+      "_comment_secret": "Dev-only value, deterministic so scripts/keycloak-sync.sh and the services' .env files agree. A real environment injects secrets via a secrets manager — never commit a real one.",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "core-ledger verifies aud=core-ledger; without this mapper the service's tokens carry aud: [\"account\"] and every call 401s."
+        }
+      ]
+    },
+    {
+      "clientId": "svc-compliance",
+      "name": "services/compliance (confidential)",
+      "description": "Service account for services/compliance: client-credentials only, carrying ledger.wallet-status (list a party's wallets, freeze/thaw).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-compliance-secret",
+      "_comment_secret": "Dev-only value, deterministic so scripts/keycloak-sync.sh and the services' .env files agree. A real environment injects secrets via a secrets manager — never commit a real one.",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "core-ledger verifies aud=core-ledger; without this mapper the service's tokens carry aud: [\"account\"] and every call 401s."
+        }
+      ]
+    },
+    {
+      "clientId": "svc-rms",
+      "name": "services/rms (confidential)",
+      "description": "Service account for services/rms: client-credentials only, carrying ledger.reserves.custodian (POST /reserves/custodian-snapshots, GET /reserves/status).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-rms-secret",
+      "_comment_secret": "Dev-only value, deterministic so scripts/keycloak-sync.sh and the services' .env files agree. A real environment injects secrets via a secrets manager — never commit a real one.",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "core-ledger verifies aud=core-ledger; without this mapper the service's tokens carry aud: [\"account\"] and every call 401s."
+        }
+      ]
+    },
+    {
+      "clientId": "svc-reporting",
+      "name": "services/reporting (confidential)",
+      "description": "Service account for services/reporting: client-credentials only, carrying ledger.reports.read (the GET surface a report run assembles).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-reporting-secret",
+      "_comment_secret": "Dev-only value, deterministic so scripts/keycloak-sync.sh and the services' .env files agree. A real environment injects secrets via a secrets manager — never commit a real one.",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "core-ledger verifies aud=core-ledger; without this mapper the service's tokens carry aud: [\"account\"] and every call 401s."
+        }
+      ]
+    },
+    {
+      "clientId": "svc-indexer",
+      "name": "services/indexer (confidential)",
+      "description": "Service account for services/indexer: client-credentials only, carrying ledger.reserves.chain-supply (POST /reserves/chain-supply-snapshots).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-indexer-secret",
+      "_comment_secret": "Dev-only value, deterministic so scripts/keycloak-sync.sh and the services' .env files agree. A real environment injects secrets via a secrets manager — never commit a real one.",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "core-ledger verifies aud=core-ledger; without this mapper the service's tokens carry aud: [\"account\"] and every call 401s."
+        }
+      ]
     }
   ],
-  "_comment_clientScopeMappings": "identity-service's service account HAS these realm-management roles via users[].clientRoles below, but fullScopeAllowed:false on the client means having a role isn't enough for it to appear in that client's own tokens — it also needs an explicit scope mapping granting it permission to include them. Without this, KeycloakAdminClient.getUser()/getUserGroups() 403 and JIT provisioning (services/identity/src/provisioning) can never complete a first login.",
+  "_comment_clientScopeMappings": "identity-service's service account HAS these realm-management roles via users[].clientRoles below, but fullScopeAllowed:false on the client means having a role isn't enough for it to appear in that client's own tokens — it also needs an explicit scope mapping granting it permission to include them. Without this, KeycloakAdminClient.getUser()/getUserGroups() 403 and JIT provisioning (services/identity/src/provisioning) can never complete a first login. The core-ledger block is the same rule for H2's service-to-service roles: each svc-* service account holds its role via users[].clientRoles, and this mapping is what lets the role appear in the token it mints (resource_access.core-ledger.roles).",
   "clientScopeMappings": {
     "realm-management": [
       {
@@ -186,9 +454,59 @@
           "manage-users"
         ]
       }
+    ],
+    "core-ledger": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "ledger.user-proxy"
+        ]
+      },
+      {
+        "client": "svc-payments",
+        "roles": [
+          "ledger.settlement"
+        ]
+      },
+      {
+        "client": "identity-service",
+        "roles": [
+          "ledger.wallet-provision"
+        ]
+      },
+      {
+        "client": "svc-kyc",
+        "roles": [
+          "ledger.wallet-status"
+        ]
+      },
+      {
+        "client": "svc-compliance",
+        "roles": [
+          "ledger.wallet-status"
+        ]
+      },
+      {
+        "client": "svc-rms",
+        "roles": [
+          "ledger.reserves.custodian"
+        ]
+      },
+      {
+        "client": "svc-reporting",
+        "roles": [
+          "ledger.reports.read"
+        ]
+      },
+      {
+        "client": "svc-indexer",
+        "roles": [
+          "ledger.reserves.chain-supply"
+        ]
+      }
     ]
   },
-  "_comment_users": "Six seed users, one per DAMP role, for local dev/demo login (matches the P1 DoD in docs/building-plan.md: 'log in as customer@damp.local' / 'compliance@damp.local'), plus one synthetic service-account user granting identity-service's client its realm-management roles — that's how a client's service account gets roles in a realm import, there's no serviceAccountRoles field on ClientRepresentation itself. Password is the dev-only literal below for every human seed user — never used outside a local --import-realm bootstrap.",
+  "_comment_users": "Six seed users, one per DAMP role, for local dev/demo login (matches the P1 DoD in docs/building-plan.md: 'log in as customer@damp.local' / 'compliance@damp.local'), plus one synthetic service-account user per service client granting it its roles — that's how a client's service account gets roles in a realm import, there's no serviceAccountRoles field on ClientRepresentation itself. Password is the dev-only literal below for every human seed user — never used outside a local --import-realm bootstrap.",
   "users": [
     {
       "username": "service-account-identity-service",
@@ -200,6 +518,79 @@
           "view-users",
           "query-users",
           "manage-realm"
+        ],
+        "core-ledger": [
+          "ledger.wallet-provision"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-bff",
+      "enabled": true,
+      "serviceAccountClientId": "svc-bff",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.user-proxy"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-payments",
+      "enabled": true,
+      "serviceAccountClientId": "svc-payments",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.settlement"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-kyc",
+      "enabled": true,
+      "serviceAccountClientId": "svc-kyc",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.wallet-status"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-compliance",
+      "enabled": true,
+      "serviceAccountClientId": "svc-compliance",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.wallet-status"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-rms",
+      "enabled": true,
+      "serviceAccountClientId": "svc-rms",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.reserves.custodian"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-reporting",
+      "enabled": true,
+      "serviceAccountClientId": "svc-reporting",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.reports.read"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-indexer",
+      "enabled": true,
+      "serviceAccountClientId": "svc-indexer",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.reserves.chain-supply"
         ]
       }
     },

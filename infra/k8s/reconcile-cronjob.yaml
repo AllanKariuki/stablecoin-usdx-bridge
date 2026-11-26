@@ -53,6 +53,11 @@ spec:
               env:
                 - name: DATABASE_URL
                   value: "postgres://bridge:bridge@postgres.default.svc.cluster.local:5432/bridge?sslmode=disable"
+                # Required by the shared core-ledger config even though
+                # reconcile never serves the API — config.Load validates the
+                # whole surface for every binary.
+                - name: AUTH_ISSUER_URL
+                  value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
                 # Read chain supply from the indexer's snapshots rather than
                 # calling an RPC endpoint from a pod that lives for two
                 # seconds. RECONCILE_SNAPSHOT_MAX_AGE is the guard against

@@ -1,5 +1,6 @@
 import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ServiceTokenClient } from '@damp/nest-platform';
 import { AUDIT } from '../src/audit/audit-actions';
 import { DbService } from '../src/db/db.service';
 import { ReportsController } from '../src/reports/reports.controller';
@@ -36,7 +37,10 @@ describe('reporting audit producer (real Postgres)', () => {
   beforeAll(async () => {
     db = new DbService(config);
     await db.onModuleInit();
-    reports = new ReportsService(db, config);
+    // The suite's fetch spy stands in for both upstreams, so the token
+    // client never actually mints — a real instance, never a mock of
+    // ReportsService's constructor contract.
+    reports = new ReportsService(db, config, new ServiceTokenClient(config));
     superset = { guestToken: jest.fn() };
     controller = new ReportsController(reports, superset as unknown as SupersetService, db);
   });

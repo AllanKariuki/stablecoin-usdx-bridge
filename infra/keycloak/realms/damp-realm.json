@@ -76,7 +76,53 @@
           ]
         }
       }
-    ]
+    ],
+    "client": {
+      "core-ledger": [
+        {
+          "name": "ledger.user-proxy",
+          "description": "services/bff: every user-facing route plus the operator surface (fx/*, ledger/fees, ledger/journals, dead-letters)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.settlement",
+          "description": "services/payments: POST /wallets, /deposits, /withdrawals, /transfers",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.wallet-provision",
+          "description": "services/identity: POST /wallets (default wallet on provisioning)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.wallet-status",
+          "description": "services/kyc + services/compliance: GET /users/:id/wallets, POST /wallets/:id/status",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.reserves.custodian",
+          "description": "services/rms: POST /reserves/custodian-snapshots, GET /reserves/status",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.reserves.chain-supply",
+          "description": "services/indexer: POST /reserves/chain-supply-snapshots",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "ledger.reports.read",
+          "description": "services/reporting: the GET surface a report run assembles (statements, transactions, trial-balance, reserves)",
+          "composite": false,
+          "clientRole": true
+        }
+      ]
+    }
   },
   "groups": [
     {
@@ -197,7 +243,7 @@
     {
       "clientId": "identity-service",
       "name": "services/identity (confidential)",
-      "description": "Service account with Keycloak Admin API access, scoped to exactly the realm-management roles services/identity needs (fullScopeAllowed off).",
+      "description": "Service account with Keycloak Admin API access, scoped to exactly the realm-management roles services/identity needs (fullScopeAllowed off). Also carries ledger.wallet-provision for its core-ledger POST /wallets call (H2).",
       "enabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
@@ -205,7 +251,214 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": true,
       "fullScopeAllowed": false,
-      "secret": "__CHANGE_ME_IN_A_REAL_ENVIRONMENT__"
+      "secret": "__CHANGE_ME_IN_A_REAL_ENVIRONMENT__",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "core-ledger",
+      "name": "core-ledger API (resource)",
+      "description": "Bearer-only resource client. No flows, no service account: it exists to hold the client roles (see roles.client) that authorize calls to core-ledger's HTTP API, and to be the aud every service-account token names.",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "svc-bff",
+      "name": "services/bff (confidential)",
+      "description": "Service account for services/bff: client-credentials only, carrying ledger.user-proxy for its core-ledger calls (H2).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-bff-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "svc-payments",
+      "name": "services/payments (confidential)",
+      "description": "Service account for services/payments: client-credentials only, carrying ledger.settlement (POST /wallets, /deposits, /withdrawals, /transfers).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-payments-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "svc-kyc",
+      "name": "services/kyc (confidential)",
+      "description": "Service account for services/kyc: client-credentials only, carrying ledger.wallet-status (list a party's wallets, freeze/thaw).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-kyc-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "svc-compliance",
+      "name": "services/compliance (confidential)",
+      "description": "Service account for services/compliance: client-credentials only, carrying ledger.wallet-status (list a party's wallets, freeze/thaw).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-compliance-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "svc-rms",
+      "name": "services/rms (confidential)",
+      "description": "Service account for services/rms: client-credentials only, carrying ledger.reserves.custodian (POST /reserves/custodian-snapshots, GET /reserves/status).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-rms-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "svc-reporting",
+      "name": "services/reporting (confidential)",
+      "description": "Service account for services/reporting: client-credentials only, carrying ledger.reports.read (the GET surface a report run assembles).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-reporting-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "svc-indexer",
+      "name": "services/indexer (confidential)",
+      "description": "Service account for services/indexer: client-credentials only, carrying ledger.reserves.chain-supply (POST /reserves/chain-supply-snapshots).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-indexer-secret",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "clientScopeMappings": {
@@ -217,6 +470,56 @@
           "query-users",
           "manage-realm",
           "manage-users"
+        ]
+      }
+    ],
+    "core-ledger": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "ledger.user-proxy"
+        ]
+      },
+      {
+        "client": "svc-payments",
+        "roles": [
+          "ledger.settlement"
+        ]
+      },
+      {
+        "client": "identity-service",
+        "roles": [
+          "ledger.wallet-provision"
+        ]
+      },
+      {
+        "client": "svc-kyc",
+        "roles": [
+          "ledger.wallet-status"
+        ]
+      },
+      {
+        "client": "svc-compliance",
+        "roles": [
+          "ledger.wallet-status"
+        ]
+      },
+      {
+        "client": "svc-rms",
+        "roles": [
+          "ledger.reserves.custodian"
+        ]
+      },
+      {
+        "client": "svc-reporting",
+        "roles": [
+          "ledger.reports.read"
+        ]
+      },
+      {
+        "client": "svc-indexer",
+        "roles": [
+          "ledger.reserves.chain-supply"
         ]
       }
     ]
@@ -232,6 +535,79 @@
           "view-users",
           "query-users",
           "manage-realm"
+        ],
+        "core-ledger": [
+          "ledger.wallet-provision"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-bff",
+      "enabled": true,
+      "serviceAccountClientId": "svc-bff",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.user-proxy"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-payments",
+      "enabled": true,
+      "serviceAccountClientId": "svc-payments",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.settlement"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-kyc",
+      "enabled": true,
+      "serviceAccountClientId": "svc-kyc",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.wallet-status"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-compliance",
+      "enabled": true,
+      "serviceAccountClientId": "svc-compliance",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.wallet-status"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-rms",
+      "enabled": true,
+      "serviceAccountClientId": "svc-rms",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.reserves.custodian"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-reporting",
+      "enabled": true,
+      "serviceAccountClientId": "svc-reporting",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.reports.read"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-indexer",
+      "enabled": true,
+      "serviceAccountClientId": "svc-indexer",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.reserves.chain-supply"
         ]
       }
     },

@@ -879,6 +879,30 @@ async function stepNegatives() {
     all &= subcheck('missing Idempotency-Key → 400', r.status === 400, `status ${r.status}`);
   }
 
+  // (g) core-ledger's own auth boundary (H2). The API port is reachable
+  // from the host, so the check is direct: without a service-account token
+  // it must 401, and a customer's gateway token — right issuer, wrong
+  // audience — must 401 too. Neither may reach the posting engine.
+  {
+    const CORE_LEDGER = process.env.E2E_CORE_LEDGER || 'http://localhost:18081';
+    const deposit = { wallet_id: ctx.customer.usd.id, amount: '1.00' };
+
+    const r1 = await fetch(`${CORE_LEDGER}/deposits`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(deposit),
+    });
+    all &= subcheck('direct core-ledger POST /deposits without token → 401', r1.status === 401, `status ${r1.status}`);
+
+    const customerToken = await bearer(USERS.customer);
+    const r2 = await fetch(`${CORE_LEDGER}/deposits`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify(deposit),
+    });
+    all &= subcheck('direct core-ledger POST /deposits with customer token (wrong audience) → 401', r2.status === 401, `status ${r2.status}`);
+  }
+
   assert(all, 'one or more negative checks failed');
   return { note: 'all negative checks passed' };
 }
