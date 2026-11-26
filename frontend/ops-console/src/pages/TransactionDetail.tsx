@@ -105,7 +105,7 @@ export default function TransactionDetail() {
           </Card>
         }
         side={
-          <Card>
+          <Card className="reveal">
             <CardHeader title="Details" />
             {!t ? (
               <div className="flex flex-col gap-3">

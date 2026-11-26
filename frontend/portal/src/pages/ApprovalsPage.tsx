@@ -3,7 +3,7 @@ import { CheckSquare } from 'lucide-react';
 import { apiErrorMessage, approvalsApi, type ApprovalRequest } from '@damp/web-shared/api';
 import { Can, useAuth } from '@damp/web-shared/auth';
 import { formatDateTime, humanize, timeAgo, useAsync } from '@damp/web-shared/lib';
-import { Button, Callout, Card, ConfirmDialog, DataTable, Drawer, KeyValueList, MonoRef, PageHeader, StatusBadge } from '@damp/web-shared/ui';
+import { Badge, Button, Callout, Card, ConfirmDialog, DataTable, Drawer, KeyValueList, MonoRef, PageHeader, PulseDot, StatusBadge } from '@damp/web-shared/ui';
 
 /** Renders an approval's summary object as label/value rows; never trusts it as markup. */
 function Summary({ summary }: { summary: Record<string, unknown> }) {
@@ -49,7 +49,7 @@ export default function ApprovalsPage() {
             { key: 'subject', header: 'Subject', hideOnMobile: true, render: (r) => <MonoRef value={r.subjectId} /> },
             { key: 'by', header: 'Requested', render: (r) => <span className="text-muted">{timeAgo(r.createdAt ?? r.expiresAt)}</span> },
             { key: 'expires', header: 'Expires', hideOnMobile: true, render: (r) => <span className="text-muted">{formatDateTime(r.expiresAt)}</span> },
-            { key: 'status', header: 'Status', align: 'right', render: (r) => <StatusBadge status={r.status} /> },
+            { key: 'status', header: 'Status', align: 'right', render: (r) => (r.status === 'PENDING' ? <Badge tone="warn" icon={<PulseDot tone="warn" />}>Waiting on a second approver</Badge> : <StatusBadge status={r.status} />) },
           ]}
         />
       </Card>

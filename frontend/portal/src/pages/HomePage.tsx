@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ArrowDownToLine, ArrowLeftRight, ArrowUpFromLine, CheckSquare, Coins, ReceiptText } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeftRight, ArrowRight, ArrowUpFromLine, CheckSquare, Coins, ReceiptText } from 'lucide-react';
 import { apiErrorMessage, approvalsApi, ledgerApi } from '@damp/web-shared/api';
 import { Can, useAuth } from '@damp/web-shared/auth';
 import { useAsync } from '@damp/web-shared/lib';
@@ -7,6 +7,7 @@ import { Callout, Card, CardHeader, EmptyState, ErrorState, LinkButton, MoneyTex
 import { Link } from 'react-router-dom';
 import KycBanner from '../components/KycBanner';
 import TransactionDrawer, { TransactionRow } from '../components/TransactionDrawer';
+import { RULES } from './landing/content';
 
 const ACTIONS = [
   { to: '/move/deposit', label: 'Deposit', icon: ArrowDownToLine, anyOf: ['wallets:write:own'] as const },
@@ -35,7 +36,7 @@ export default function HomePage() {
 
   return (
     <>
-      <PageHeader eyebrow="Home" title={firstName ? `Hello, ${firstName}` : 'Hello'} description="Your balances, recent activity and what needs your attention." />
+      <PageHeader hero eyebrow="Home" title={firstName ? `Hello, ${firstName}` : 'Hello'} description="Your balances, recent activity and what needs your attention." />
 
       <div className="flex flex-col gap-4">
         <KycBanner />
@@ -61,7 +62,7 @@ export default function HomePage() {
             <Link
               key={w.id}
               to={`/wallets/${w.id}`}
-              className={`group flex flex-col gap-2 rounded-card border p-5 no-underline transition-shadow hover:shadow-pop ${i === 0 ? 'border-navy bg-navy text-white' : 'border-line bg-surface text-ink shadow-card'}`}
+              className={`lift animate-rise stagger-${Math.min(i + 1, 6)} group flex flex-col gap-2 rounded-card border p-5 no-underline ${i === 0 ? 'border-navy bg-navy text-white' : 'border-line bg-surface text-ink shadow-card'}`}
             >
               <span className="flex items-center justify-between gap-2">
                 <span className={`text-[13px] font-semibold ${i === 0 ? 'text-on-navy-muted' : 'text-muted'}`}>
@@ -104,9 +105,12 @@ export default function HomePage() {
           <CardHeader title="Quick actions" />
           <div className="grid grid-cols-2 gap-2.5">
             {ACTIONS.filter((a) => can(...a.anyOf)).map((a) => (
-              <Link key={a.to} to={a.to} className="flex min-h-24 flex-col justify-between gap-3 rounded-[16px] border border-line bg-canvas p-3.5 text-sm font-bold text-navy no-underline transition-colors hover:border-action/40 hover:bg-action-tint">
-                <span className="grid size-9 place-items-center rounded-[11px] bg-surface text-action shadow-card">
-                  <a.icon className="size-[18px]" aria-hidden />
+              <Link key={a.to} to={a.to} className="lift nudge flex min-h-24 flex-col justify-between gap-3 rounded-[16px] border border-line bg-canvas p-3.5 text-sm font-bold text-navy no-underline transition-colors hover:border-action/40 hover:bg-action-tint">
+                <span className="flex items-start justify-between gap-2">
+                  <span className="grid size-9 place-items-center rounded-[11px] bg-surface text-action shadow-card">
+                    <a.icon className="size-[18px]" aria-hidden />
+                  </span>
+                  <ArrowRight className="mt-1 size-4 text-subtle" aria-hidden />
                 </span>
                 {a.label}
               </Link>
@@ -114,6 +118,18 @@ export default function HomePage() {
           </div>
         </Card>
       </div>
+
+      <section aria-labelledby="protected-h" className="mt-5 rounded-card border border-line bg-surface p-5 sm:p-6">
+        <h2 id="protected-h" className="text-base font-bold text-ink">How your money is protected</h2>
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {RULES.map((r) => (
+            <div key={r.n} className="reveal flex flex-col gap-1.5">
+              <span className="text-sm font-bold text-navy">{r.title}</span>
+              <code className="w-fit rounded-lg bg-action-tint px-2 py-1 font-mono text-[11px] text-action-ink">{r.code}</code>
+            </div>
+          ))}
+        </div>
+      </section>
 
       <TransactionDrawer transactionId={openTx} onClose={() => setOpenTx(null)} />
     </>

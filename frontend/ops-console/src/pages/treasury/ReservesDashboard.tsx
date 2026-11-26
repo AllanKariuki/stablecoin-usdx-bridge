@@ -3,7 +3,7 @@ import { ArrowRight, Coins, Landmark, Scale, ShieldCheck, Siren } from 'lucide-r
 import { apiErrorMessage } from '@damp/web-shared/api';
 import { reservesApi, type ReconciliationRun, type ReserveStatus } from '@damp/web-shared/api/reserves';
 import { formatDateTime, humanize, timeAgo, useAsync } from '@damp/web-shared/lib';
-import { Badge, Callout, Card, CardHeader, ErrorState, MoneyText, Skeleton, StatTile } from '@damp/web-shared/ui';
+import { Badge, Callout, Card, CardHeader, ErrorState, MoneyText, ProgressRing, PulseDot, Skeleton, StatTile } from '@damp/web-shared/ui';
 import { LEGS, LegVerdict } from '../../components/LegStatus';
 
 const ratio = (bps: number | null | undefined) => (bps === null || bps === undefined ? '—' : `${(bps / 100).toFixed(2)}%`);
@@ -42,15 +42,32 @@ export function ReservesDashboard() {
       )}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatTile tone="navy" label="USD-X issued" icon={<Coins className="size-4" aria-hidden />} loading={status.loading} value={s ? <MoneyText money={s.issued} className="text-[26px]" /> : '—'} note={s && <>In transit: {s.inTransit.display}</>} />
-        <StatTile label="Reserve backing" icon={<Landmark className="size-4" aria-hidden />} loading={status.loading} value={s ? <MoneyText money={s.backing} className="text-[26px]" /> : '—'} note={s && <>Ledger cash: {s.ledgerCash.display}</>} />
+        <StatTile tone="navy" label="USD-X issued" icon={<Coins className="size-4" aria-hidden />} loading={status.loading} value={s ? <MoneyText money={s.issued} className="text-[26px]" /> : '—'} note={s && <>In transit: {s.inTransit.display}</>} reveal delay={1} />
+        <StatTile label="Reserve backing" icon={<Landmark className="size-4" aria-hidden />} loading={status.loading} value={s ? <MoneyText money={s.backing} className="text-[26px]" /> : '—'} note={s && <>Ledger cash: {s.ledgerCash.display}</>} reveal delay={2} />
         <StatTile
           label="Coverage"
           icon={<Scale className="size-4" aria-hidden />}
           tone={mandate === false ? 'warn' : 'default'}
           loading={status.loading}
-          value={ratio(s?.coverage.ratioBps)}
+          value={
+            s ? (
+              <ProgressRing
+                ratio={(s.coverage.ratioBps ?? 0) / 10000}
+                size={96}
+                stroke={10}
+                label={ratio(s.coverage.ratioBps)}
+                sublabel="coverage"
+                ariaLabel={`Coverage ${ratio(s.coverage.ratioBps)}`}
+                color={mandate === false ? '#B4530A' : '#1463D6'}
+                track={mandate === false ? '#fff1e6' : '#E8F1FE'}
+              />
+            ) : (
+              '—'
+            )
+          }
           note={s?.target ? <>Mandate ≥ {ratio(s.target.minRatioBps)} · {mandate === null ? 'not evaluated' : mandate ? 'within mandate' : 'outside mandate'}</> : 'No reserve target set'}
+          reveal
+          delay={3}
         />
         <StatTile
           label="Custodian balance"
@@ -58,6 +75,8 @@ export function ReservesDashboard() {
           loading={status.loading}
           value={s?.custodian ? <MoneyText money={s.custodian.balance} className="text-[26px]" /> : '—'}
           note={s?.custodian ? <>Statement {timeAgo(s.custodian.asOf)}</> : 'No custodian statement yet'}
+          reveal
+          delay={4}
         />
       </div>
 
@@ -118,7 +137,11 @@ function LegCards({ run, status }: { run: ReconciliationRun; status?: ReserveSta
                 <p className="eyebrow text-[11px]">{leg.name}</p>
                 <h3 className="mt-0.5 text-base font-bold text-navy">{leg.title}</h3>
               </div>
-              <LegVerdict ok={ok} />
+              <span className="flex items-center gap-2">
+                {ok === true && <PulseDot />}
+                {ok === false && <PulseDot tone="warn" />}
+                <LegVerdict ok={ok} />
+              </span>
             </div>
             <p className="text-[13px] leading-relaxed text-muted">{leg.description}</p>
             <div className="mt-auto flex flex-col gap-1.5 border-t border-line pt-3 text-xs">

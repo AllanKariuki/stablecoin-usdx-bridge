@@ -80,7 +80,18 @@
   --animate-rise: rise 0.45s ease-out both;
   --animate-pop: pop 0.18s ease-out both;
   --animate-live: live 1.8s ease-out infinite;
+  --animate-live-warn: live-warn 1.8s ease-out infinite;
   --animate-shimmer: shimmer 1.4s linear infinite;
+
+  --animate-draw: draw 1.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-grow-x: grow-x 1s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-grow-y: grow-y 1s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-ring: ring 1.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-float: float 6s ease-in-out infinite;
+  --animate-tape: tape 48s linear infinite;
+  --animate-travel: travel 3.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  --animate-shine: shine 6s linear infinite;
+  --animate-spin-slow: spin-slow 120s linear infinite;
 
   @keyframes rise {
     from { opacity: 0; transform: translateY(12px); }
@@ -92,10 +103,124 @@
     0% { box-shadow: 0 0 0 0 rgb(31 211 230 / 0.55); }
     100% { box-shadow: 0 0 0 8px rgb(31 211 230 / 0); }
   }
+  @keyframes live-warn {
+    0% { box-shadow: 0 0 0 0 rgb(180 83 10 / 0.45); }
+    100% { box-shadow: 0 0 0 8px rgb(180 83 10 / 0); }
+  }
   @keyframes shimmer {
     from { background-position: -200% 0; }
     to { background-position: 200% 0; }
   }
+  @keyframes draw {
+    from { stroke-dashoffset: 1; }
+  }
+  @keyframes grow-x {
+    from { transform: scaleX(0); }
+  }
+  @keyframes grow-y {
+    from { transform: scaleY(0); }
+  }
+  @keyframes ring {
+    from { stroke-dasharray: 0 1; }
+  }
+  @keyframes float {
+    50% { transform: translateY(-8px); }
+  }
+  @keyframes tape {
+    to { transform: translateX(-50%); }
+  }
+  @keyframes travel {
+    from { left: 0%; }
+    to { left: 100%; }
+  }
+  @keyframes shine {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  @keyframes spin-slow {
+    to { transform: rotate(360deg); }
+  }
+}
+
+/* Motion utilities — plain CSS so they're always present (Tailwind can't
+ * express `@supports (animation-timeline: view())`, hover transitions, or the
+ * logo's SVG `transform-box` behaviour from utility classes alone). */
+.reveal {
+  /* Static by default; scroll-driven only where supported and motion allowed. */
+}
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    .reveal {
+      animation: rise linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 35%;
+    }
+  }
+}
+
+.lift {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.lift:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 2px 4px rgb(14 36 99 / 0.05), 0 24px 48px -22px rgb(14 36 99 / 0.32);
+}
+
+.nudge svg {
+  transition: transform 0.2s ease-out;
+}
+.nudge:hover svg {
+  transform: translateX(4px);
+}
+
+/* Stagger delays. Named `stagger-*`, not `delay-*`: Tailwind v4 already owns
+ * `delay-<n>` for transition-delay. */
+.stagger-1 { animation-delay: 80ms; }
+.stagger-2 { animation-delay: 160ms; }
+.stagger-3 { animation-delay: 240ms; }
+.stagger-4 { animation-delay: 320ms; }
+.stagger-5 { animation-delay: 400ms; }
+.stagger-6 { animation-delay: 480ms; }
+
+.text-shine {
+  background: linear-gradient(90deg, var(--color-cyan) 0%, #ffffff 40%, var(--color-cyan) 60%, var(--color-cyan) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: var(--animate-shine);
+}
+
+/* LogoMark intro (animated prop). */
+.logo-tile-anim {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: logo-tile 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.logo-left-anim {
+  animation: logo-left 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
+}
+.logo-right-anim {
+  animation: logo-right 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both;
+}
+.logo-pop-anim {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: logo-pop 0.6s cubic-bezier(0.16, 1, 0.3, 1) 0.9s both;
+}
+@keyframes logo-tile {
+  from { transform: scale(0.85); opacity: 0; }
+}
+@keyframes logo-left {
+  from { transform: translateX(-9px); opacity: 0; }
+}
+@keyframes logo-right {
+  from { transform: translateX(9px); opacity: 0; }
+}
+@keyframes logo-pop {
+  0% { transform: scale(0); opacity: 0; }
+  70% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
 }
 
 @layer base {

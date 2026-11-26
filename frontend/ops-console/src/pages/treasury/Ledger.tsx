@@ -91,21 +91,24 @@ function TrialBalanceTab() {
           { key: 'gl', header: 'GL code', render: (l) => <span className="font-mono text-[12.5px] font-semibold text-navy">{l.gl_code}</span> },
           { key: 'name', header: 'Account', render: (l) => l.name },
           { key: 'type', header: 'Type', render: (l) => humanize(l.type), hideOnMobile: true },
-          { key: 'dr', header: 'Debits', align: 'right', render: (l) => <span className="font-mono tabular-nums">{l.debits}</span> },
-          { key: 'cr', header: 'Credits', align: 'right', render: (l) => <span className="font-mono tabular-nums">{l.credits}</span> },
+          { key: 'dr', header: 'Debits', align: 'right', render: (l) => <span className="font-mono tabular-nums"><span className="mr-1.5 font-semibold text-action-ink">DR</span>{l.debits}</span> },
+          { key: 'cr', header: 'Credits', align: 'right', render: (l) => <span className="font-mono tabular-nums"><span className="mr-1.5 font-semibold text-warn-ink">CR</span>{l.credits}</span> },
           { key: 'bal', header: 'Balance', align: 'right', render: (l) => <span className="font-mono font-semibold tabular-nums">{l.balance}</span> },
         ]}
       />
       {tb.data && (
-        <div className="mt-3 flex flex-wrap justify-end gap-6 border-t border-line pt-3 font-mono text-sm">
+        <div className="mt-3 flex flex-wrap items-center justify-end gap-x-6 gap-y-2 border-t border-line pt-3 font-mono text-sm">
           <span>
             <span className="mr-2 font-sans text-xs text-muted">Total debits</span>
-            {tb.data.total_debits}
+            <span className="mr-1.5 font-semibold text-action-ink">DR</span>
+            <span className="tabular-nums">{tb.data.total_debits}</span>
           </span>
           <span>
             <span className="mr-2 font-sans text-xs text-muted">Total credits</span>
-            {tb.data.total_credits}
+            <span className="mr-1.5 font-semibold text-warn-ink">CR</span>
+            <span className="tabular-nums">{tb.data.total_credits}</span>
           </span>
+          <span className={tb.data.balanced ? 'text-cyan-ink' : 'text-warn-ink'}>{tb.data.balanced ? 'balanced' : 'not balanced'}</span>
         </div>
       )}
     </Card>

@@ -3,6 +3,46 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-23
+
+### Changed — UI refresh: new landing pages, Interlock logo, motion everywhere
+- **New mark, "Interlock".** Two diamonds stand for the ledger and the chain,
+  and the filled diamond where they overlap is USD-X. It is used in both
+  apps, their favicons and the Keycloak login theme. `LogoMark` gains
+  `variant` (tile, light, mono) and an `animated` intro.
+- **Shared motion layer** in `@damp/web-shared`:
+  - scroll reveal, hover lift, arrow nudge, staggered entrances, and
+    draw-in, ring and grow animations;
+  - one `prefers-reduced-motion` guard, under which nothing is left hidden;
+  - new components `CountUp` (counts and percentages only, never money),
+    `Sparkline`, `ProgressRing`, `PulseDot`, `Marquee`, `DecorDiamonds`,
+    `HeroPanel` and `FeatureCard`;
+  - `PageHeader hero`, `Card interactive` and `StatTile`
+    reveal/stagger/trend;
+  - `DataTable` rows stagger in on first load, each route enters with a
+    rise, and the active nav item animates in.
+- **Portal landing rebuilt** (split into `portal/src/pages/landing/`):
+  - the hero has an illustrative product preview and a ledger tape;
+  - new sections for how issuing and redeeming work, the reserve checks,
+    features, the four ledger rules, personal and business accounts, and
+    FAQs.
+
+  Reserve figures are deliberately absent until a public reserves endpoint
+  exists. The business contact address is a placeholder, marked TODO.
+- **Ops Console staff entry.** Anonymous visitors to `/` see the four
+  workspaces and a company sign-in button instead of an immediate redirect.
+  Deep links still go straight to Keycloak.
+- **Signed-in pages in both apps** use the new components:
+  - Portal:
+    - the home hero and "how your money is protected" strip;
+    - the horizontal USD-X saga track;
+    - the tier ladder from real tier data;
+    - "Waiting on a second approver" pills.
+  - Ops Console:
+    - the overview hero with counts that tick up;
+    - the reserves coverage ring driven by the real ratio;
+    - DR/CR-marked ledger totals with a balanced flag;
+    - the audit drawer's previous → current hash chain.
 ## 2026-11-23 — live end-to-end money-flow tests
 
 ### Security — money-path holes closed

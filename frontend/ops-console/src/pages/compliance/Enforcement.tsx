@@ -33,7 +33,7 @@ export default function Enforcement() {
           </Can>
         }
       />
-      <Card>
+      <Card className="reveal">
         <DataTable
           caption="Enforcement actions"
           rows={actions.data}

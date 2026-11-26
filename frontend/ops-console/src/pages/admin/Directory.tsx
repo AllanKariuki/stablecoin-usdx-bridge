@@ -12,7 +12,7 @@ export default function Directory() {
   return (
     <>
       <PageHeader eyebrow="Admin" title="Users & organisations" description="Search parties, see their memberships and assign roles." />
-      <Card>
+      <Card className="reveal">
         <EmptyState icon={<Users className="size-6" aria-hidden />} title="Not exposed through the gateway yet">
           The identity service owns this directory, but its API isn’t routed through the gateway, so the console can’t read it. Until it
           is, manage users and roles in the Keycloak admin console, and look up a party’s wallets by id from{' '}

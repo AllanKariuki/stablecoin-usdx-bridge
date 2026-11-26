@@ -36,7 +36,7 @@ export default function Reconciliation() {
           { value: 'breaks', label: 'Open breaks', count: breaks.data?.length },
         ]}
       />
-      <Card>
+      <Card className="reveal">
         {tab === 'runs' ? (
           <DataTable
             caption="Reconciliation runs"

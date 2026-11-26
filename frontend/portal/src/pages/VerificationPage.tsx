@@ -17,11 +17,13 @@ function Capabilities({ can }: { can: KycStatus['can'] }) {
     ['Bridge between chains', can.bridge],
   ];
   return (
-    <ul className="m-0 grid list-none grid-cols-2 gap-2 p-0">
+    <ul className="m-0 flex list-none flex-col gap-2 p-0">
       {rows.map(([label, ok]) => (
-        <li key={label} className={cx('flex items-center gap-2 rounded-[12px] px-3 py-2 text-sm font-semibold', ok ? 'bg-cyan-tint text-cyan-ink' : 'bg-neutral-tint text-neutral-ink')}>
-          {ok ? <Check className="size-4" strokeWidth={3} aria-hidden /> : <Lock className="size-4" aria-hidden />}
-          {label}
+        <li key={label} className={cx('flex items-center gap-3 rounded-[14px] border px-3.5 py-2.5', ok ? 'border-cyan/40 bg-cyan-tint' : 'border-line bg-neutral-tint')}>
+          <span className={cx('grid size-7 shrink-0 place-items-center rounded-full', ok ? 'bg-cyan text-cyan-ink' : 'bg-line-strong text-neutral-ink')}>
+            {ok ? <Check className="size-3.5" strokeWidth={3} aria-hidden /> : <Lock className="size-3.5" aria-hidden />}
+          </span>
+          <span className={cx('flex-1 text-[13px] font-bold', ok ? 'text-cyan-ink' : 'text-neutral-ink')}>{label}</span>
           <span className="sr-only">{ok ? 'allowed' : 'not yet allowed'}</span>
         </li>
       ))}
@@ -51,17 +53,38 @@ export default function VerificationPage() {
       ) : status.data ? (
         <div className="grid gap-5 lg:grid-cols-[1fr_1.2fr]">
           <div className="flex flex-col gap-5">
-            <Card className="bg-navy text-white">
+            <Card>
               <div className="flex items-center gap-3">
-                <span className="grid size-12 place-items-center rounded-[16px] bg-cyan/20 text-cyan">
+                <span className="grid size-12 place-items-center rounded-[16px] bg-action-tint text-action">
                   <ShieldCheck className="size-6" aria-hidden />
                 </span>
                 <div>
-                  <p className="text-[13px] text-on-navy-muted">Current tier</p>
-                  <p className="text-2xl font-extrabold tracking-tight">{humanize(status.data.tier)}</p>
+                  <p className="eyebrow">Current tier</p>
+                  <p className="text-2xl font-extrabold tracking-tight text-navy">{humanize(status.data.tier)}</p>
                 </div>
               </div>
-              <p className="mt-3 text-sm leading-relaxed text-on-navy-muted">{status.data.description}</p>
+              <p className="mt-3 text-sm leading-relaxed text-muted">{status.data.description}</p>
+
+              <div className="mt-5 flex flex-col gap-2">
+                <div className="flex items-center gap-3 rounded-[14px] border border-action bg-action-tint px-3.5 py-2.5">
+                  <span className="grid size-7 shrink-0 place-items-center rounded-full bg-action text-[11px] font-extrabold text-white">{status.data.tierRank}</span>
+                  <span className="flex-1 text-[13px] font-bold text-action-ink">
+                    {humanize(status.data.tier)}
+                    <span className="sr-only"> (current tier)</span>
+                  </span>
+                  <span className="text-xs font-semibold text-action-ink">{status.data.limits.daily} {status.data.limits.currency} / day</span>
+                </div>
+                {status.data.nextTierRequires && (
+                  <div className="flex items-center gap-3 rounded-[14px] border border-line bg-surface px-3.5 py-2.5">
+                    <span className="grid size-7 shrink-0 place-items-center rounded-full bg-neutral-tint text-[11px] font-extrabold text-neutral-ink">{status.data.tierRank + 1}</span>
+                    <span className="flex-1 text-[13px] font-bold text-ink">
+                      {humanize(status.data.nextTierRequires.tier)}
+                      <span className="sr-only"> (next tier)</span>
+                    </span>
+                    <span className="text-xs text-muted">Next tier</span>
+                  </div>
+                )}
+              </div>
             </Card>
             <Card>
               <CardHeader title="What you can do" />

@@ -56,7 +56,7 @@ export default function Screening() {
             </Button>
           </form>
         </Card>
-        <Card>
+        <Card className="reveal">
           <CardHeader title="Result" />
           {!result ? (
             <EmptyState icon={<Radar className="size-6" aria-hidden />} title="Nothing screened yet" className="py-8">
