@@ -41,6 +41,11 @@ type Params struct {
 	SignerCAPath   string
 	SignerEthKeyID string
 	SignerSolKeyID string
+
+	// FinalityLevel is the depth the Ethereum client's VerifyBurn requires a
+	// break-glass burn to have reached ("finalized" or a confirmation count) —
+	// the same CHAIN_FINALITY vocabulary the saga's wait uses.
+	FinalityLevel string
 }
 
 type Clients struct {
@@ -86,6 +91,10 @@ func Dial(logger *slog.Logger, p Params) (*Clients, error) {
 		return nil, fmt.Errorf("connecting to ethereum: %w", err)
 	}
 	logger.Info("connected to ethereum network")
+
+	// The same finality depth the saga waits for is what a break-glass burn
+	// must have reached before VerifyBurn accepts it as proof (H4).
+	eth.WithFinalityLevel(p.FinalityLevel)
 
 	var sol *solana.Client
 	if err := retryDial(logger, "solana", func() (err error) {

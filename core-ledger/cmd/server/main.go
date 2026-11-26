@@ -10,8 +10,11 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/chainclients"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/config"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/serviceauth"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/workflowclient"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/oidcverify"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -77,6 +80,7 @@ func main() {
 		SignerCAPath:             cfg.SignerCAPath,
 		SignerEthKeyID:           cfg.SignerEthKeyID,
 		SignerSolKeyID:           cfg.SignerSolKeyID,
+		FinalityLevel:            cfg.ChainFinality,
 	})
 	if err != nil {
 		logger.Error("connecting to chains", slog.Any("error", err))
@@ -88,11 +92,45 @@ func main() {
 
 	metrics := platform.NewMetrics(serviceName)
 
+	// The one authentication boundary for the whole API: every route below
+	// (except the probes, /metrics and the HMAC-authenticated workflow
+	// callback) requires a Keycloak service-account token whose client role
+	// authorizes it. Failing to reach the issuer at boot is fatal, same as
+	// any other required dependency — there is no degraded unauthenticated
+	// mode.
+	verifier, err := oidcverify.New(context.Background(), cfg.AuthIssuerURL, cfg.AuthAudience)
+	if err != nil {
+		logger.Error("oidc discovery failed", slog.Any("error", err))
+		os.Exit(1)
+	}
+	logger.Info("oidc discovery complete", slog.String("issuer", cfg.AuthIssuerURL))
+
+	// H4: the server now makes outbound calls of its own — it proposes
+	// break-glass approvals to services/workflow — and they carry
+	// svc-core-ledger's client-credentials token (workflow.propose), the
+	// same internal/serviceauth wiring the worker got in H3. Required, with
+	// no fallback: a confirm that cannot reach maker-checker must fail, not
+	// settle.
+	workflowAuth, err := serviceauth.Client(cfg.ServiceClientID, cfg.ServiceClientSecret, cfg.KeycloakBaseURL, cfg.KeycloakRealm)
+	if err != nil {
+		logger.Error("service-to-service auth is not configured (H4)", slog.Any("error", err))
+		os.Exit(1)
+	}
+	if cfg.WorkflowCallbackSecret == "" {
+		// Not fatal: with no secret, every decision callback fails its HMAC
+		// check and no break-glass settles — closed, but nobody is told.
+		logger.Warn("WORKFLOW_CALLBACK_SECRET is not set; workflow's decision callbacks will all be refused")
+	}
+	workflow := workflowclient.New(cfg.WorkflowURL, cfg.CoreLedgerSelfURL, workflowAuth, logger)
+
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		ErrorHandler:          platform.ErrorHandler,
 	})
 	platform.Chain(app, platform.ChainConfig{Service: serviceName, Logger: logger, Metrics: metrics})
+	// Before the audit middleware, so a call that cannot authenticate is
+	// rejected before anything that could record it runs.
+	app.Use(api.AuthMiddleware(verifier))
 	// After Chain, so the request id it captures is the one Chain assigned.
 	// What it captures rides on the request context down to the repository,
 	// where the audit event is written inside the action's own transaction.
@@ -100,7 +138,7 @@ func main() {
 
 	health.Register(app)
 	app.Get("/metrics", metrics.Handler())
-	api.NewHandlers(repo, ledgerSvc, logger, clients).Register(app)
+	api.NewHandlers(repo, ledgerSvc, logger, clients, clients.Router, workflow, cfg.WorkflowCallbackSecret).Register(app)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	if err := platform.Run(app, addr, health, logger, platform.ShutdownConfig{}); err != nil {

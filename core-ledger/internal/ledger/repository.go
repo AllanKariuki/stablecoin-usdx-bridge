@@ -6,6 +6,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"math/big"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -24,6 +26,29 @@ import (
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
+
+// migrate applies the embedded migrations under a Postgres advisory lock.
+// The server, the saga worker and the reconcile job all open a Repository,
+// and in k8s each may run several replicas; without the lock two of them
+// starting together race the same CREATE statements and one fails to boot.
+func migrate(sqlDB *sql.DB) error {
+	fsys, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("opening embedded migrations: %w", err)
+	}
+	locker, err := lock.NewPostgresSessionLocker()
+	if err != nil {
+		return fmt.Errorf("creating migration lock: %w", err)
+	}
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, fsys, goose.WithSessionLocker(locker))
+	if err != nil {
+		return fmt.Errorf("creating migration provider: %w", err)
+	}
+	if _, err := provider.Up(context.Background()); err != nil {
+		return fmt.Errorf("running migrations: %w", err)
+	}
+	return nil
+}
 
 type Repository struct {
 	db *gorm.DB
@@ -41,12 +66,8 @@ func NewRepository(connString string) (*Repository, error) {
 		return nil, fmt.Errorf("opening postgres connection: %w", err)
 	}
 
-	goose.SetBaseFS(migrationsFS)
-	if err := goose.SetDialect("postgres"); err != nil {
-		return nil, fmt.Errorf("setting goose dialect: %w", err)
-	}
-	if err := goose.Up(sqlDB, "migrations"); err != nil {
-		return nil, fmt.Errorf("running migrations: %w", err)
+	if err := migrate(sqlDB); err != nil {
+		return nil, err
 	}
 
 	// LatestTrustBankBalance treats gorm.ErrRecordNotFound as an expected,
@@ -333,6 +354,17 @@ func (r *Repository) AuditStore() (*audit.Store, error) {
 		return nil, err
 	}
 	return audit.NewStore(sqlDB), nil
+}
+
+// EnqueueAuditEvent records one audit event in its own transaction. It exists
+// for routes whose whole action is an outbox event: H6's enforcement
+// submission moves no ledger money, so there is no posting transaction for
+// its audit event to ride on — the event is its own transaction, committed
+// atomically like any other.
+func (r *Repository) EnqueueAuditEvent(ctx context.Context, e audit.Event) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return enqueueAudit(ctx, tx, e)
+	})
 }
 
 func (r *Repository) Closures(ctx context.Context) ([]LedgerClosure, error) {

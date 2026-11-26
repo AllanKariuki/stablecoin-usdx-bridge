@@ -22,6 +22,37 @@ export class ComplianceConfig {
   @IsNotEmpty()
   CORE_LEDGER_URL!: string;
 
+  // --- Service-to-service auth (H2). Every core-ledger call carries
+  // compliance's own service-account token; core-ledger verifies it and
+  // checks ledger.wallet-status (wallet freeze) or ledger.enforcement (H6
+  // on-chain enforcement).
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_ID!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_SECRET!: string;
+
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  KEYCLOAK_BASE_URL!: string;
+
+  @IsString()
+  KEYCLOAK_REALM = 'damp';
+
+  // --- Inbound service-to-service auth (H3). Every request must carry a
+  // service-account JWT whose audience is the `compliance` resource client.
+  // Both required — there is no unauthenticated mode (the approval callback
+  // is @HmacAuthenticated, not public).
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  AUTH_ISSUER_URL!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  AUTH_AUDIENCE = 'compliance';
+
   // Blacklisting and pausing go through maker-checker first. Unset means an
   // enforcement action can be proposed and never executed, which is the
   // correct failure: the alternative is a service that can freeze a
@@ -50,6 +81,32 @@ export class ComplianceConfig {
   @IsInt()
   @Min(1)
   SCREENING_TTL_HOURS = 24;
+
+  // --- H6: core-ledger's enforcement finality events. When NATS_URL is set
+  // the outbox consumer reads damp.ledger.chain_enforcement_finalized.v1
+  // from JetStream (the local stack's path); unset, they arrive over HTTP at
+  // POST /internal/outbox instead. Both are the same supported states.
+  @IsOptional()
+  @IsString()
+  NATS_URL = '';
+
+  @IsOptional()
+  @IsString()
+  NATS_STREAM = 'DAMP';
+
+  // --- H7: this consumer's NATS credentials. infra/nats/nats.conf declares
+  // one user per service with per-subject permissions; the outbox consumer
+  // refuses to start when NATS_URL is set and either is missing — its
+  // subscription is the money path for H6 enforcement finality, so an
+  // anonymously-connected consumer that is refused on every subject must
+  // fail loudly at boot, not sit silently delivering nothing.
+  @IsOptional()
+  @IsString()
+  NATS_USER = '';
+
+  @IsOptional()
+  @IsString()
+  NATS_PASSWORD = '';
 
   // The longest window any rule looks back over. It bounds the history query
   // that runs on every posting, so it is configuration rather than a

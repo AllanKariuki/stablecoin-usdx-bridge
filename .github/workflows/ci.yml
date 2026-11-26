@@ -57,6 +57,24 @@ jobs:
             -c "CREATE ROLE audit_trail WITH LOGIN PASSWORD 'audit_trail';" \
             -c "CREATE DATABASE audit_trail_test OWNER audit_trail;"
 
+      - name: Start NATS with the H7 users
+        # Not a service container: those start before checkout, so they can't
+        # mount infra/nats/nats.conf — and core-ledger's TestNATSAuth* suite
+        # asserts exactly that file's per-user subject permissions.
+        run: |
+          docker run -d --name nats -p 54222:4222 -p 58222:8222 \
+            -v "$PWD/infra/nats/nats.conf:/etc/nats/nats.conf:ro" \
+            -e NATS_CORE_LEDGER_PASSWORD=dev-core-ledger-password \
+            -e NATS_NOTIFICATIONS_PASSWORD=dev-notifications-password \
+            -e NATS_COMPLIANCE_PASSWORD=dev-compliance-password \
+            nats:2.10-alpine -c /etc/nats/nats.conf
+          for _ in $(seq 1 30); do
+            curl -fsS http://localhost:58222/healthz >/dev/null && exit 0
+            sleep 1
+          done
+          docker logs nats
+          exit 1
+
       - name: go test (unit + integration)
         env:
           LEDGER_TEST_DATABASE_URL: postgres://bridge:bridge@localhost:55433/bridge_test?sslmode=disable
@@ -67,6 +85,9 @@ jobs:
           # audit-trail's store tests: the dedupe on event id is a unique
           # index and the chain read is a text[] scan — database properties.
           AUDIT_TRAIL_TEST_DATABASE_URL: postgres://audit_trail:audit_trail@localhost:55433/audit_trail_test?sslmode=disable
+          # core-ledger's TestNATSAuth* (H7) — the passwords default to the
+          # dev values the step above starts the broker with.
+          NATS_TEST_URL: nats://localhost:54222
         run: |
           set -euo pipefail
           # -p 1: the core-ledger packages share this one database and assert
@@ -79,7 +100,7 @@ jobs:
           # the Go tree is the same "LEDGER_TEST_DATABASE_URL is unset" guard.
           # Matching the prefix would have let all of them pass silently.
           if grep -q '^--- SKIP:' /tmp/go-test.log; then
-            echo "::error::a test was skipped — LEDGER_TEST_DATABASE_URL must be reachable in CI"
+            echo "::error::a test was skipped — the test databases and NATS_TEST_URL must be reachable in CI"
             grep '^--- SKIP:' /tmp/go-test.log
             exit 1
           fi

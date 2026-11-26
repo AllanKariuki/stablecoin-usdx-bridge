@@ -109,3 +109,52 @@ describe('digest comparison', () => {
     expect(payloadDigest({})).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 });
+
+describe('cross-language vectors (core-ledger, H4)', () => {
+  /**
+   * core-ledger's Go workflowclient (internal/workflowclient) re-implements
+   * this encoding and pins the SAME digests in its own tests. These vectors
+   * are the other half of that pin: if either encoding drifts, one of the two
+   * suites fails, and an encoding drift is exactly what would fail every
+   * approval at verification time on both sides at once.
+   */
+  it('digests a break-glass payload identically to core-ledger', () => {
+    expect(
+      payloadDigest({
+        transaction_id: 'tx-1',
+        chain_tx_hash: '0xabc',
+        reason: 'why',
+        correlation_id: 'c1',
+        chain: 'ETHEREUM',
+        source_address: '0x111',
+        amount: '10.000000',
+      }),
+    ).toBe('sha256:2c566c6d693d6cfba74497899130c696a4a0afa7da9e80bd05c3232e8e2a51bf');
+  });
+
+  it('keeps JSON.stringify escapes byte-identical to the Go port', () => {
+    // JSON.stringify leaves <, >, & and U+2028 raw; Go's json.Marshal would
+    // escape them. Both tests assert this exact digest, so whichever side
+    // escapes differently fails.
+    expect(canonicalize({ z: ' <&>"quote', a: [true, null, 3, 'x'], b: { nested: 'value' } })).toBe(
+      '{"a":[true,null,3,"x"],"b":{"nested":"value"},"z":" <&>\\"quote"}',
+    );
+    expect(payloadDigest({ z: ' <&>"quote', a: [true, null, 3, 'x'], b: { nested: 'value' } })).toBe(
+      'sha256:aad7fe125f916f637c08582575821acee3a57f6cf4076af4b387f17e7eba1418',
+    );
+  });
+
+  it('digests a full-length hash payload identically to core-ledger', () => {
+    expect(
+      payloadDigest({
+        amount: '10.000000',
+        chain_tx_hash: `0x${'a'.repeat(64)}`,
+        reason: 'operator said so',
+        correlation_id: 'corr',
+        chain: 'SOLANA',
+        source_address: 'So1',
+        transaction_id: 'tx-2',
+      }),
+    ).toBe('sha256:3563c449155df5be2efa6e071a750a6d9446c7e6735fd171228d257de26468cb');
+  });
+});

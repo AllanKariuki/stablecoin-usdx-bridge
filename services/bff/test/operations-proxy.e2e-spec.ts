@@ -77,6 +77,7 @@ describe('operations proxies (rms + core-ledger operator routes)', () => {
     ['post', '/ledger/closures', 'core-ledger'],
     ['post', '/transactions/tx-1/reversal', 'core-ledger'],
     ['post', '/redemptions/tx-1/confirm', 'core-ledger'],
+    ['get', '/redemptions/tx-1/break-glass', 'core-ledger'],
   ] as const)('%s %s reaches %s with the path and caller intact', async (method, path, upstream) => {
     const target = upstream === 'rms' ? rms : coreLedger;
     const before = target.seen.length;

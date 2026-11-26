@@ -21,6 +21,8 @@ import { connect, Events, NatsConnection } from 'nats';
 export class NatsService implements OnModuleInit, BeforeApplicationShutdown {
   private readonly logger = new Logger(NatsService.name);
   readonly url: string;
+  private readonly user: string;
+  private readonly password: string;
   private nc: NatsConnection | null = null;
   /** Tracks reconnects: while false, callers fall back rather than buffer. */
   private connected = false;
@@ -31,10 +33,21 @@ export class NatsService implements OnModuleInit, BeforeApplicationShutdown {
 
   constructor(config: ConfigService) {
     this.url = config.get<string>('NATS_URL', { infer: true }) ?? '';
+    this.user = config.get<string>('NATS_USER', { infer: true }) ?? '';
+    this.password = config.get<string>('NATS_PASSWORD', { infer: true }) ?? '';
   }
 
   onModuleInit(): void {
     if (!this.url) return;
+    // H7: the broker authenticates one user per service. A URL with no
+    // credentials is a misconfiguration, not a degraded state — boot fails
+    // loudly rather than connect, be refused permission on every publish
+    // and subscription, and quietly deliver nothing while looking healthy.
+    if (!this.user || !this.password) {
+      throw new Error(
+        'NATS_USER and NATS_PASSWORD are required when NATS_URL is set (the broker authenticates per-service users — see infra/nats/nats.conf)',
+      );
+    }
     void this.connectLoop();
   }
 
@@ -87,6 +100,8 @@ export class NatsService implements OnModuleInit, BeforeApplicationShutdown {
         const nc = await connect({
           servers: this.url,
           name: 'notifications',
+          user: this.user,
+          pass: this.password,
           maxReconnectAttempts: -1,
           reconnectTimeWait: 2000,
         });

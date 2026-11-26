@@ -22,6 +22,35 @@ export class ReportingConfig {
   @IsNotEmpty()
   CORE_LEDGER_URL!: string;
 
+  // --- Service-to-service auth (H2). Every core-ledger call carries
+  // reporting's own service-account token; core-ledger verifies it and
+  // checks ledger.reports.read.
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_ID!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_SECRET!: string;
+
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  KEYCLOAK_BASE_URL!: string;
+
+  @IsString()
+  KEYCLOAK_REALM = 'damp';
+
+  // --- Inbound service-to-service auth (H3). Every request must carry a
+  // service-account JWT whose audience is the `reporting` resource client.
+  // Both required — there is no unauthenticated mode.
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  AUTH_ISSUER_URL!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  AUTH_AUDIENCE = 'reporting';
+
   @IsOptional()
   @IsString()
   AUDIT_TRAIL_URL = '';

@@ -12,8 +12,9 @@
  *
  * --fast skips the on-chain steps (issuance, bridge, redeem-eth, redeem-sol)
  * and the chain reads, so a run moves fiat only and finishes in ~1 minute.
- * The full run spends testnet funds (Sepolia ETH + devnet SOL) and takes
- * ~45-60 minutes.
+ * The break-glass step self-skips in --fast: it needs a redemption whose saga
+ * is in flight, and creating one is on-chain money. The full run spends
+ * testnet funds (Sepolia ETH + devnet SOL) and takes ~45-60 minutes.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -44,12 +45,14 @@ function printHelp() {
   console.log(`Usage: node scripts/e2e/money-flows.mjs [--fast] [--only=<step,...>] [--timeout-min=40]
 
   --fast             skip the on-chain steps (issuance, bridge, redeem-eth,
-                     redeem-sol)
+                     redeem-sol); break-glass and enforcement self-skip (no
+                     in-flight redemption exists without them; enforcement
+                     submits real transactions)
   --only=step,...    run only the named steps, in order
   --timeout-min=N    saga poll timeout in minutes (default 40)
 
-Steps: wallets, deposit, p2p, invoice, withdrawal, issuance, bridge,
-       redeem-eth, redeem-sol, negatives, reconcile`);
+Steps: wallets, kyc, deposit, p2p, invoice, withdrawal, issuance, bridge,
+       redeem-eth, redeem-sol, break-glass, enforcement, negatives, reconcile`);
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +99,8 @@ const USERS = {
   customer: 'customer@damp.local',
   company: 'company@damp.local',
   treasury: 'treasury@damp.local',
+  admin: 'admin@damp.local',
+  compliance: 'compliance@damp.local',
 };
 
 // ---------------------------------------------------------------------------
@@ -390,6 +395,277 @@ async function stepWallets() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Step 1b — kyc (H5: every money step below needs the parties at TIER_1)
+// ---------------------------------------------------------------------------
+
+// Keycloak admin API (dev bootstrap credentials from docker-compose.yaml;
+// overridable so a differently-provisioned realm still works).
+const KC_ADMIN_BASE = process.env.E2E_KC_ADMIN_BASE || 'http://localhost:8080';
+const KC_ADMIN_USER = process.env.E2E_KC_ADMIN_USER || 'admin';
+const KC_ADMIN_PASSWORD = process.env.E2E_KC_ADMIN_PASSWORD || 'admin';
+
+async function kcAdminToken() {
+  const res = await fetch(`${KC_ADMIN_BASE}/realms/master/protocol/openid-connect/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'password',
+      client_id: 'admin-cli',
+      username: KC_ADMIN_USER,
+      password: KC_ADMIN_PASSWORD,
+    }),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.access_token) {
+    throw new StepError(`Keycloak admin login failed (${res.status})`, { status: res.status, body });
+  }
+  return body.access_token;
+}
+
+// One throwaway customer token, outside the realm-file cache: the user is
+// created at runtime and deleted before the step returns.
+async function throwawayToken(username, password) {
+  const res = await fetch(KEYCLOAK_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'password',
+      client_id: KC_CLIENT_ID,
+      username,
+      password,
+    }),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.access_token) {
+    throw new StepError(`token for throwaway ${username} failed (${res.status})`, { status: res.status, body });
+  }
+  return body.access_token;
+}
+
+async function kycStatus(user) {
+  const r = await api(user, 'GET', '/kyc/status');
+  assert(r.status === 200, `GET /kyc/status as ${user} -> ${r.status}`, { status: r.status, body: r.body });
+  return r.body;
+}
+
+/**
+ * Brings one party to TIER_1 through the REAL product path: open a case,
+ * request presigned upload slots, upload each required document (MinIO when
+ * kyc has S3 credentials; the documented unconfigured-storage stub otherwise
+ * — the upload URL is null and the storage key is recorded without a file),
+ * submit, let the stub screen (CLEAR for @damp.local), then approve the
+ * maker-checker request as compliance@damp.local through the gateway and
+ * wait for workflow's callback to grant the tier. Idempotent: a party
+ * already at/above TIER_1 passes immediately, and an open case mid-flight is
+ * resumed rather than re-opened.
+ */
+async function bringToTier(user) {
+  let st = await kycStatus(user);
+  if ((st.tierRank ?? 0) >= 1) return 'already at tier';
+
+  let caseId = st.openCase?.id;
+  let caseStatus = st.openCase?.status ?? '';
+  if (!caseId) {
+    const created = await api(user, 'POST', '/kyc/cases', { tier: 'TIER_1' });
+    if (created.status === 409) {
+      const again = await kycStatus(user);
+      caseId = again.openCase?.id;
+      caseStatus = again.openCase?.status ?? '';
+    } else {
+      assert(created.status >= 200 && created.status < 300 && created.body?.id,
+        `kyc case open as ${user} -> ${created.status}`, { status: created.status, body: created.body });
+      caseId = created.body.id;
+      caseStatus = created.body.status;
+    }
+  }
+  assert(caseId, `no open KYC case for ${user}`, { body: st });
+
+  if (caseStatus === 'DRAFT') {
+    const tiersRes = await api(user, 'GET', '/kyc/tiers');
+    assert(tiersRes.status === 200, `GET /kyc/tiers as ${user} -> ${tiersRes.status}`, { status: tiersRes.status });
+    const tier1 = tiersRes.body.tiers?.find((t) => t.name === 'TIER_1');
+    assert(tier1?.requiredDocuments, 'TIER_1 not found in /kyc/tiers', { body: tiersRes.body });
+
+    for (const kind of tier1.requiredDocuments) {
+      const slot = await api(user, 'POST', `/kyc/cases/${caseId}/documents/upload-url`, {
+        kind,
+        contentType: 'application/pdf',
+      });
+      assert(slot.status === 200 && slot.body?.storageKey,
+        `upload slot for ${kind} -> ${slot.status}`, { status: slot.status, body: slot.body });
+
+      const bytes = Buffer.from('%PDF-1.4 e2e stub document\n');
+      if (slot.body.uploadUrl) {
+        const put = await fetch(slot.body.uploadUrl, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/pdf' },
+          body: bytes,
+        });
+        assert(put.ok, `document PUT to storage -> ${put.status}`);
+      }
+
+      const recorded = await api(user, 'POST', `/kyc/cases/${caseId}/documents`, {
+        kind,
+        storageKey: slot.body.storageKey,
+        contentType: 'application/pdf',
+        sizeBytes: bytes.length,
+        sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      });
+      assert(recorded.status >= 200 && recorded.status < 300,
+        `document record for ${kind} -> ${recorded.status}`, { status: recorded.status, body: recorded.body });
+    }
+
+    const submitted = await api(user, 'POST', `/kyc/cases/${caseId}/submit`, {
+      email: user,
+      fullName: `E2E ${user}`,
+      country: 'KE',
+    });
+    assert(submitted.status >= 200 && submitted.status < 300,
+      `kyc submit as ${user} -> ${submitted.status}`, { status: submitted.status, body: submitted.body });
+    caseStatus = submitted.body?.status;
+  }
+
+  // @damp.local screens CLEAR, which skips the review queue but not
+  // maker-checker: the case goes straight to PENDING_APPROVAL.
+  const awaiting = await poll(
+    () => kycStatus(user),
+    (s) => ['PENDING_APPROVAL'].includes(s.openCase?.status) || (s.tierRank ?? 0) >= 1 || !['DRAFT', 'SUBMITTED', 'SCREENING', 'PENDING_REVIEW'].includes(s.openCase?.status),
+    60_000,
+    1_000,
+    `kyc screening ${caseId}`,
+  );
+  if ((awaiting.tierRank ?? 0) >= 1) return 'approved without a queue stop';
+  assert(awaiting.openCase?.status === 'PENDING_APPROVAL',
+    `kyc case ${caseId} is ${awaiting.openCase?.status}, expected PENDING_APPROVAL`, { body: awaiting });
+
+  const list = await api(USERS.compliance, 'GET', `/approval-requests?subjectType=KYC_CASE&subjectId=${caseId}`);
+  assert(list.status === 200 && Array.isArray(list.body?.requests),
+    `approval request list -> ${list.status}`, { status: list.status, body: list.body });
+  const request0 = list.body.requests[0];
+  assert(request0?.id, `no approval request for KYC case ${caseId}`, { body: list.body });
+
+  if (request0.status === 'PENDING') {
+    const approved = await api(USERS.compliance, 'POST', `/approval-requests/${request0.id}/approve`, {
+      comment: ref('e2e KYC approval'),
+    });
+    assert(approved.status === 200, `kyc approval -> ${approved.status}`, { status: approved.status, body: approved.body });
+  }
+
+  // workflow delivers the decision to kyc asynchronously; the tier grant and
+  // the wallet thaw land together.
+  const granted = await poll(
+    () => kycStatus(user),
+    (s) => (s.tierRank ?? 0) >= 1,
+    90_000,
+    1_000,
+    `kyc tier grant ${caseId}`,
+  );
+  assert((granted.tierRank ?? 0) >= 1, `tier was never granted to ${user}`, { body: granted });
+  return `granted ${granted.tier} (rank ${granted.tierRank})`;
+}
+
+/**
+ * The H5 negative: a party nobody has screened can move no money.
+ *
+ * A throwaway user is created through the Keycloak admin API (explicitly
+ * granted the `customer` realm role rather than trusting default-role
+ * assignment), logs in via ROPC, and identity JIT-provisions its party on
+ * the first gateway call. Its tier is TIER_0 by construction — so a deposit
+ * intent (payments' gate), an issuance and a customer transfer (bff's gate)
+ * must all answer 403 KYC_REQUIRED before anything is written. The user is
+ * deleted at the end; the provisioned party row is a harmless remnant.
+ */
+async function kycNegative() {
+  const token = await kcAdminToken();
+  const username = `kyc-neg-${runId}`;
+  const email = `${username}@damp.local`;
+  const password = 'damp-dev-only';
+
+  const created = await fetch(`${KC_ADMIN_BASE}/admin/realms/damp/users`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      username,
+      email,
+      // Keycloak 26's user profile requires first/last name; without them
+      // the account is "not fully set up" and the password grant is refused.
+      firstName: 'KYC',
+      lastName: 'Negative',
+      enabled: true,
+      emailVerified: true,
+      requiredActions: [],
+      credentials: [{ type: 'password', value: password, temporary: false }],
+    }),
+  });
+  assert(created.status === 201, `Keycloak user create -> ${created.status}`, { status: created.status });
+  const location = created.headers.get('location') ?? '';
+  const userId = location.split('/').pop();
+  assert(userId, 'user create carried no Location header');
+
+  try {
+    const role = await fetch(`${KC_ADMIN_BASE}/admin/realms/damp/roles/customer`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const roleRep = await role.json();
+    const assigned = await fetch(`${KC_ADMIN_BASE}/admin/realms/damp/users/${userId}/role-mappings/realm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify([roleRep]),
+    });
+    assert(assigned.status === 204, `customer role assign -> ${assigned.status}`, { status: assigned.status });
+
+    const userToken = await throwawayToken(username, password);
+
+    // First gateway call: auth-proxy resolves the subject and identity
+    // JIT-provisions the party (and its default wallet).
+    const wallets = await api(null, 'GET', '/wallets', undefined, { auth: userToken });
+    assert(wallets.status === 200, `throwaway GET /wallets -> ${wallets.status}`, { status: wallets.status, body: wallets.body });
+
+    const deposit = await api(null, 'POST', '/payment-intents', {
+      direction: 'DEPOSIT',
+      amount: '1.00',
+      currency: 'USD',
+    }, { auth: userToken });
+    assert(deposit.status === 403 && deposit.body?.code === 'KYC_REQUIRED',
+      `unverified deposit intent -> ${deposit.status} ${deposit.body?.code}, want 403 KYC_REQUIRED`,
+      { status: deposit.status, body: deposit.body });
+
+    const issuance = await api(null, 'POST', '/issuances', {
+      fiatWalletId: 'not-mine',
+      usdxWalletId: 'not-mine',
+      amount: '1.00',
+    }, { auth: userToken });
+    assert(issuance.status === 403 && issuance.body?.code === 'KYC_REQUIRED',
+      `unverified issuance -> ${issuance.status} ${issuance.body?.code}, want 403 KYC_REQUIRED`,
+      { status: issuance.status, body: issuance.body });
+
+    const transfer = await api(null, 'POST', '/transfers', {
+      fromWalletId: 'not-mine',
+      toWalletId: 'not-theirs',
+      amount: '1.00',
+    }, { auth: userToken });
+    assert(transfer.status === 403 && transfer.body?.code === 'KYC_REQUIRED',
+      `unverified transfer -> ${transfer.status} ${transfer.body?.code}, want 403 KYC_REQUIRED`,
+      { status: transfer.status, body: transfer.body });
+  } finally {
+    await fetch(`${KC_ADMIN_BASE}/admin/realms/damp/users/${userId}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    });
+  }
+  return true;
+}
+
+async function stepKyc() {
+  const notes = [];
+  for (const user of [USERS.customer, USERS.company]) {
+    notes.push(`${user}: ${await bringToTier(user)}`);
+  }
+  await kycNegative();
+  return { note: notes.join('; ') + '; unverified party refused 403 KYC_REQUIRED (deposit intent, issuance, transfer)' };
+}
+
 // --- shared helpers ---------------------------------------------------------
 
 async function walletBalance(walletId, user) {
@@ -412,6 +688,39 @@ async function customerWallets() {
     usdxEth: w.find((x) => x.currency === 'USDX' && x.chain === 'ETHEREUM'),
     usdxSol: w.find((x) => x.currency === 'USDX' && x.chain === 'SOLANA'),
   };
+}
+
+// --- Stub-rail fiat accounting (Leg C expectation) ---------------------------
+//
+// Leg C compares the custodian's reported bank balance against GL 1100.USD
+// ("Cash at custodian", chart.go GLTrustBank) — the figure the reconcile run
+// row carries as ledger_cash. On this stack the custodian is a stub that
+// mirrors core-ledger's cash position on a poll (services/rms
+// StubCustodianProvider), while payments' stub rail posts to that same GL on
+// every run: a settled deposit debits it for the full amount (flows.go
+// Deposit), a settled withdrawal credits it for the net after fee (flows.go
+// Withdraw). Issuance and redemption do not touch it — they re-shape the
+// claim into reserve backing and never move cash (flows.go Issue/Redeem) — and
+// p2p/invoice transfers only move liabilities.
+//
+// So the run's net stub-rail fiat is exactly how far ledger_cash should move,
+// and — until the next custodian poll re-syncs the stub — exactly how much
+// Leg C is expected to fall short of the last reported bank balance. That is
+// Leg C working, not a posting bug.
+
+const railFiat = []; // [{ direction, units }] for settled stub-rail intents this run created
+
+function recordRailFiat(direction, currency, magnitude) {
+  // Leg C reconciles ledger.PegCurrency (USD) only; a non-USD rail intent is
+  // not the GL this check reads.
+  if (currency !== 'USD') return;
+  railFiat.push({ direction, units: magnitude });
+}
+
+function expectedCustodianCashMovement() {
+  let v = 0n;
+  for (const r of railFiat) v += r.direction === 'DEPOSIT' ? r.units : -r.units;
+  return v;
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +760,10 @@ async function stepDeposit() {
   assert(entry, 'deposit posting missing from wallet statement', { body: stmt.body });
   assert(entry.amount?.amount === '200.00' && entry.direction === 'CREDIT',
     `deposit posting was ${entry.direction} ${JSON.stringify(entry.amount)}, expected CREDIT 200.00`, { body: entry });
+
+  // A deposit debits GL 1100.USD by the full amount, which is exactly the
+  // credit the customer's wallet just took.
+  recordRailFiat('DEPOSIT', 'USD', diffUnits(after, before, 'USD'));
 
   await invariants();
 
@@ -586,6 +899,11 @@ async function stepWithdrawal() {
   const after = await walletBalance(ctx.customer.usd.id, USERS.customer);
   assert(diffUnits(after, before, 'USD') === -500n, `customer moved ${fmtUnits(diffUnits(after, before, 'USD'), 'USD')}, expected -5.00`);
 
+  // A withdrawal credits GL 1100.USD the *net* after fee (flows.go Withdraw).
+  // FEE_WITHDRAWAL_BPS is 0 on this stack, so the customer's gross debit is
+  // the cash that leaves the custodian.
+  recordRailFiat('WITHDRAWAL', 'USD', -diffUnits(after, before, 'USD'));
+
   await invariants();
 
   return { ids: { bankId: bank.id, bankAccountId: acct.body.id, withdrawalIntentId: intentId, withdrawalLedgerTxId: intent.body.ledgerTxId } };
@@ -598,7 +916,9 @@ async function stepWithdrawal() {
 async function sagaPoll(correlationId, kind, timeoutMs) {
   return poll(
     () => api(USERS.customer, 'GET', `/transfers/${correlationId}`),
-    (r) => r.status !== 200 || ['COMPLETED', 'FAILED', 'COMPENSATED'].includes(r.body?.status),
+    // A 502/503/504 from the gateway is a transient read failure, not the
+    // saga's answer: keep polling. Any other non-200 ends the poll.
+    (r) => (r.status !== 200 && ![502, 503, 504].includes(r.status)) || ['COMPLETED', 'FAILED', 'COMPENSATED'].includes(r.body?.status),
     timeoutMs,
     10_000,
     `${kind} saga ${correlationId}`,
@@ -760,7 +1080,262 @@ async function stepRedeemSol() {
 }
 
 // ---------------------------------------------------------------------------
-// Step 10 — negative checks (always run)
+// Step 9b — break-glass (always attempted; skipped without a target)
+// ---------------------------------------------------------------------------
+
+const BREAK_GLASS_AMOUNT = '5.00';
+const BREAK_GLASS_UNITS = 5_000_000n; // 5.00 USD-X at 6 decimals
+
+/**
+ * H4's break-glass maker-checker, exercised on the NEGATIVE path only: the
+ * proposal must never settle on an operator's word.
+ *
+ * Full mode creates a small fresh redemption (its saga is in flight for
+ * minutes while the burn reaches finality, so nothing races), then:
+ *
+ *  1. treasury proposes break-glass with a random fake hash -> 202
+ *     PENDING_APPROVAL (and nothing settles);
+ *  2. treasury cannot approve its own request -> workflow 403
+ *     (excludeInitiator);
+ *  3. admin approves -> the burn cannot verify -> VERIFICATION_FAILED;
+ *  4. the saga is NOT settled and the fiat wallet did not move.
+ *
+ * --fast has no gateway route to list pending redemptions (the dead-letter
+ * queue is not exposed through the gateway) and creating one is chain
+ * money, so it skips with a reason.
+ */
+async function stepBreakGlass() {
+  if (opts.fast) {
+    throw new StepSkip(
+      '--fast: a break-glass target needs a redemption whose saga is in flight, and creating one is on-chain money; run the full flow instead',
+    );
+  }
+
+  const wallets = await customerWallets();
+  assert(wallets.usd?.id, 'no customer USD fiat wallet');
+  assert(wallets.usdxEth?.id, 'no customer USD-X ETHEREUM wallet (run the wallets step first)');
+
+  const usdxBefore = await walletBalance(wallets.usdxEth.id, USERS.customer);
+  if (units(usdxBefore, 'USDX') < BREAK_GLASS_UNITS) {
+    throw new StepSkip(
+      `customer ETH USD-X balance ${usdxBefore} is below the break-glass amount ${BREAK_GLASS_AMOUNT} — run the issuance step first`,
+    );
+  }
+
+  const fiatBefore = await walletBalance(wallets.usd.id, USERS.customer);
+
+  // A fresh redemption whose saga is in flight. The worker will eventually
+  // burn it for real (that is the happy path); break-glass below proves it
+  // cannot be settled by hand first.
+  const r = await api(USERS.customer, 'POST', '/redemptions', {
+    usdxWalletId: wallets.usdxEth.id,
+    fiatWalletId: wallets.usd.id,
+    amount: BREAK_GLASS_AMOUNT,
+  });
+  assert(r.status === 202, `break-glass redemption -> ${r.status}`, { status: r.status, body: r.body });
+  const redeemTxId = r.body.transaction?.id;
+  assert(redeemTxId, 'redemption response carries no transaction id', { status: r.status, body: r.body });
+  const correlationId = r.body.correlationId;
+
+  // Operator A (treasury) proposes break-glass with a hash the chain has
+  // never seen.
+  const fakeHash = '0x' + crypto.randomBytes(32).toString('hex');
+  const prop = await api(USERS.treasury, 'POST', `/redemptions/${redeemTxId}/confirm`, {
+    chain_tx_hash: fakeHash,
+    reason: ref('e2e break-glass negative path'),
+  });
+  assert(prop.status === 202 && prop.body?.status === 'PENDING_APPROVAL',
+    `break-glass proposal -> ${prop.status}`, { status: prop.status, body: prop.body });
+  const approvalRequestId = prop.body?.approval_request_id;
+  assert(approvalRequestId, 'proposal carries no approval_request_id', { body: prop.body });
+
+  // The saga must not be settled by the proposal alone.
+  const midSaga = await api(USERS.customer, 'GET', `/transfers/${correlationId}`);
+  assert(midSaga.status === 200 && midSaga.body?.status !== 'COMPLETED',
+    `the proposal settled the saga (${midSaga.body?.status}); a break-glass must not settle without approval`, { body: midSaga.body });
+
+  // Operator A cannot approve their own request — workflow's excludeInitiator.
+  const self = await api(USERS.treasury, 'POST', `/approval-requests/${approvalRequestId}/approve`, { comment: 'self-approval attempt' });
+  assert(self.status === 403, `self-approval -> ${self.status}, want 403`, { status: self.status, body: self.body });
+
+  // Operator B (a different person — admin, who also holds approvals:decide)
+  // approves. The burn cannot verify: the hash is fake.
+  const approval = await api(USERS.admin, 'POST', `/approval-requests/${approvalRequestId}/approve`, { comment: ref('e2e negative approval') });
+  assert(approval.status === 200, `admin approve -> ${approval.status}`, { status: approval.status, body: approval.body });
+
+  // The decision callback is delivered asynchronously (workflow's drain
+  // loop); poll the proposal row to a terminal state.
+  const final = await poll(
+    () => api(USERS.treasury, 'GET', `/redemptions/${redeemTxId}/break-glass`),
+    (res) => res.status === 200 && res.body?.status !== 'PENDING',
+    90_000, 2_000, 'break-glass status',
+  );
+  assert(final.body?.status === 'VERIFICATION_FAILED',
+    `break-glass status ${final.body?.status}, want VERIFICATION_FAILED`, { status: final.status, body: final.body });
+  assert(final.body?.failure_reason, 'VERIFICATION_FAILED carries no failure_reason', { body: final.body });
+
+  // The approval moved nothing: the saga is still in flight and the fiat
+  // wallet is untouched.
+  const saga = await api(USERS.customer, 'GET', `/transfers/${correlationId}`);
+  assert(saga.status === 200 && saga.body?.status !== 'COMPLETED',
+    `the saga is ${saga.body?.status}; a failed verification must not settle it`, { status: saga.status, body: saga.body });
+  const fiatAfter = await walletBalance(wallets.usd.id, USERS.customer);
+  assert(units(fiatAfter, 'USD') === units(fiatBefore, 'USD'),
+    `fiat moved from ${fiatBefore} to ${fiatAfter} on a failed verification`);
+
+  // The status route is operator-only.
+  const asCustomer = await api(USERS.customer, 'GET', `/redemptions/${redeemTxId}/break-glass`);
+  assert(asCustomer.status === 403, `customer break-glass read -> ${asCustomer.status}, want 403`, { status: asCustomer.status });
+
+  await invariants();
+
+  return {
+    ids: { breakGlassRedeemTxId: redeemTxId, breakGlassApprovalRequestId: approvalRequestId },
+    note: `negative path passed: ${final.body.failure_reason}; the worker still settles this redemption the ordinary way (real burn of ${BREAK_GLASS_AMOUNT})`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Step 10 — enforcement (FULL mode only): blacklist + unblacklist a throwaway
+// ---------------------------------------------------------------------------
+//
+// The real product path for H6: compliance@damp.local raises the action
+// through the gateway, admin@damp.local approves it in workflow (segregation
+// of duties — the proposer is excluded), compliance submits it to core-ledger,
+// core-ledger signs it and waits for finality, and the harness asserts the
+// chain state itself changed. Never a pause: that would halt the shared
+// testnet contract for every other flow. In --fast it self-skips.
+//
+// If the relayer lacks COMPLIANCE_ROLE the step SKIPs with the exact grant
+// command an admin would run — it does not run it.
+
+/** The relayer address core-ledger signs with, derived without ever printing the key. */
+function relayerAddress() {
+  if (!coreLedgerEnv.ETH_RELAYER_PRIVATE_KEY) {
+    throw new StepError('no ETH_RELAYER_PRIVATE_KEY in core-ledger/.env (a remote signer?); the enforcement step needs the relayer address to check its roles');
+  }
+  try {
+    return execFileSync('cast', ['wallet', 'address', '--private-key', coreLedgerEnv.ETH_RELAYER_PRIVATE_KEY], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    // The error text would echo the command line (and the key); say nothing.
+    throw new StepError('could not derive the relayer address from ETH_RELAYER_PRIVATE_KEY');
+  }
+}
+
+/** Read-only role check on the USDX proxy. */
+function ethHasRole(roleName, holder) {
+  const role = execFileSync('cast', ['keccak', roleName], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  const out = execFileSync(
+    'cast',
+    ['call', USDX_PROXY_ADDRESS, 'hasRole(bytes32,address)(bool)', role, holder, '--rpc-url', ETH_RPC_URL],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  ).trim();
+  return out.split(/\s+/)[0] === 'true';
+}
+
+/** Read-only blacklist state on the USDX proxy. */
+function ethIsBlacklisted(addr) {
+  const out = execFileSync(
+    'cast',
+    ['call', USDX_PROXY_ADDRESS, 'isBlacklisted(address)(bool)', addr, '--rpc-url', ETH_RPC_URL],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+  ).trim();
+  return out.split(/\s+/)[0] === 'true';
+}
+
+async function stepEnforcement() {
+  if (opts.fast) {
+    throw new StepSkip(
+      '--fast: enforcement submits real blacklist/unblacklist transactions on Sepolia and waits for finality; run the full flow instead',
+    );
+  }
+
+  // A freshly generated throwaway address — never a real holder, never a
+  // custody account, and never the shared contract's pause switch.
+  const throwaway = '0x' + crypto.randomBytes(20).toString('hex');
+
+  // The submission reverts without COMPLIANCE_ROLE on the relayer, so check
+  // it first (read-only) and SKIP with the exact grant command an admin
+  // would run — this harness never sends it.
+  const relayer = relayerAddress();
+  if (!ethHasRole('COMPLIANCE_ROLE', relayer)) {
+    throw new StepSkip(
+      `the relayer ${relayer} lacks COMPLIANCE_ROLE on the USDX proxy ${USDX_PROXY_ADDRESS}; an admin can grant it with:\n` +
+        `  cast send ${USDX_PROXY_ADDRESS} "grantRole(bytes32,address)" $(cast keccak "COMPLIANCE_ROLE") ${relayer} \\\n` +
+        `    --rpc-url ${ETH_RPC_URL} --private-key <a-key-holding-DEFAULT_ADMIN_ROLE>`,
+    );
+  }
+
+  // One full enforcement round: raise through the gateway, approve as a
+  // different person, wait for compliance to execute on chain.
+  const raise = async (kind) => {
+    const proposed = await api(USERS.compliance, 'POST', '/compliance/enforcement', {
+      kind,
+      chain: 'ETHEREUM',
+      target: throwaway,
+      reason: ref(`e2e ${kind.toLowerCase()} throwaway ${throwaway}`),
+    });
+    assert(proposed.status === 200 || proposed.status === 201,
+      `${kind} proposal -> ${proposed.status}`, { status: proposed.status, body: proposed.body });
+    assert(proposed.body?.status === 'PENDING_APPROVAL', `${kind} proposal is ${proposed.body?.status}`, { body: proposed.body });
+    const actionId = proposed.body?.id;
+    const approvalRequestId = proposed.body?.approvalRequestId;
+    assert(actionId && approvalRequestId, 'proposal carries no id/approvalRequestId', { body: proposed.body });
+
+    // Segregation of duties: the proposer cannot approve their own request.
+    const self = await api(USERS.compliance, 'POST', `/approval-requests/${approvalRequestId}/approve`, { comment: 'self-approval attempt' });
+    assert(self.status === 403, `compliance self-approval -> ${self.status}, want 403`, { status: self.status, body: self.body });
+
+    // A different person: admin (approvals:decide + in the blacklist pool).
+    const approval = await api(USERS.admin, 'POST', `/approval-requests/${approvalRequestId}/approve`, { comment: ref(`e2e ${kind} approval`) });
+    assert(approval.status === 200, `admin approve -> ${approval.status}`, { status: approval.status, body: approval.body });
+
+    // compliance executes after workflow's callback — recording SUBMITTED —
+    // and core-ledger's worker watches the chain until finality before the
+    // finalized event marks the action EXECUTED. Sepolia finality trails the
+    // head by ~13–18 minutes, so each action can take that long; the poll
+    // budget is the run's --timeout-min.
+    const final = await poll(
+      () => api(USERS.compliance, 'GET', '/compliance/enforcement'),
+      (res) => {
+        const action = res.body?.actions?.find((a) => a.id === actionId);
+        return action && (action.status === 'EXECUTED' || action.status === 'FAILED');
+      },
+      opts.timeoutMin * 60_000, 5_000, `${kind} enforcement action`,
+    );
+    const action = final.body.actions.find((a) => a.id === actionId);
+    assert(action.status === 'EXECUTED',
+      `${kind} ended ${action.status}: ${action.failureReason ?? 'no failure reason'}`, { body: action });
+    assert(action.chainTxHash, `${kind} recorded no chain tx hash`, { body: action });
+    return { actionId, approvalRequestId, txHash: action.chainTxHash };
+  };
+
+  const black = await raise('BLACKLIST');
+  const blacklisted = ethIsBlacklisted(throwaway);
+  assert(blacklisted === true,
+    `isBlacklisted(${throwaway}) is ${blacklisted} on chain after BLACKLIST, want true`, { txHash: black.txHash });
+
+  const unblack = await raise('UNBLACKLIST');
+  const unblacklisted = ethIsBlacklisted(throwaway);
+  assert(unblacklisted === false,
+    `isBlacklisted(${throwaway}) is ${unblacklisted} on chain after UNBLACKLIST, want false`, { txHash: unblack.txHash });
+
+  return {
+    ids: {
+      blacklistActionId: black.actionId,
+      unblacklistActionId: unblack.actionId,
+      blacklistTxHash: black.txHash,
+      unblacklistTxHash: unblack.txHash,
+    },
+    note: `blacklist + unblacklist of throwaway ${throwaway} reached the chain through compliance -> workflow -> core-ledger`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Step 11 — negative checks (always run)
 // ---------------------------------------------------------------------------
 
 function subcheck(name, ok, extra) {
@@ -837,6 +1412,77 @@ async function stepNegatives() {
     all &= subcheck('missing Idempotency-Key → 400', r.status === 400, `status ${r.status}`);
   }
 
+  // (g) core-ledger's own auth boundary (H2). The API port is reachable
+  // from the host, so the check is direct: without a service-account token
+  // it must 401, and a customer's gateway token — right issuer, wrong
+  // audience — must 401 too. Neither may reach the posting engine.
+  {
+    const CORE_LEDGER = process.env.E2E_CORE_LEDGER || 'http://localhost:18081';
+    const deposit = { wallet_id: ctx.customer.usd.id, amount: '1.00' };
+
+    const r1 = await fetch(`${CORE_LEDGER}/deposits`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(deposit),
+    });
+    all &= subcheck('direct core-ledger POST /deposits without token → 401', r1.status === 401, `status ${r1.status}`);
+
+    const customerToken = await bearer(USERS.customer);
+    const r2 = await fetch(`${CORE_LEDGER}/deposits`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${customerToken}` },
+      body: JSON.stringify(deposit),
+    });
+    all &= subcheck('direct core-ledger POST /deposits with customer token (wrong audience) → 401', r2.status === 401, `status ${r2.status}`);
+  }
+
+  // (h) the H3 boundaries on the other services. Same idea as (g): the
+  // service ports are reachable from the host, so a forged X-User-Id without
+  // a service token must 401 on a user-facing route, an ingest route must
+  // refuse a caller with no token, and a caller's OWN token against another
+  // service (right issuer, wrong audience) must 401 — none of these may
+  // reach a handler.
+  {
+    const PAYMENTS = process.env.E2E_PAYMENTS || 'http://localhost:13003';
+    const NOTIFICATIONS = process.env.E2E_NOTIFICATIONS || 'http://localhost:13000';
+
+    const forged = await fetch(`${PAYMENTS}/payment-intents`, {
+      method: 'GET',
+      headers: { 'x-user-id': 'forged-party' },
+    });
+    all &= subcheck('direct payments GET /payment-intents with forged X-User-Id and no token → 401', forged.status === 401, `status ${forged.status}`);
+
+    const ingest = await fetch(`${NOTIFICATIONS}/internal/events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ event: 'e2e.forged', partyId: ctx.customer.partyId, payload: {} }),
+    });
+    all &= subcheck('direct notifications POST /internal/events without token → 401', ingest.status === 401, `status ${ingest.status}`);
+
+    // svc-payments' own token against payments: the token's audiences are
+    // core-ledger/notifications/audit-trail — payments is not one of them,
+    // so the verifier rejects it as wrong-audience 401.
+    const mintRes = await fetch(`${process.env.KEYCLOAK_BASE_URL ?? 'http://localhost:8080'}/realms/damp/protocol/openid-connect/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: 'svc-payments',
+        client_secret: process.env.E2E_SVC_PAYMENTS_SECRET ?? 'dev-svc-payments-secret',
+      }),
+    });
+    let wrongAudience = 401;
+    if (mintRes.ok) {
+      const { access_token } = await mintRes.json();
+      const r = await fetch(`${PAYMENTS}/payment-intents`, {
+        method: 'GET',
+        headers: { authorization: `Bearer ${access_token}`, 'x-user-id': 'forged-party' },
+      });
+      wrongAudience = r.status;
+    }
+    all &= subcheck('direct payments with svc-payments token (wrong audience) → 401', wrongAudience === 401, `status ${wrongAudience}`);
+  }
+
   assert(all, 'one or more negative checks failed');
   return { note: 'all negative checks passed' };
 }
@@ -877,16 +1523,17 @@ function summarizeReconcile(log) {
   let ok = false;
   let breaks = false;
   let errored = false;
+  let ledgerCash = null;
   for (const line of String(log).split('\n')) {
     let o;
     try { o = JSON.parse(line); } catch { continue; }
-    if (o.msg === 'reconciliation OK') ok = true;
+    if (o.msg === 'reconciliation OK') { ok = true; ledgerCash = o.ledger_cash ?? null; }
     else if (o.msg === 'reconciliation found breaks') breaks = true;
     else if (o.msg === 'reconciliation could not be performed') errored = true;
     else if (o.msg === 'reconciliation break') legs[o.leg] = { code: o.code, drift: o.drift, detail: o.detail };
     else if (o.msg === 'Leg C skipped: no custodian has reported a balance yet') legs.LEG_C = { skipped: true };
   }
-  return { ok, breaks, errored, legs };
+  return { ok, breaks, errored, legs, ledgerCash };
 }
 
 // --- Leg A delta snapshots ---------------------------------------------------
@@ -925,16 +1572,37 @@ function snapshotFromRun(run) {
     : eth + sol - issued + inTransit;
   return {
     drift, issued, inTransit, eth, sol,
+    // Leg C's two terms come straight off the run row (renderRun in
+    // core-ledger/internal/api/reserves.go), still in smallest units. The bank
+    // balance is null when no custodian has reported one yet.
+    bankBalance: bigOrNull(run.bank_balance),
+    ledgerCash: bigOrNull(run.ledger_cash),
+    bankAsOf: run.bank_as_of ?? null,
     legAOk: run.leg_a_ok, legBOk: run.leg_b_ok, legCOk: run.leg_c_ok,
     status: run.status, id: run.id, source: 'http',
   };
 }
 
+// The log fallback has no structured Leg C row, but a Leg C break line carries
+// the leg's own Detail() string — `shortfall=... bank_balance=... (as_of=...)
+// ledger_cash=...` (reconciliation/legs.go) — and a healthy run logs
+// ledger_cash on its "reconciliation OK" line.
+function parseLegCDetail(detail) {
+  const m = String(detail ?? '').match(/shortfall=(-?\d+) bank_balance=(-?\d+) \(as_of=([^)]*)\) ledger_cash=(-?\d+)/);
+  if (!m) return { bankBalance: null, ledgerCash: null };
+  return { bankBalance: BigInt(m[2]), ledgerCash: BigInt(m[4]) };
+}
+
 function snapshotFromLog(log) {
   const sum = summarizeReconcile(log);
+  const legCBreak = sum.legs.LEG_C && !sum.legs.LEG_C.skipped ? sum.legs.LEG_C : null;
+  const cash = legCBreak ? parseLegCDetail(legCBreak.detail) : { bankBalance: null, ledgerCash: null };
   return {
     drift: sum.legs.LEG_A?.drift != null ? BigInt(sum.legs.LEG_A.drift) : 0n,
     issued: null, inTransit: null, eth: null, sol: null,
+    bankBalance: cash.bankBalance,
+    ledgerCash: cash.ledgerCash ?? (sum.ledgerCash !== null ? BigInt(sum.ledgerCash) : null),
+    bankAsOf: null,
     legAOk: sum.legs.LEG_A ? false : true,
     legBOk: sum.legs.LEG_B ? false : true,
     legCOk: sum.legs.LEG_C ? (sum.legs.LEG_C.skipped ? null : false) : true,
@@ -983,12 +1651,10 @@ async function stepReconcile() {
   console.log(`  reconcile exit=${after.exitCode}  status=${after.status}  id=${after.id ?? '(log)'}`);
   console.log(`  legs  LegA=${describeLeg('LegA', after.legAOk)} LegB=${describeLeg('LegB', after.legBOk)} LegC=${describeLeg('LegC', after.legCOk)}`);
 
-  // Leg B is the 1:1 peg; it must be ok. Leg C is skipped until a custodian
-  // reports a balance — reported, not failed.
+  // Leg B is the 1:1 peg; it must be ok. Leg C is evaluated by delta below:
+  // a custodian shortfall that grows by exactly this run's stub-rail fiat is
+  // the stub custodian, not a product failure.
   assert(after.legBOk === true, `Leg B is not ok (leg_b_ok=${after.legBOk})`, { status: after.status, id: after.id });
-  if (after.legCOk === false) {
-    assert(false, 'Leg C reports a custodian shortfall', { legCOk: after.legCOk });
-  }
 
   const legs = `LegA=${describeLeg('LegA', after.legAOk)} LegB=${describeLeg('LegB', after.legBOk)} LegC=${describeLeg('LegC', after.legCOk)}`;
   if (before) {
@@ -1022,9 +1688,70 @@ async function stepReconcile() {
     }
   }
 
+  // ---- Leg C: ledger cash vs the custodian's reported balance ---------------
+  //
+  // Leg C is an inequality (bank >= ledger cash) against a *stub* custodian
+  // that mirrors ledger cash on a 60s poll while the stub rail moves GL
+  // 1100.USD on every run. So the run's job is not "is there a shortfall" —
+  // until the next poll the ledger has moved and the last reported balance has
+  // not, correctly — it is "did the ledger cash move by exactly what the rail
+  // said it would". A different number is a posting bug.
+  const expectedCash = expectedCustodianCashMovement();
+  const expectedTerms = `${expectedCash >= 0n ? '+' : ''}${expectedCash}`;
+  const railTerms = railFiat.length
+    ? railFiat.map((r) => `${r.direction === 'DEPOSIT' ? '+' : '-'}${r.units} ${r.direction.toLowerCase()}`).join(', ')
+    : 'none';
+  const hasCash = (s) => s !== null && s !== undefined && s.bankBalance !== null && s.ledgerCash !== null;
+  const cashTerms = (s) => (hasCash(s)
+    ? `bank_balance=${s.bankBalance} (as_of=${s.bankAsOf ?? '?'}) ledger_cash=${s.ledgerCash}`
+    : 'bank_balance=? ledger_cash=?');
+
+  if (hasCash(before)) console.log(`  Leg C  before ${cashTerms(before)}`);
+  console.log(`  Leg C  after  ${cashTerms(after)}`);
+
+  let cashDeltaActual = null;
+  if (after.legCOk === null) {
+    console.log(`  Leg C  skipped (no custodian snapshot) — nothing to compare; stub rail moved ${expectedTerms} (${railTerms})`);
+  } else if (!hasCash(before) || !hasCash(after)) {
+    console.log(`  Leg C  ${describeLeg('LegC', after.legCOk)}; cash terms unavailable on one side — skipped the delta comparison (stub rail moved ${expectedTerms}: ${railTerms})`);
+    if (before?.legCOk === false || after.legCOk === false) {
+      console.log('  KNOWN: stub custodian; shortfall grows by net stub fiat (stub balance lags the ledger by up to one poll)');
+    }
+  } else {
+    const bankDelta = after.bankBalance - before.bankBalance;
+    const cashDelta = after.ledgerCash - before.ledgerCash;
+    cashDeltaActual = cashDelta;
+    console.log(`  Leg C  delta  bank_balance=${bankDelta} ledger_cash=${cashDelta}  expected ledger_cash=${expectedTerms}  (stub rail: ${railTerms})`);
+
+    // The stub custodian is a mirror, not a constant: services/rms's
+    // StubCustodianProvider reports the ledger's own cash position plus its
+    // configured drift, re-polled every CUSTODIAN_POLL_SECONDS (60s). So a
+    // bank_balance move is only legitimate when a *new snapshot* was posted
+    // (bank_as_of advanced) — that is the stub re-syncing to cash this run
+    // moved. A figure that changed with no new snapshot moved underneath us.
+    const repolled = before.bankAsOf !== null && after.bankAsOf !== null && after.bankAsOf !== before.bankAsOf;
+    if (bankDelta !== 0n && repolled) {
+      console.log(`  Leg C  bank_balance re-polled during the run (as_of ${before.bankAsOf} -> ${after.bankAsOf}) — stub custodian mirrors ledger cash`);
+    }
+
+    // A stub custodian's balance lags by up to one poll, so the whole expected
+    // change in Leg C's drift is the ledger-cash movement. Say so out loud
+    // rather than letting a red leg look like a failure of this run.
+    if (before.legCOk === false || after.legCOk === false) {
+      console.log(`  KNOWN: stub custodian; shortfall grows by net stub fiat (LegC before=${describeLeg('LegC', before.legCOk)} after=${describeLeg('LegC', after.legCOk)})`);
+    }
+
+    assert(bankDelta === 0n || repolled,
+      `Leg C bank_balance changed during the run with no new custodian snapshot: before=${before.bankBalance} (as_of=${before.bankAsOf ?? '?'}) after=${after.bankBalance} (as_of=${after.bankAsOf ?? '?'})`,
+      { before: cashTerms(before), after: cashTerms(after) });
+    assert(cashDelta === expectedCash,
+      `Leg C ledger_cash moved ${cashDelta}, expected ${expectedTerms} from the run's stub-rail fiat (${railTerms}) — a mismatch here is a posting bug, not stub drift`,
+      { before: cashTerms(before), after: cashTerms(after), railFiat });
+  }
+
   return {
     ids: after.id ? { reconciliationRunId: after.id } : undefined,
-    note: `reconcile exit=${after.exitCode} status=${after.status} ${legs}`,
+    note: `reconcile exit=${after.exitCode} status=${after.status} ${legs} legC cash delta expected=${expectedTerms} actual=${cashDeltaActual ?? '?'}`,
   };
 }
 
@@ -1034,6 +1761,7 @@ async function stepReconcile() {
 
 const STEPS = [
   { name: 'wallets', fn: stepWallets, money: false, onchain: false },
+  { name: 'kyc', fn: stepKyc, money: false, onchain: false },
   { name: 'deposit', fn: stepDeposit, money: true, onchain: false },
   { name: 'p2p', fn: stepP2p, money: true, onchain: false },
   { name: 'invoice', fn: stepInvoice, money: true, onchain: false },
@@ -1042,6 +1770,8 @@ const STEPS = [
   { name: 'bridge', fn: stepBridge, money: true, onchain: true },
   { name: 'redeem-eth', fn: stepRedeemEth, money: true, onchain: true },
   { name: 'redeem-sol', fn: stepRedeemSol, money: true, onchain: true },
+  { name: 'break-glass', fn: stepBreakGlass, money: false, onchain: false },
+  { name: 'enforcement', fn: stepEnforcement, money: false, onchain: false },
   { name: 'negatives', fn: stepNegatives, money: false, onchain: false },
   { name: 'reconcile', fn: stepReconcile, money: false, onchain: false },
 ];

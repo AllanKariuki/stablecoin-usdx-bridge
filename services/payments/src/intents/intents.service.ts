@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { AuditRequest, enqueueAuditEvent } from '@damp/nest-platform';
+import { ConfigService } from '@nestjs/config';
+import { AuditRequest, enqueueAuditEvent, KycGate } from '@damp/nest-platform';
 import { AUDIT, railActor, SERVICE } from '../audit/audit-actions';
 import { BanksRepository } from '../banks/banks.repository';
 import { CoreLedgerClient } from '../core-ledger/core-ledger.client';
@@ -20,6 +21,7 @@ import { IntentDirection, IntentsRepository, PaymentIntent } from './intents.rep
 @Injectable()
 export class IntentsService {
   private readonly logger = new Logger(IntentsService.name);
+  private readonly minTier: string;
 
   constructor(
     private readonly intents: IntentsRepository,
@@ -27,7 +29,11 @@ export class IntentsService {
     private readonly ledger: CoreLedgerClient,
     private readonly rails: RailRegistry,
     private readonly db: DbService,
-  ) {}
+    private readonly kycGate: KycGate,
+    config: ConfigService,
+  ) {
+    this.minTier = config.get<string>('KYC_MIN_TIER_FIAT', { infer: true }) ?? 'TIER_1';
+  }
 
   async create(input: {
     partyId: string;
@@ -43,6 +49,14 @@ export class IntentsService {
     audit?: AuditRequest;
   }): Promise<PaymentIntent> {
     this.assertAmount(input.amount, input.currency);
+
+    // H5: every direction moves value into or out of the party's wallet —
+    // DEPOSIT funds it, WITHDRAWAL drains it, TRANSFER (P2P and invoice pay)
+    // moves it between wallets — so all three are gated, sender side, and
+    // the gate runs before any write, core-ledger call or rail call. A
+    // party below KYC_MIN_TIER_FIAT gets 403 KYC_REQUIRED; an unreachable
+    // kyc fails closed with 503 KYC_UNAVAILABLE.
+    await this.kycGate.require(input.partyId, this.minTier);
 
     let rail = 'stub';
     let accountRef = input.phoneNumber ?? '';

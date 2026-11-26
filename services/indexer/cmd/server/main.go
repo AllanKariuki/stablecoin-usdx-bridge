@@ -33,6 +33,7 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/indexer/internal/supply"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/indexer/internal/tailer"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/oidcverify"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -80,7 +81,8 @@ func main() {
 	}
 
 	obs := metrics.New()
-	ledger := ledgerclient.New(cfg.CoreLedgerURL, cfg.CoreLedgerSvcToken)
+	tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", cfg.KeycloakBaseURL, cfg.KeycloakRealm)
+	ledger := ledgerclient.New(cfg.CoreLedgerURL, cfg.ServiceClientID, cfg.ServiceClientSecret, tokenURL)
 
 	// ---- HTTP first ------------------------------------------------------
 	//
@@ -107,10 +109,21 @@ func main() {
 	platform.Chain(app, platform.ChainConfig{Service: serviceName, Logger: logger, Metrics: pm})
 	health.Register(app)
 	app.Get("/metrics", pm.Handler())
-	api.New(st, logger, heads, confirmations).Register(app)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// H3: the read surface verifies every call against the `indexer`
+	// resource client (core-ledger's worker carries indexer.finality for
+	// GET /finality).
+	verifier, err := oidcverify.New(ctx, cfg.AuthIssuerURL, cfg.AuthAudience)
+	if err != nil {
+		logger.Error("building the OIDC verifier", slog.Any("error", err))
+		os.Exit(1)
+	}
+	app.Use(api.AuthMiddleware(verifier))
+
+	api.New(st, logger, heads, confirmations).Register(app)
 
 	// ---- the single writer ----------------------------------------------
 	election := leader.New(st.DB(), "indexer:cursor", logger)

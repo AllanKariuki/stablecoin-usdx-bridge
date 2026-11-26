@@ -12,6 +12,8 @@ import { AddressInfo } from 'node:net';
 export class FakeCoreLedger {
   private server: Server;
   readonly walletRequests: Array<{ user_id: string; currency: string }> = [];
+  /** The Authorization header core-ledger last saw — identity's service-account bearer (H2). */
+  lastAuth = '';
 
   constructor() {
     this.server = http.createServer((req, res) => this.handle(req, res));
@@ -31,6 +33,7 @@ export class FakeCoreLedger {
     const chunks: Buffer[] = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
+      this.lastAuth = String(req.headers.authorization ?? '');
       const url = new URL(req.url ?? '/', 'http://internal');
       const rawBody = Buffer.concat(chunks).toString('utf8');
       const body = rawBody ? JSON.parse(rawBody) : {};

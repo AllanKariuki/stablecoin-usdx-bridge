@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AuditContext, AuditRequest } from '@damp/nest-platform';
+import { AuditContext, AuditRequest, Public } from '@damp/nest-platform';
 import type { Request } from 'express-serve-static-core';
 import { PaymentsConfig } from '../config/payments-config';
 import { CurrentUser, IdempotencyKey } from '../auth/current-user.decorator';
@@ -101,6 +101,7 @@ export class IntentsController {
    * receives anything else retries, often forever.
    */
   @Post('rails/:rail/callback')
+  @Public()
   @HttpCode(200)
   async callback(
     @Param('rail') rail: string,

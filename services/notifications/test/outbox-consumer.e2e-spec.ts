@@ -24,6 +24,16 @@ import { WebhooksService } from '../src/webhooks/webhooks.service';
  * NewNATSPublisher configures DAMP.
  */
 const NATS_URL = process.env.NOTIFICATIONS_TEST_NATS_URL ?? 'nats://localhost:54222';
+// H7: the broker authenticates per-service users. NatsService refuses to
+// start with a URL and no credentials, so every config below carries this
+// suite's own — and the publisher connection simulates core-ledger's relay,
+// which is the only user that may publish damp.>, so it connects as
+// core-ledger. The dev defaults keep the suite working against both the
+// compose broker and (an unauthenticated one, which ignores credentials).
+const NATS_USER = process.env.NOTIFICATIONS_TEST_NATS_USER ?? 'notifications';
+const NATS_PASSWORD = process.env.NOTIFICATIONS_TEST_NATS_PASSWORD ?? 'dev-notifications-password';
+const PUBLISHER_USER = process.env.NOTIFICATIONS_TEST_PUBLISHER_NATS_USER ?? 'core-ledger';
+const PUBLISHER_PASSWORD = process.env.NOTIFICATIONS_TEST_PUBLISHER_NATS_PASSWORD ?? 'dev-core-ledger-password';
 const TEST_DATABASE_URL =
   process.env.NOTIFICATIONS_TEST_DATABASE_URL ??
   'postgres://notifications:notifications@localhost:55433/notifications_test?sslmode=disable';
@@ -66,19 +76,29 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
   let handler: OutboxHandler;
   let publisher: NatsConnection;
   let jsm: JetStreamManager;
-  /** Whether this suite created DAMP, and so may remove it afterwards. */
+  /** Whether this suite created DAMP — used to skip the "before the stream" staging. */
   let ownsStream = false;
+  /** Where this test's durables start: one past the stream's position as it began. */
+  let startSequence: string | undefined;
   const live = { push: jest.fn((..._args: unknown[]) => 1 as number | null) };
   const email = { send: jest.fn(async (..._args: unknown[]) => 1) };
 
   const durables: string[] = [];
   const running: Array<{ consumer: OutboxConsumer; nats: NatsService }> = [];
 
+  /** One past the stream's current last sequence — where a new durable starts. */
+  async function afterStream(): Promise<string> {
+    const info = await jsm.streams.info(STREAM).catch(() => null);
+    return String((info?.state.last_seq ?? 0) + 1);
+  }
+
   async function replica(overrides: Record<string, unknown> = {}, durable?: string) {
     const name = durable ?? `notifications-outbox-test-${randomUUID().slice(0, 8)}`;
     if (!durables.includes(name)) durables.push(name);
     const values = {
       NATS_URL,
+      NATS_USER,
+      NATS_PASSWORD,
       NATS_STREAM: STREAM,
       OUTBOX_CONSUMER_DURABLE: name,
       OUTBOX_CONSUMER_ACK_WAIT_MS: 2_000,
@@ -88,6 +108,17 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
       // Every test makes its own durable; `all` would hand each one every
       // earlier test's messages too. The backlog test opts back in.
       OUTBOX_CONSUMER_DELIVER_POLICY: 'new',
+      // DAMP is the developer's (and live e2e's) real stream, so a durable
+      // replaying it would see their events as well as this test's. Start
+      // just past where the stream was when the test began; only a durable
+      // created after that is affected — an existing one keeps the server's
+      // cursor. The backlog test, which publishes beforehand, passes
+      // undefined to get `deliver policy all` instead.
+      OUTBOX_CONSUMER_START_SEQUENCE: startSequence,
+      // Since H7 no NATS user may delete a consumer, so this suite cannot
+      // clean up its own durables. Give them an inactive_threshold and the
+      // server removes each one a minute after the test stops pulling.
+      OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS: 60_000,
       ...overrides,
     };
     const nats = new NatsService(config(values));
@@ -156,23 +187,40 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
     delivery = new DeliveryService(db, live as never, email as never, webhooks, config({ PENDING_STALE_SECONDS: 60 }));
     handler = new OutboxHandler(delivery);
 
-    publisher = await connect({ servers: NATS_URL, name: 'notifications-test-publisher' });
+    publisher = await connect({
+      servers: NATS_URL,
+      name: 'notifications-test-publisher',
+      user: PUBLISHER_USER,
+      pass: PUBLISHER_PASSWORD,
+    });
     jsm = await publisher.jetstreamManager();
     ownsStream = !(await jsm.streams.info(STREAM).then(() => true).catch(() => false));
   });
 
   afterAll(async () => {
-    for (const r of running) {
-      await r.consumer.onModuleDestroy();
-      await r.nats.close();
-    }
-    for (const d of durables) await jsm.consumers.delete(STREAM, d).catch(() => undefined);
-    // Leave the broker as it was found. A DAMP that was already there is
-    // core-ledger's (or a developer's) and is not this suite's to remove.
-    if (ownsStream) await jsm.streams.delete(STREAM).catch(() => undefined);
+    // Neither the stream nor this suite's durables can be removed from here:
+    // since H7 no NATS user may delete or purge either (infra/nats/nats.conf
+    // grants only the create/info/consume surface), so a delete call would be
+    // a silent violation. The durables carry OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS
+    // and the server expires them; a DAMP this suite created goes with the
+    // ephemeral CI broker it was created on.
     await publisher.drain();
     await db.onModuleDestroy();
     await raw.end();
+  });
+
+  afterEach(async () => {
+    // A replica left running would keep consuming into the next test — the
+    // backlog test's in particular replays the stream's whole history, which
+    // would land in assertions that count globally.
+    for (const r of running.splice(0)) {
+      await r.consumer.onModuleDestroy();
+      await r.nats.close();
+    }
+    // No delete of this test's durables: since H7 no NATS user may remove a
+    // consumer. Each one carries OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS and
+    // expires on the server once this test stops pulling it.
+    durables.splice(0);
   });
 
   beforeEach(async () => {
@@ -182,6 +230,7 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
     // Every test but the first needs the stream; the first is about it not
     // being there yet, and creates it itself.
     if (!expect.getState().currentTestName?.includes('waits for core-ledger')) await ensureDampStream(jsm);
+    startSequence = await afterStream();
   });
 
   it('waits for core-ledger to create the stream rather than failing', async () => {
@@ -232,7 +281,9 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
     const id = outboxId();
     await publish(TX_POSTED, id, txPosted('party_7', `backlog-${id}`));
 
-    const r = await replica({ OUTBOX_CONSUMER_DELIVER_POLICY: 'all' });
+    // From the stream's start, since the event above is older than this
+    // durable — the point of the test. (No start sequence: that would skip it.)
+    const r = await replica({ OUTBOX_CONSUMER_DELIVER_POLICY: 'all', OUTBOX_CONSUMER_START_SEQUENCE: undefined });
     await r.consumer.whenReady();
 
     await until(async () => (await rowsFor(id))[0]?.status === 'SENT', 20_000);

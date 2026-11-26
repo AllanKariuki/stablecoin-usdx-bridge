@@ -52,7 +52,8 @@ export class RmsProxyController {
  * contract to keep in step with core-ledger for no customer benefit. The
  * permission check is auth-proxy's (ledger:read / ledger:admin /
  * transactions:reverse / reserves:read); X-User-Id is forwarded so
- * core-ledger stamps the operator as the actor.
+ * core-ledger stamps the operator as the actor. UpstreamProxy attaches
+ * bff's service-account token to every forward (H2/H3), never the user's.
  */
 @Controller()
 export class CoreLedgerOperationsProxyController {
@@ -73,6 +74,7 @@ export class CoreLedgerOperationsProxyController {
     'reserves/reconciliation-runs',
     'reserves/reconciliation-runs/:runId',
     'reserves/reconciliation-breaks',
+    'redemptions/:transactionId/break-glass',
   ])
   read(@Req() req: Request, @Res() res: Response) {
     return this.proxy.forward(this.baseUrl, req, res);

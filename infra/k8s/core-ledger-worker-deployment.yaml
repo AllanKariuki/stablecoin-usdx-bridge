@@ -38,6 +38,25 @@ spec:
           env:
             - name: WORKER_PORT
               value: "8181"
+            # Required by the shared core-ledger config even though the
+            # worker never serves the API — config.Load validates the whole
+            # surface for every binary.
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            # H3: the worker's outbound calls (indexer finality, HTTP outbox
+            # relay to notifications/compliance) carry svc-core-ledger-worker's
+            # token. Only the worker needs these.
+            - name: SERVICE_CLIENT_ID
+              value: "svc-core-ledger-worker"
+            - name: SERVICE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: core-ledger-secrets
+                  key: service-client-secret
+            - name: KEYCLOAK_BASE_URL
+              value: "http://keycloak.default.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "damp"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -52,6 +71,17 @@ spec:
                 secretKeyRef:
                   name: audit-trail-ingest
                   key: token
+            # H7: NATS authenticates one user per service with per-subject
+            # permissions (see infra/nats/nats.conf); the worker refuses to
+            # boot with NATS_URL set and these missing. NATS_URL itself
+            # arrives through core-ledger-secrets above.
+            - name: NATS_USER
+              value: "core-ledger"
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nats-credentials
+                  key: core-ledger-password
           resources:
             requests:
               memory: "64Mi"

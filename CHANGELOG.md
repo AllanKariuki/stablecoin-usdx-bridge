@@ -3,6 +3,559 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-26 — Hardening H1–H7 brought into main
+
+### Changed — the stacked hardening branches reach `main`
+
+- PRs #31–#38 each merged into the previous branch in the stack, so none
+  of H1–H7 (or the 2026-11-26 fixes) was on `main`. This merge brings
+  `feat/hardening-h6`, which holds the whole stack, into `main`.
+- Conflicts with the UI refresh (#33): `ops-console/App.tsx` had the same
+  `ConsoleEntry` twice, so one copy is kept; `StaffEntry.tsx` takes main's
+  version with its motion utilities; `AppShell` keeps both the
+  `max-w-8xl` content width and main's `animate-rise` page transition.
+
+## 2026-11-26 — CI: the H7 NATS auth suite runs instead of skipping
+
+### Fixed — the Go workspace job failed on three skipped tests
+
+- `.github/workflows/ci.yml`: the Go job now starts `nats:2.10-alpine` with
+  `infra/nats/nats.conf` and the dev passwords, then sets `NATS_TEST_URL`.
+  The H7 `TestNATSAuth*` suite skips without that variable, and the job's
+  no-skip guard failed the run. The broker is a `docker run` step, not a
+  service container, because service containers start before checkout and
+  can't mount the config file.
+- `Makefile`: `test-integration` passes `NATS_TEST_URL` (default
+  `nats://localhost:54222`, compose's broker), so the same skip no longer
+  fails it locally.
+
+## 2026-11-26 — Ops Console entry page; Keycloak login surface synced per portal
+
+### Fixed — the Ops Console redirected straight to Keycloak
+
+- `frontend/ops-console`: a signed-out visit to `/` now renders a staff entry
+  page (`pages/StaffEntry.tsx`, ported from `feat/ui-refresh`) with a
+  "Continue with company sign-in" button, instead of bouncing to Keycloak.
+  Deep links (`/kyc`, `/wallets/…`) still go straight to sign-in and return.
+
+### Fixed — the running realm drifted from `damp-realm.json`
+
+- `scripts/keycloak-sync.sh` gains `sync_realm_front_door`. From the realm file,
+  it re-applies the realm login settings (`loginTheme: damp`, self-registration,
+  remember-me, password reset), the `default-roles-damp` composites (a
+  self-registered user gets `customer` again), and the `damp-portal` / `damp-ops`
+  SPA clients. A dev `kcdata` volume keeps its first import, so the live realm
+  had no login theme, had registration switched off and had no default
+  `customer` role.
+
+### Changed — the staff sign-in is distinct from the customer sign-in
+
+- The `damp` login theme detects `client.clientId == "damp-ops"`. That variant
+  shows "Staff sign-in" with staff brand copy and no "Create account" link.
+  The portal's sign-in drops "and DAMP staff" from its lede.
+
+## 2026-11-26 — stack.sh: recycled pids are never mistaken for ours
+
+### Fixed — `scripts/stack.sh` trusted any live process holding a recorded pid
+
+- **Pid files now record the pid plus that process's start time**
+  (`LC_ALL=C ps -o lstart=`), and every ownership check (`status`, `up`,
+  `down`) goes through a new `owned_pid` that requires the start time to
+  match. Before, `kill -0` was the only check, so after a reboot a pid the OS
+  had recycled to an unrelated process was treated as the service: `up`
+  printed "already running" and skipped bff (its old pid was a Chrome
+  renderer), and `down` would have sent TERM/KILL to that process or its
+  group.
+- A stale pid file (dead or recycled pid) is removed, the service is treated
+  as not running, and `down` reports "not running (stale pid file removed)"
+  without signalling anything.
+- Legacy one-line pid files written by the previous version are accepted
+  only when the process's working directory is inside the repo (every
+  service is launched via `cd '<dir>' … exec`), and are upgraded in place —
+  a stack started before this change is not orphaned.
+
+## 2026-11-24 — H7: NATS credentials and per-correlation re-sign allowance
+
+### Changed — NATS authenticates one user per service with per-subject permissions (target bar: real money)
+
+- **`infra/nats/nats.conf` replaces the unauthenticated `-js -sd /data -m 8222`
+  command line.** The broker now declares three users, each with the
+  narrowest subject permissions its role needs: **`core-ledger`** (publish
+  `damp.>`, `$JS.API.INFO` and `$JS.API.STREAM.{CREATE,UPDATE,INFO}.DAMP` for
+  the idempotent DAMP stream create/update; subscribe `_INBOX.>`),
+  **`notifications`** (subscribe `damp.>` and `live.notifications.push.v1`;
+  publish `live.notifications.push.v1` plus `$JS.API.INFO`,
+  `$JS.API.CONSUMER.{CREATE,DURABLE.CREATE,INFO,MSG.NEXT}.DAMP.>`,
+  `$JS.API.STREAM.INFO.DAMP` and `$JS.ACK.DAMP.>`), and **`compliance`**
+  (subscribe only `damp.ledger.chain_enforcement_finalized.v1` plus that same
+  consumer API/ack surface — it cannot publish `damp.>` or live pushes).
+  Passwords are read from env vars in the config (`$NATS_*_PASSWORD`), so no
+  secret is committed; docker-compose passes dev values and keeps the same
+  `natsdata` volume, so the DAMP stream and every consumer cursor survive the
+  switch. The monitor endpoint and healthcheck are unchanged.
+- **Least privilege extends to JetStream administration: no user may delete
+  or purge a stream or consumer.** The API subjects are enumerated per
+  operation each client actually performs (create/update/info for
+  core-ledger; create/durable-create/info/msg-next plus stream-info for the
+  consumers) — there is no `$JS.API.STREAM.DELETE`, `$JS.API.STREAM.PURGE`
+  or `$JS.API.CONSUMER.DELETE` in any allow list, so the forensic value of
+  the DAMP stream cannot be destroyed through the broker by any credential
+  the platform issues. That removed the e2e suite's own cleanup, so
+  notifications' outbox consumer gained an optional
+  `OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS` (unset in every real deployment)
+  and its test durables are created with `inactive_threshold` — the server
+  expires them instead of the test deleting them.
+- **Every client authenticates and fails at boot without credentials.**
+  core-ledger's worker (`NATS_USER`/`NATS_PASSWORD`, validated by
+  `config.validateNATS`), notifications (`NatsService` refuses to start with
+  a URL and no credentials) and compliance (`OutboxConsumer` refuses to
+  start likewise). compliance's consumer is the money path for H6
+  enforcement finality, so its permission or auth failures are logged at
+  **error** on a slow retry beat — a denied consumer must not sit quietly
+  while enforcement events pile up unconsumed.
+- **Tests prove the permissions.** A new guarded integration suite
+  (core-ledger/internal/outbox, `NATS_TEST_URL`) asserts wrong passwords are
+  refused, core-ledger cannot publish outside `damp.>`, and neither
+  notifications nor compliance can publish `damp.>`; notifications' existing
+  NATS e2e suites now connect with credentials (their test publisher
+  connects as `core-ledger`, the only user that may publish `damp.>`).
+- Config/env/k8s updated throughout: `.env`/`.env.example` for the three
+  services, `scripts/stack.sh` host-side overrides, and the k8s manifests
+  (worker, notifications, compliance) read the passwords from a new
+  `nats-credentials` Secret (keys `core-ledger-password`,
+  `notifications-password`, `compliance-password`).
+  `nats-networkpolicy.yaml`'s comment now reflects that it is defence in
+  depth, not the whole story.
+
+### Changed — the signer's re-sign cap can be raised for one correlation at runtime, audited
+
+- **`POST /resign-allowances` and `GET /resign-allowances/:correlationId`**
+  on the signer (HTTP/2 + mTLS like everything else). A body
+  `{correlation_id, extra, reason, granted_by}` grants `extra` (1–10,
+  enforced by the table's CHECK) additional re-signs for that correlation
+  for `RESIGN_ALLOWANCE_TTL` (default 24h). Authorization is policy:
+  `resign_allowance.allowed_callers` in policy.example.yaml (`[ops]`),
+  default deny; `granted_by` must match the authenticated mTLS CN. A second
+  active grant is refused with **409 `RESIGN_ALLOWANCE_EXISTS`** — the chain
+  is the grant history, and an overwritten grant would leave it claiming a
+  cap that no longer holds.
+- **The grant itself is append-only evidence.** New
+  **`resign_allowances` table (signer migration 00004)** holds the current
+  allowance (correlation_id PK, extra 1–10, granted_by, reason, expires_at),
+  and every grant is also written through the hash-chained audit log as
+  method `resign-allowance` (own audit-trail action
+  `signer.resign_allowance.granted`) in the same transaction — erasing a
+  grant breaks the chain detectably. `ResignAllowed` and the in-transaction
+  cap check in `Append` count the active allowance's `extra` on top of
+  `MAX_RESIGNS_PER_CORRELATION`; an expired allowance counts for nothing.
+- **Runbook:** [docs/runbooks/resign-allowance.md](docs/runbooks/resign-allowance.md)
+  walks the operator flow — dead letter carrying `RESIGN_LIMIT_REACHED` →
+  grant the allowance → resolve the dead letter — and what not to do
+  (raising the global cap is not the answer).
+
+## 2026-11-24 — H6: compliance enforcement reaches the chain
+
+### Changed — BLACKLIST/UNBLACKLIST/PAUSE/UNPAUSE are submitted on chain through core-ledger, durably and asynchronously (target bar: real money)
+
+- **core-ledger gains `POST /chain/enforcement` and `GET /chain/enforcement/:reference`**,
+  guarded by a new client role `ledger.enforcement` granted to
+  `svc-compliance` alone. The POST validates hard (unknown action/chain →
+  422; `(UN)BLACKLIST` needs a valid address and is Ethereum-only — 422
+  `UNSUPPORTED_ON_CHAIN` on Solana; `PAUSE`/`UNPAUSE` pre-check the pause
+  authority by reading the chain — Ethereum `PAUSER_ROLE`, Solana
+  `BridgeConfig.admin` vs the signer — and refuse with 422 `NOT_CHAIN_ADMIN`
+  rather than pay gas for a reverting transaction), then records one row in
+  the new **`chain_enforcements` table (migration 00009)** keyed by the
+  compliance action id and answers **202 SUBMITTED as soon as the
+  transaction is broadcast**. It never waits for finality inside the HTTP
+  request — Sepolia's finalized checkpoint trails the head by two epochs,
+  and the first (synchronous) cut proved it: the wait expired, the caller
+  saw a 502, and a retry would have submitted the action twice. The row is
+  the dedupe: **a reference that ever obtained a tx hash is never
+  resubmitted**; a retried request reads the stored state (200 for
+  FINAL/FAILED, 202 for SUBMITTED) and submits nothing. A transient submit
+  failure with no hash deletes the row so a retry can start clean; a
+  terminal refusal marks it FAILED and answers 409. Each submission is
+  audited on the outbox (`ledger.chain.enforcement_submitted`).
+- **The worker owns finality** — a new sweep (`internal/enforcement`,
+  running in `cmd/worker`) claims due SUBMITTED rows the saga queue's way
+  (FOR UPDATE SKIP LOCKED, `next_check_at` as the lease, `attempts` as the
+  budget) and asks the chain exactly one immediate question per row via the
+  new **`FinalityStatus`** method on the enforcement client interface
+  (Ethereum: receipt + depth check, no polling; Solana: one
+  `getSignatureStatuses` at `finalized`). FINAL (or a mined revert, or a
+  spent ~2-hour budget) flips the row **and enqueues
+  `damp.ledger.chain_enforcement_finalized.v1` in the same transaction** —
+  the outbox guarantee: compliance is told exactly when the chain state is
+  known.
+- **services/compliance marks EXECUTED when the chain is final.** The
+  ingest door (HTTP `/internal/outbox`, and a new JetStream consumer
+  `compliance-enforcement` filtering
+  `damp.ledger.chain_enforcement_finalized.v1` — the local stack's relay
+  publishes to NATS, so without it the event would sit in the stream
+  forever) routes the event to the enforcement service, which looks the
+  action up by reference and records EXECUTED (with the tx hash) or FAILED
+  (with the reason) plus its audit event — idempotent on redelivery,
+  unknown references ignored. On 202 the action records **SUBMITTED**
+  (new status, migration 003); on a terminal 409 it records FAILED; on a
+  transient failure it stays APPROVED with a retryable reason — safe
+  because core-ledger dedupes on the action id.
+- **Both chain clients grow the enforcement surface.** Ethereum:
+  `Blacklist`, `Unblacklist`, `Pause`, `Unpause` via the abigen binding,
+  signed through the Signer seam with the method names a remote signer's
+  policy matches (`blacklist`/`unblacklist`/`pause`/`unpause`) and the
+  compliance action id as the correlation id. Solana: `Pause`/`Unpause` map
+  to the program's `set_paused` instruction (`AdminOnly` account order);
+  `IsPauseAuthority` compares the signer to the on-chain `BridgeConfig.admin`.
+- **services/signer learns the new methods.** `unblacklist` joins the
+  Ethereum decoder; the Solana decoder recognises `set_paused` (config PDA +
+  fee-payer-admin checks, one Borsh bool) and reports it as
+  `pause`/`unpause` so one policy vocabulary covers both chains.
+  `policy.example.yaml`: the enforcement rules list
+  `allowed_callers: [core-ledger]` — compliance acts through core-ledger,
+  not directly. (`core-ledger` must be the mTLS CN of core-ledger's client
+  certificate in a real deployment.)
+- **Keycloak:** `ledger.enforcement` role on the `core-ledger` resource
+  client, scope-granted to `svc-compliance` (template + `make keycloak-realm`
+  output + `scripts/keycloak-sync.sh` data).
+- **workflow's seeded `compliance.blacklist` pool gains `admin`** (migration
+  003 fixes existing databases) — the previous pool had no second person who
+  could approve, since the proposer is excluded.
+- **e2e harness gains an `enforcement` step** (FULL mode; self-skips in
+  `--fast`): generates a throwaway address, checks (read-only) that the
+  relayer holds `COMPLIANCE_ROLE` — if not, it SKIPs with the exact
+  `cast send … grantRole` command an admin would run and does not run it —
+  then drives BLACKLIST and UNBLACKLIST through the real product path
+  (compliance raises via the gateway, a self-approval is refused, admin
+  approves, the action records SUBMITTED, and the poll to EXECUTED — with
+  the run's `--timeout-min` budget — rides the worker's finality sweep) and
+  asserts `isBlacklisted()` flipped on chain. Never pauses the shared
+  testnet contract.
+
+
+### Fixed — found by the live run
+- The first version waited for chain finality inside the HTTP request
+  (5-minute cap; Sepolia takes ~15). It returned 502, and a retry would have
+  submitted the transaction a second time. That is why it was redesigned to
+  run asynchronously, as described above.
+- compliance's JetStream consumer never started locally, because `NATS_URL`
+  was unset for it. The core-ledger worker only relays to NATS, so the
+  finality event never reached compliance and the action sat at SUBMITTED
+  although the blacklist was final on chain. `stack.sh`, `.env.example` and
+  the k8s manifest now set it, and the NATS NetworkPolicy admits compliance.
+- The consumer used `DeliverPolicy.New`, so any event finalized before the
+  durable first existed was lost for good. It now uses `DeliverPolicy.All`:
+  the subject filter keeps the backlog to enforcement events, and applying an
+  outcome is idempotent. On restart the stuck action above recovered by
+  itself.
+## 2026-11-24 — H5: KYC gates every money movement
+
+### Changed — no money moves for a party whose KYC tier is below the configured minimum (target bar: real money)
+
+- **New kyc endpoint `GET /internal/parties/:partyId/tier`**, guarded by the
+  H3 service guard with a new client role `kyc.tier-read` (granted to
+  `svc-payments` and `svc-bff`; the existing `kyc.user-proxy` does not reach
+  it). Returns `{partyId, tier: {name, rank}, status, tiers}` — a party with
+  no record is TIER_0 (rank 0), the default that can do nothing by
+  construction, and the full ordered tier list lets callers resolve the rank
+  of the minimum tier they demand without hardcoding ranks. Realm template,
+  `make keycloak-realm` output and `scripts/keycloak-sync.sh` lists all
+  updated (`svc-payments` also gains the `kyc` audience mapper).
+- **`KycGate` in `@damp/nest-platform`** — the shared money-path gate.
+  `require(partyId, minimumTier)` fetches the tier from kyc with the
+  caller's own service-account token, compares by rank, and throws
+  `403 KYC_REQUIRED` ("verification tier <X> required; current <Y>") when
+  below, `503 KYC_UNAVAILABLE` when kyc is unreachable, answers non-2xx, or
+  does not define the minimum tier — fail CLOSED, nothing is cached (a
+  revoked tier must bite on the next request). KYC_URL empty behaves as
+  unreachable; there is no disable switch.
+- **payments gates every intent creation.** All three directions move value
+  into or out of the party's wallet (DEPOSIT funds it, WITHDRAWAL drains it,
+  TRANSFER — P2P and invoice pay — moves it), so every intent is checked
+  against `KYC_MIN_TIER_FIAT` (default `TIER_1`, the first non-zero tier)
+  before any write, core-ledger call or rail call. New config `KYC_URL` +
+  `KYC_MIN_TIER_FIAT`, wired through `.env`/`.env.example`, `stack.sh` and
+  `infra/k8s/payments-deployment.yaml`.
+- **bff gates its customer money-movement routes.** `POST /issuances`,
+  `/redemptions`, `/bridges` and the customer-facing `/transfers` check the
+  caller's tier against `KYC_MIN_TIER_ISSUANCE` (default `TIER_1`) before
+  any wallet lookup or core-ledger call. The operator-only `/deposits` and
+  `/withdrawals` are deliberately NOT gated — an operator adjusts any
+  wallet by design, and their permission (`wallets:adjust:manual`) is the
+  control.
+- **kyc freezes wallets on rejection.** `CasesService.reject` now calls
+  `CoreLedgerClient.setWalletsFrozen` (previously dead code) when the
+  rejection leaves the party below every tier (rank ≤ 0) — a rejected
+  *upgrade* keeps the tier already held and is not frozen. Idempotent:
+  re-deciding a decided case never reaches it, and the status write goes
+  through core-ledger's existing `POST /wallets/:id/status` so there is
+  still exactly one freezing mechanism. Audit trail: `kyc.case.rejected`
+  plus core-ledger's own wallet-status event, the mirror of the approval
+  path's `kyc.case.approved` + `setWalletsActive`.
+- **e2e harness (`scripts/e2e/money-flows.mjs`) gains a `kyc` step** (after
+  `wallets`): brings `customer@damp.local` and `company@damp.local` to
+  TIER_1 through the real product path — open a case, request upload slots,
+  upload documents (MinIO when configured; otherwise the documented
+  unconfigured-storage stub), submit, then approve the maker-checker
+  request as `compliance@damp.local` through the gateway — idempotent (a
+  party already at/above the tier passes immediately). The `negatives` step
+  now also creates a throwaway customer via the Keycloak admin API, lets
+  identity JIT-provision its party on first gateway call, and asserts
+  `403 KYC_REQUIRED` on a deposit intent and on an issuance (plus a
+  customer transfer), then deletes the user.
+
+## 2026-11-23 — H4: break-glass redemption needs approval and on-chain proof
+
+### Changed — the break-glass redemption confirm can no longer release fiat on an operator's word (target bar: real money)
+
+- **`POST /redemptions/:id/confirm` no longer settles anything.** It
+  validates the claim (the redemption exists, is a redemption, its saga is
+  not already settled, the hash has the source chain's shape), proposes a
+  maker-checker approval in services/workflow (action
+  `redemption.break_glass`, the policy seeded since P5: one approver,
+  `treasury` or `admin`, initiator excluded), records the proposal in a new
+  `break_glass_requests` table (one PENDING row per redemption, enforced by
+  a partial unique index) and returns `202 {status: PENDING_APPROVAL,
+  approval_request_id}`. workflow unreachable → 502 `WORKFLOW_UNAVAILABLE`,
+  never a wave-through.
+- **The decision callback settles nothing by itself either.**
+  `POST /internal/approvals/callback` is HMAC-authenticated with
+  `WORKFLOW_CALLBACK_SECRET` (the same scheme kyc/compliance verify; the
+  route is a JWT-exempt `hmacPaths` entry in core-ledger's auth boundary,
+  the Go twin of H3's `@HmacAuthenticated`). It binds the callback to the
+  request id the proposal recorded, re-derives the payload digest from the
+  saga as it stands (a Go port of workflow's canonical digest encoding,
+  pinned against the Node side by cross-language test vectors), and only
+  then — on APPROVED — proves the burn on chain before calling the old
+  settlement path. Rejection marks the row REJECTED; a failed proof marks
+  VERIFICATION_FAILED with the typed reason and moves no money. Redelivered
+  callbacks are idempotent.
+- **On-chain burn verification (`VerifyBurn`) on both chain clients.**
+  Ethereum: receipt must exist, have succeeded, be for the USDX proxy, have
+  reached the configured finality depth (the same CHAIN_FINALITY vocabulary
+  the saga's wait uses — checked, not waited for), and carry exactly one
+  `BridgeBurned` with the right source, amount and correlation id. Solana:
+  the transaction read at `finalized` commitment must have succeeded and
+  contain the `bridge_burn` instruction for the configured program, with
+  the amount (u64 LE) and correlation id ([u8;32]) decoded from the same
+  layout `encodeBridgeArgs` writes, and the source token account (index 2
+  of the instruction's accounts) equal to the ATA derived from the source
+  wallet and mint. Typed outcomes in `internal/bridge`: `ErrBurnNotFound`,
+  `ErrBurnReverted`, `ErrBurnNotFinal`, and `ErrBurnMismatch{Field}`
+  ("contract", "from", "amount", "correlation_id", "count"). Both clients
+  also expose `ValidTxHash` so a malformed hash is refused before it is
+  asked to be believed.
+- **`GET /redemptions/:id/break-glass`** returns the proposal's lifecycle
+  row (status, requester, workflow request id, failure reason) for the ops
+  console / e2e harness to poll. Proxied by bff, gated on `ledger:read` at
+  auth-proxy (treasury and admin hold it; customers do not), typed in
+  `@damp/web-shared`'s `ledgerAdminApi` (`breakGlass()`, and
+  `confirmRedemption` now returns the 202 proposal shape).
+- **core-ledger's API server is now an authenticated caller.** New Keycloak
+  client `svc-core-ledger` (client-credentials, `workflow.propose` on the
+  workflow resource client; the worker keeps its separate
+  `svc-core-ledger-worker`), new config `WORKFLOW_URL`,
+  `WORKFLOW_CALLBACK_SECRET`, `CORE_LEDGER_SELF_URL`; the server builds its
+  `internal/serviceauth` client at boot (fatal when unconfigured) and a new
+  `internal/workflowclient` proposes approvals with it. Realm template,
+  `make keycloak-realm` output and `scripts/keycloak-sync.sh` lists all
+  carry the new client; `core-ledger/.env` now names the server's client
+  (stack.sh keeps overriding the worker's two SERVICE_* lines); the k8s
+  server deployment reads its secret from `core-ledger-secrets` key
+  `server-service-client-secret` (the worker keeps `service-client-secret`)
+  and the callback secret from the shared `workflow-callback` secret.
+- **Tests.** Go: VerifyBurn suites for both clients against recorded
+  RPC-shaped fixtures (good / wrong amount / wrong from / wrong correlation
+  / reverted / not final / not found / wrong contract or program); workflow
+  client digest + HMAC vectors pinned against services/workflow's TS suite;
+  handler suite (real Postgres, faked workflow + router) covering propose-
+  and-don't-settle, settled-saga refusal, bad-hash refusal, workflow-down
+  refusal, double-proposal 409, bad HMAC 401, approved+verified settles
+  exactly once, approved+mismatch → VERIFICATION_FAILED with the ledger
+  untouched, rejected, digest-mismatch refusal, unknown-request refusal, and
+  the status route. Node: workflow seed pin for the `redemption.break_glass`
+  policy, bff operations-proxy coverage for the new GET.
+- **e2e harness** (`scripts/e2e/money-flows.mjs`, new `break-glass` step —
+  self-skips in `--fast`, documented in `scripts/e2e/README.md`): full mode
+  creates a fresh 5.00 redemption, treasury proposes break-glass with a
+  random fake hash (202, nothing settles), treasury cannot approve its own
+  request (403), admin approves, the row reaches VERIFICATION_FAILED, the
+  saga stays in flight and the fiat wallet does not move; the worker still
+  settles that redemption the ordinary way afterwards.
+
+### Fixed
+- **core-ledger migrations run under a Postgres advisory lock** (goose
+  provider with a session locker). The server and the saga worker both
+  migrate at boot. The first new migration since they started running side
+  by side (`00008`) had them race the same `CREATE TABLE`, and the worker
+  failed to start. Multiple k8s replicas would have raced the same way.
+- **e2e harness:** a saga poll keeps polling through a transient
+  gateway 502/503/504 instead of treating it as the saga's answer. The
+  break-glass step reads the redemption id from `transaction.id`.
+
+## 2026-11-23 — H3: internal hops authenticated
+
+### Added — service-account auth on every internal HTTP hop (target bar: real money)
+
+- **Every internal HTTP hop now carries a Keycloak service-account JWT.**
+  H2 authenticated core-ledger; H3 does the same for every other receiver:
+  payments, workflow, kyc, compliance, reporting, rms, notifications,
+  identity, audit-trail, and indexer. Each gets a bearer-only resource
+  client with client roles; each caller mints one token carrying every
+  audience it talks to. There is no disable switch.
+- **`ServiceAuthGuard`** in `shared/node/nest-platform`, installed as a
+  global `APP_GUARD` by each Node receiver: verifies the bearer via OIDC
+  discovery + auto-rotating JWKS (`jose`), checks `AUTH_ISSUER_URL` +
+  `AUTH_AUDIENCE` (= the service's resource client), then the route's
+  declared roles. Missing/invalid → 401 `UNAUTHENTICATED`; wrong role →
+  403 `FORBIDDEN`. Decorators: `@RequireServiceRole(...roles)` (default for
+  an unmarked route: `<svc>.user-proxy`), `@Public()` (payments' rail
+  callback — the `RAIL_CALLBACK_SECRET` check stays), and
+  `@HmacAuthenticated()` (workflow's decision callbacks — the HMAC check
+  stays). `/healthz`, `/readyz`, `/version` and `/metrics` are exempt.
+- **Identity headers are no longer trusted on the network alone.**
+  `serviceIdentityFrom` (nest-platform) releases X-User-Id/X-Org-Id/X-Roles/
+  X-Permissions only when the verified token's `resource_access` holds
+  `<svc>.user-proxy` — granted to svc-bff and nothing else. The per-service
+  decorators (payments/kyc/compliance/notifications/reporting `CurrentUser`,
+  workflow `CurrentActor`, rms `Actor`, reporting `Permissions`) delegate to
+  it, keeping their existing shapes. workflow's one deliberate exception:
+  a `workflow.propose` caller's X-User-Id is read as audit-only identity
+  (recorded as `requested_by`, never checked against a policy).
+- **Keycloak surface** (realm template + `make keycloak-realm` +
+  `scripts/keycloak-sync.sh`, now fully data-driven — adding a receiver or
+  caller is a list entry, not a helper): 9 new resource clients
+  (`payments`, `workflow`, `kyc`, `compliance`, `reporting`, `rms`,
+  `notifications`, `identity`, `audit-trail`, plus `indexer` for the saga's
+  finality check) and 4 new confidential clients (`svc-core-ledger-worker`,
+  `svc-auth-proxy`, `svc-workflow`, `svc-notifications`). Roles:
+  `<svc>.user-proxy` (svc-bff) everywhere; `notifications.ingest`
+  (svc-payments, svc-core-ledger-worker); `compliance.ingest`
+  (svc-core-ledger-worker); `identity.resolve` (svc-auth-proxy,
+  svc-notifications); `workflow.propose` (svc-kyc, svc-compliance);
+  `audit-trail.ingest` (every producer's client); `audit-trail.user-proxy`
+  (svc-bff, svc-reporting); `indexer.finality` (svc-core-ledger-worker).
+- **Callers attach tokens:** bff's `UpstreamProxy` adds its own bearer to
+  every forward (one token, nine audiences); payments' outbox relay
+  (notifications.ingest); kyc/compliance workflow clients
+  (workflow.propose); reporting's audit extract (audit-trail.user-proxy);
+  core-ledger's worker (new `internal/serviceauth`; `golang.org/x/oauth2/
+  clientcredentials`) for the outbox relay and the indexer finality check —
+  `SERVICE_CLIENT_ID/SECRET` are optional in core-ledger's config and
+  required only by the worker binary; auth-proxy's identity resolver
+  (identity.resolve).
+- **audit-trail** accepts either the existing `INGEST_TOKEN` or a service
+  JWT with `audit-trail.ingest` for recording; reads now require
+  `audit-trail.user-proxy`. Producers still send `INGEST_TOKEN` this slice
+  (migration is the follow-up); signer's relay stays on `INGEST_TOKEN`
+  (its other calls are already mTLS).
+- **indexer** verifies its read surface against the `indexer` resource
+  client: `GET /finality` requires `indexer.finality`; `/events` and
+  `/cursors` have no caller and fail closed.
+- **notifications' WebSocket auth** has no unverified mode left: the portal
+  already sends its Keycloak access token as a query parameter (unchanged),
+  and `ws.auth.ts` verifies it (realm `damp`, aud `damp-portal`) and resolves
+  the party via identity with notifications' own service token. The old
+  partyId/dev-user fallback survives only behind
+  `ENV=local` + `NOTIFICATIONS_WS_DEV_AUTH=true`, both required.
+- **Tests:** `FakeIssuer` in nest-platform (in-process OIDC discovery +
+  JWKS + token minting, exported for service suites); guard spec (12 cases);
+  audit-trail JWT-door specs; indexer auth-boundary spec.
+- **e2e negatives:** direct payments GET with forged X-User-Id and no token
+  → 401; direct notifications `/internal/events` with no token → 401; direct
+  payments call with svc-payments' own token (wrong audience) → 401.
+- **k8s:** every receiver manifest sets `AUTH_ISSUER_URL`/`AUTH_AUDIENCE`;
+  notifications, core-ledger worker and auth-proxy add `SERVICE_CLIENT_ID` +
+  `service-client-secret` secret refs (`notifications-secrets`,
+  `core-ledger-secrets`, `auth-proxy-secrets`). An operator must create
+  those secret keys before deploying.
+
+### Fixed
+- Two boot failures that only showed on a real start, not in unit suites:
+  payments' outbox relay could not resolve `ServiceTokenClient`
+  (`CoreLedgerModule` now exports it), and notifications rejected
+  `NOTIFICATIONS_WS_DEV_AUTH=false` from its `.env` because nothing converted
+  the string to a boolean.
+- **notifications' outbox-consumer e2e suite no longer fails on live dev
+  events.** Each test's durables now start at the shared DAMP stream's
+  current position (`OUTBOX_CONSUMER_START_SEQUENCE`, a test-only option), so
+  real events a developer's stack left in the stream (e.g. reconciliation
+  breaks from live e2e runs) are not replayed into assertions that count
+  deliveries. Replicas are also stopped between tests instead of all at the
+  end, so no test's consumer drains history into the next one.
+
+## 2026-11-23 — H2: core-ledger authenticates every call
+
+### Added — service-account auth on core-ledger (target bar: real money)
+- **core-ledger authenticates every API call** with a Keycloak
+  service-account JWT (`AUTH_ISSUER_URL` required, `AUTH_AUDIENCE`
+  default `core-ledger`). A route table in `core-ledger/internal/api/auth.go`
+  maps each route to the client roles that authorize it, default-deny; only
+  `/healthz`, `/readyz` and `/metrics` are exempt. Missing/invalid token →
+  401 `UNAUTHENTICATED`; valid token without the role → 403 `FORBIDDEN`.
+  There is no disable switch.
+- **Seven client roles** on the new bearer-only `core-ledger` resource
+  client (realm template + `scripts/keycloak-sync.sh`, which upserts the
+  whole H2 surface into a *running* Keycloak — an existing dev volume never
+  re-imports the realm JSON): `ledger.user-proxy` (bff), `ledger.settlement`
+  (payments), `ledger.wallet-provision` (identity), `ledger.wallet-status`
+  (kyc, compliance), `ledger.reserves.custodian` (rms),
+  `ledger.reserves.chain-supply` (indexer), `ledger.reports.read`
+  (reporting). `scripts/stack.sh up` runs the sync after Keycloak is up.
+- **`shared/go/platform/oidcverify`**: the verifier moved out of
+  auth-proxy's `internal/` and extended with `ClientRoles`
+  (`resource_access.<client>.roles`), `AuthorizedParty` (azp) and
+  `HasClientRole`, so one verifier serves both auth boundaries. The fake
+  issuer moved alongside it (`oidcverify/oidctest`) and mints
+  `resource_access`/azp claims.
+- **`ServiceTokenClient`** in `shared/node/nest-platform`: client-
+  credentials against Keycloak, cached until 30s before expiry,
+  single-flight refresh, typed errors. Every Node service's core-ledger
+  client (and bff's operator proxy) now attaches its own service-account
+  bearer; `X-Service-Token`/`CORE_LEDGER_SERVICE_TOKEN` plumbing is gone.
+  identity reuses its existing `identity-service` client through the same
+  shared token cache as its Keycloak Admin client.
+- **indexer** mints its token through `golang.org/x/oauth2/clientcredentials`
+  (`SERVICE_CLIENT_ID`/`SERVICE_CLIENT_SECRET` + Keycloak base URL/realm).
+- **actor()** falls back to `service:<azp>` instead of `"api"` when a call
+  carries no `X-User-Id`, so the journal names the authenticated caller.
+- An unauthenticated request gets 401 on every path, before the route table
+  is consulted, so it can't be used to map which routes exist.
+- k8s: the core-ledger, worker and reconcile manifests set `AUTH_ISSUER_URL`.
+  Every calling service's manifest (payments, rms, kyc, compliance,
+  reporting, indexer, identity) carries `SERVICE_CLIENT_ID`, a
+  `SERVICE_CLIENT_SECRET` secret ref, and `KEYCLOAK_BASE_URL`/`KEYCLOAK_REALM`.
+  Each `<service>-secrets` needs a `service-client-secret` key before deploying.
+- The e2e harness's `negatives` step now posts directly to core-ledger with
+  no token (→ 401) and with a customer's gateway token — right issuer, wrong
+  audience (→ 401).
+
+## 2026-11-23 — hardening H1
+
+### Fixed
+- **A mined-but-reverted transaction is terminal.** An Ethereum receipt with
+  status 0, or a Solana signature that landed with an error, was classified
+  transient. The saga re-waited on a hash that can never succeed until the
+  attempt budget dead-lettered it. Both chain clients now wrap
+  `bridge.ErrTxFailedOnChain`, and the saga's existing terminal paths
+  compensate: a mint returns fiat, and a burn returns tokens. The check runs
+  after the replay guards, because a Solana `already in use` failure proves an
+  earlier transaction landed.
+- **M-Pesa B2C** sent the shortcode as `InitiatorName` and no
+  `SecurityCredential`, so real Daraja payouts could not succeed. New config:
+  `MPESA_INITIATOR_NAME` and `MPESA_SECURITY_CREDENTIAL`. Payouts are refused
+  with `RAIL_UNAVAILABLE` before any HTTP call when either is unset.
+
+### Security
+- **audit-trail fails closed.** It refuses to start without `INGEST_TOKEN`
+  unless `ENV=local`, and in local it warns on each unauthenticated request.
+  The k8s manifest now sets `ENV=production`. Left unset, it defaulted to
+  local, which would have kept production open.
+
+### Changed
+- The e2e harness checks reconciliation Leg C by delta. rms's stub custodian
+  mirrors ledger cash, so only the run's movement is meaningful.
+
 ## 2026-11-23
 
 ### Changed — UI refresh: new landing pages, Interlock logo, motion everywhere

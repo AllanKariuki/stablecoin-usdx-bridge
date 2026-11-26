@@ -8,8 +8,8 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/auth-proxy/internal/api"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/auth-proxy/internal/authztable"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/auth-proxy/internal/identityclient"
-	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/auth-proxy/internal/oidcverify"
-	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/auth-proxy/internal/testoidc"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/oidcverify"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/oidcverify/oidctest"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
@@ -29,7 +29,7 @@ func (s stubResolver) Resolve(_ context.Context, subject string) (string, string
 	return v[0], v[1], nil
 }
 
-func newTestApp(t *testing.T, issuer *testoidc.Server) *fiber.App {
+func newTestApp(t *testing.T, issuer *oidctest.Server) *fiber.App {
 	t.Helper()
 	verifier, err := oidcverify.New(context.Background(), issuer.URL, testAudience)
 	if err != nil {
@@ -44,10 +44,10 @@ func newTestApp(t *testing.T, issuer *testoidc.Server) *fiber.App {
 }
 
 func TestVerify_ValidCustomerCanReadOwnWallet(t *testing.T) {
-	issuer := testoidc.New(t)
+	issuer := oidctest.New(t)
 	app := newTestApp(t, issuer)
 
-	token := issuer.SignToken(t, testAudience, testoidc.Claims{Subject: "alice-sub", Roles: []string{"customer"}})
+	token := issuer.SignToken(t, testAudience, oidctest.Claims{Subject: "alice-sub", Roles: []string{"customer"}})
 
 	req := httptest.NewRequest("GET", "/verify", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -79,12 +79,12 @@ func TestVerify_ValidCustomerCanReadOwnWallet(t *testing.T) {
 }
 
 func TestVerify_CustomerCannotClosePeriod(t *testing.T) {
-	issuer := testoidc.New(t)
+	issuer := oidctest.New(t)
 	app := newTestApp(t, issuer)
 
 	// /ledger/closures requires ledger:admin, which customer never holds —
 	// see shared/authz/permissions.yaml.
-	token := issuer.SignToken(t, testAudience, testoidc.Claims{Subject: "alice-sub", Roles: []string{"customer"}})
+	token := issuer.SignToken(t, testAudience, oidctest.Claims{Subject: "alice-sub", Roles: []string{"customer"}})
 
 	req := httptest.NewRequest("POST", "/verify", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -101,10 +101,10 @@ func TestVerify_CustomerCannotClosePeriod(t *testing.T) {
 }
 
 func TestVerify_TreasuryCanClosePeriod(t *testing.T) {
-	issuer := testoidc.New(t)
+	issuer := oidctest.New(t)
 	app := newTestApp(t, issuer)
 
-	token := issuer.SignToken(t, testAudience, testoidc.Claims{Subject: "bob-sub", Roles: []string{"treasury"}})
+	token := issuer.SignToken(t, testAudience, oidctest.Claims{Subject: "bob-sub", Roles: []string{"treasury"}})
 
 	req := httptest.NewRequest("POST", "/verify", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -121,7 +121,7 @@ func TestVerify_TreasuryCanClosePeriod(t *testing.T) {
 }
 
 func TestVerify_MissingTokenRejected(t *testing.T) {
-	issuer := testoidc.New(t)
+	issuer := oidctest.New(t)
 	app := newTestApp(t, issuer)
 
 	req := httptest.NewRequest("GET", "/verify", nil)
@@ -142,10 +142,10 @@ func TestVerify_ForgedUserIdHeaderNeverTrusted(t *testing.T) {
 	// must not see it echoed back — the response is always derived from
 	// the verified token's subject, never from an inbound header (which
 	// Traefik strips inbound anyway — see infra/traefik/dynamic.yaml).
-	issuer := testoidc.New(t)
+	issuer := oidctest.New(t)
 	app := newTestApp(t, issuer)
 
-	token := issuer.SignToken(t, testAudience, testoidc.Claims{Subject: "alice-sub", Roles: []string{"customer"}})
+	token := issuer.SignToken(t, testAudience, oidctest.Claims{Subject: "alice-sub", Roles: []string{"customer"}})
 
 	req := httptest.NewRequest("GET", "/verify", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -163,10 +163,10 @@ func TestVerify_ForgedUserIdHeaderNeverTrusted(t *testing.T) {
 }
 
 func TestVerify_UnlistedRouteRejected(t *testing.T) {
-	issuer := testoidc.New(t)
+	issuer := oidctest.New(t)
 	app := newTestApp(t, issuer)
 
-	token := issuer.SignToken(t, testAudience, testoidc.Claims{Subject: "alice-sub", Roles: []string{"admin"}})
+	token := issuer.SignToken(t, testAudience, oidctest.Claims{Subject: "alice-sub", Roles: []string{"admin"}})
 
 	req := httptest.NewRequest("GET", "/verify", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -183,7 +183,7 @@ func TestVerify_UnlistedRouteRejected(t *testing.T) {
 }
 
 func TestVerify_MissingForwardedHeadersRejected(t *testing.T) {
-	issuer := testoidc.New(t)
+	issuer := oidctest.New(t)
 	app := newTestApp(t, issuer)
 
 	req := httptest.NewRequest("GET", "/verify", nil)
@@ -197,10 +197,10 @@ func TestVerify_MissingForwardedHeadersRejected(t *testing.T) {
 }
 
 func TestVerify_QueryStringStrippedBeforeRouteMatch(t *testing.T) {
-	issuer := testoidc.New(t)
+	issuer := oidctest.New(t)
 	app := newTestApp(t, issuer)
 
-	token := issuer.SignToken(t, testAudience, testoidc.Claims{Subject: "alice-sub", Roles: []string{"customer"}})
+	token := issuer.SignToken(t, testAudience, oidctest.Claims{Subject: "alice-sub", Roles: []string{"customer"}})
 
 	req := httptest.NewRequest("GET", "/verify", nil)
 	req.Header.Set("Authorization", "Bearer "+token)

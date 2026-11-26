@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/signer/internal/audit"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/signer/internal/decode"
@@ -41,6 +42,8 @@ type memLog struct {
 	// maxResigns is the re-sign cap; zero means audit.DefaultMaxResigns, so
 	// tests that are not about the cap need not think about it.
 	maxResigns int
+	// allowance is the single active re-sign allowance (H7); nil means none.
+	allowance *audit.Allowance
 }
 
 func (m *memLog) ResignAllowed(_ context.Context, chain, method, correlationID string) (bool, error) {
@@ -108,6 +111,36 @@ func (m *memLog) Recent(context.Context, int) ([]audit.Record, error) { return m
 func (m *memLog) Verify(context.Context) (bool, string, int, error) {
 	return true, "", len(m.records), nil
 }
+
+// allowance is the memLog's single active allowance: enough state for the
+// handler tests to exercise grant, conflict and read without a database.
+func (m *memLog) GrantResignAllowance(_ context.Context, correlationID string, extra int, grantedBy, reason string, expiresAt time.Time) (*audit.Allowance, error) {
+	if m.allowance != nil && m.allowance.ExpiresAt.After(time.Now()) {
+		return nil, audit.ErrAllowanceExists
+	}
+	m.allowance = &audit.Allowance{
+		CorrelationID: correlationID, Extra: extra, GrantedBy: grantedBy, Reason: reason,
+		CreatedAt: time.Now(), ExpiresAt: expiresAt,
+	}
+	// The real log records the grant in the hash chain, in the same
+	// transaction as the allowance row; the fake appends the equivalent
+	// record so assertions on the chain shape stay meaningful.
+	m.records = append(m.records, audit.Record{
+		Method:        audit.MethodResignAllowance,
+		Caller:        grantedBy,
+		CorrelationID: correlationID,
+		Outcome:       audit.OutcomeAllowed,
+		Reason:        reason,
+	})
+	return m.allowance, nil
+}
+
+func (m *memLog) ResignAllowance(_ context.Context, correlationID string) (*audit.Allowance, error) {
+	if m.allowance == nil || m.allowance.CorrelationID != correlationID || !m.allowance.ExpiresAt.After(time.Now()) {
+		return nil, nil
+	}
+	return m.allowance, nil
+}
 func (m *memLog) count(outcome string) (n int) {
 	for _, r := range m.records {
 		if r.Outcome == outcome {
@@ -147,6 +180,10 @@ var (
 
 const worker = "core-ledger-worker"
 
+// ops is the identity the re-sign allowance policy allows (H7), standing in
+// for an ops console's mTLS client certificate.
+const ops = "ops"
+
 func testPolicy() policy.Policy {
 	return policy.Policy{
 		Rules: []policy.Rule{
@@ -156,13 +193,25 @@ func testPolicy() policy.Policy {
 		// Room for one 1000 mint and not two: a re-sign that counted itself
 		// twice would be refused.
 		DailyLimits: map[string]*big.Int{policy.LimitKey("ETHEREUM", policy.MethodBridgeMint): big.NewInt(1500)},
+		// H7: the allowance endpoint's own allowlist (resign_allowance in
+		// policy.example.yaml).
+		ResignAllowanceCallers: []string{ops},
 	}
 }
 
 func newApp(log AuditLog, backend keystore.Backend) *fiber.App {
 	app := fiber.New()
 	app.Use(func(c *fiber.Ctx) error { c.Locals(callerKey, worker); return c.Next() })
-	New(backend, testPolicy(), deployment, log, slog.New(slog.NewTextHandler(io.Discard, nil))).Register(app)
+	New(backend, testPolicy(), deployment, log, slog.New(slog.NewTextHandler(io.Discard, nil)), 24*time.Hour).Register(app)
+	return app
+}
+
+// newAppAs is newApp with a chosen caller identity — the mTLS CN the
+// middleware would have stashed.
+func newAppAs(log AuditLog, backend keystore.Backend, caller string) *fiber.App {
+	app := fiber.New()
+	app.Use(func(c *fiber.Ctx) error { c.Locals(callerKey, caller); return c.Next() })
+	New(backend, testPolicy(), deployment, log, slog.New(slog.NewTextHandler(io.Discard, nil)), 24*time.Hour).Register(app)
 	return app
 }
 

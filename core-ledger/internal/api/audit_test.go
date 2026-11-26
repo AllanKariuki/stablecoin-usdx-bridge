@@ -23,11 +23,15 @@ func TestIntegrationWalletStatusChangeIsAuditedWithTheCallersIdentity(t *testing
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true, ErrorHandler: platform.ErrorHandler})
 	platform.Chain(app, platform.ChainConfig{Service: "core-ledger-test", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	// Same order as cmd/server: auth first, so an unauthenticated call is
+	// rejected before the audit middleware could record it.
+	app.Use(h.authMiddleware(t))
 	app.Use(audit.Middleware())
-	NewHandlers(h.repo, h.svc, slog.New(slog.NewTextHandler(io.Discard, nil)), nil).Register(app)
+	NewHandlers(h.repo, h.svc, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, nil, "").Register(app)
 
 	req, _ := http.NewRequest(http.MethodPost, "/wallets/"+h.usd.ID+"/status", strings.NewReader(`{"status":"FROZEN"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+h.bearer)
 	req.Header.Set("X-User-Id", "compliance-frank")
 	req.Header.Set("X-Roles", "compliance_officer")
 	req.Header.Set("X-Request-Id", "gw-req-77")

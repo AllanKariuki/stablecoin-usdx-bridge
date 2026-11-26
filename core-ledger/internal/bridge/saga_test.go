@@ -5,6 +5,7 @@ package bridge_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
@@ -47,6 +48,9 @@ type fakeChain struct {
 	mintErr func(n int) error
 	burnErr func(n int) error
 	waitErr func(n int) error
+
+	// verifyErr is what VerifyBurn (H4's break-glass proof) returns.
+	verifyErr func() error
 }
 
 func (f *fakeChain) BridgeMint(to string, amount *big.Int, correlationID string) (string, error) {
@@ -93,6 +97,19 @@ func (f *fakeChain) WaitForFinality(txHash string, param string) error {
 	}
 	return nil
 }
+
+func (f *fakeChain) VerifyBurn(_ context.Context, _ string, _ string, _ *big.Int, _ string) error {
+	f.mu.Lock()
+	fn := f.verifyErr
+	f.mu.Unlock()
+
+	if fn != nil {
+		return fn()
+	}
+	return nil
+}
+
+func (f *fakeChain) ValidTxHash(txHash string) bool { return txHash != "" }
 
 func (f *fakeChain) mints() int {
 	f.mu.Lock()
@@ -589,5 +606,231 @@ func TestUpsertTransferRequiresTheAddressesItsKindNeeds(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("a REDEEM saga with no source address must be rejected")
+	}
+}
+
+// TestSagaMinedThenRevertedMintIsTerminal covers the bug this sentinel exists
+// for: the mint was submitted, the transaction landed and reverted. The hash
+// can never succeed, but its error text ("tx 0x… reverted") matched none of
+// the terminal substrings, so it was classified transient and retried until
+// the budget dead-lettered it. The saga must instead unwind the issuance on
+// the first attempt, exactly as it already did for a pre-flight revert.
+func TestSagaMinedThenRevertedMintIsTerminal(t *testing.T) {
+	f := newFixture(t)
+	correlationID := f.issue(t, 75_00)
+
+	f.chain.waitErr = func(int) error {
+		return fmt.Errorf("tx 0xmint reverted: %w", bridge.ErrTxFailedOnChain)
+	}
+
+	res := f.saga.Execute(f.ctx, correlationID)
+	if res.Retry {
+		t.Fatalf("a mined revert must not be retryable, got %+v", res)
+	}
+	if got := f.status(t, correlationID); got != ledger.StatusFailed {
+		t.Fatalf("status = %s, want FAILED", got)
+	}
+	if got := f.chain.mints(); got != 1 {
+		t.Fatalf("BridgeMint was called %d times, want 1; a mined revert must not re-submit", got)
+	}
+	// The fiat is the user's again: nothing economically happened.
+	if got := f.balance(t, f.usdWallet.AccountID); got != "7500" {
+		t.Fatalf("USD balance = %s, want 7500 (the issuance reversed)", got)
+	}
+	if got := f.balance(t, f.usdxWallet.AccountID); got != "0" {
+		t.Fatalf("USD-X balance = %s, want 0", got)
+	}
+
+	// And no retry loop: a settled saga is not claimed again.
+	second := f.saga.Execute(f.ctx, correlationID)
+	if second.Failed() || second.Retry {
+		t.Fatalf("a settled saga was re-run: %+v", second)
+	}
+}
+
+// TestSagaMinedThenRevertedBurnReturnsTheTokens is the burn half. A burn that
+// landed and reverted did not destroy anything, so the USD-X parked in
+// suspense must go back to the wallet — and, crucially, the redemption must
+// not settle fiat against a burn that never happened.
+func TestSagaMinedThenRevertedBurnReturnsTheTokens(t *testing.T) {
+	f := newFixture(t)
+
+	mintCorrelation := f.issue(t, 200_00)
+	if res := f.saga.Execute(f.ctx, mintCorrelation); res.Failed() {
+		t.Fatalf("seeding mint failed: %+v", res)
+	}
+
+	redeemCorrelation := f.key("redeem-saga")
+	redeemTx, err := f.svc.Redeem(f.ctx, ledger.RedeemRequest{
+		USDXWalletID:   f.usdxWallet.ID,
+		FiatWalletID:   f.usdWallet.ID,
+		Amount:         big.NewInt(50_000000),
+		CorrelationID:  redeemCorrelation,
+		IdempotencyKey: f.key("redeem"),
+	})
+	if err != nil {
+		t.Fatalf("Redeem: %v", err)
+	}
+	if _, err := f.repo.UpsertTransfer(f.ctx, &ledger.BridgeTransfer{
+		CorrelationID:  redeemCorrelation,
+		Kind:           ledger.SagaRedeem,
+		SourceAddress:  f.usdxWallet.Address,
+		Amount:         big.NewInt(50_000000),
+		SourceChain:    f.usdxWallet.Chain,
+		Status:         ledger.StatusPending,
+		UserID:         f.user,
+		SourceWalletID: f.usdxWallet.ID,
+		LedgerTxID:     redeemTx.ID,
+	}); err != nil {
+		t.Fatalf("UpsertTransfer: %v", err)
+	}
+
+	f.chain.waitErr = func(int) error {
+		return fmt.Errorf("tx 0xburn failed: InstructionError(0, Custom(6003)): %w", bridge.ErrTxFailedOnChain)
+	}
+
+	res := f.saga.Execute(f.ctx, redeemCorrelation)
+	if res.Retry {
+		t.Fatalf("a mined revert must not be retryable, got %+v", res)
+	}
+	if got := f.status(t, redeemCorrelation); got != ledger.StatusFailed {
+		t.Fatalf("status = %s, want FAILED", got)
+	}
+	if got := f.chain.burns(); got != 1 {
+		t.Fatalf("BridgeBurn was called %d times, want 1", got)
+	}
+	// All 200 USD-X back in the wallet: the redemption request was reversed.
+	if got := f.balance(t, f.usdxWallet.AccountID); got != "200000000" {
+		t.Fatalf("USD-X balance = %s, want 200000000 (redemption reversed)", got)
+	}
+	if got := f.balance(t, f.usdWallet.AccountID); got != "0" {
+		t.Fatalf("USD balance = %s, want 0; no fiat may be released for a burn that never happened", got)
+	}
+}
+
+// TestSagaMinedThenRevertedBridgeBurnReleasesTheReservation covers the bridge
+// source leg: the journal reservation is posted before the burn, so a burn
+// that landed and reverted must release it rather than leave value in
+// suspense forever.
+func TestSagaMinedThenRevertedBridgeBurnReleasesTheReservation(t *testing.T) {
+	f := newFixture(t)
+
+	mintCorrelation := f.issue(t, 200_00)
+	if res := f.saga.Execute(f.ctx, mintCorrelation); res.Failed() {
+		t.Fatalf("seeding mint failed: %+v", res)
+	}
+
+	solana, err := f.repo.EnsureWallet(f.ctx, f.user, "USDX", "SOLANA", "So11111111111111111111111111111111111111112", "USD-X Solana", "test")
+	if err != nil {
+		t.Fatalf("EnsureWallet SOLANA: %v", err)
+	}
+
+	bridgeCorrelation := f.key("bridge-saga")
+	if _, err := f.repo.UpsertTransfer(f.ctx, &ledger.BridgeTransfer{
+		CorrelationID:  bridgeCorrelation,
+		Kind:           ledger.SagaBridge,
+		SourceAddress:  f.usdxWallet.Address,
+		TargetAddress:  solana.Address,
+		Amount:         big.NewInt(100_000000),
+		SourceChain:    f.usdxWallet.Chain,
+		TargetChain:    solana.Chain,
+		Status:         ledger.StatusPending,
+		UserID:         f.user,
+		SourceWalletID: f.usdxWallet.ID,
+		TargetWalletID: solana.ID,
+	}); err != nil {
+		t.Fatalf("UpsertTransfer: %v", err)
+	}
+
+	f.chain.waitErr = func(int) error {
+		return fmt.Errorf("tx 0xburn reverted: %w", bridge.ErrTxFailedOnChain)
+	}
+
+	res := f.saga.Execute(f.ctx, bridgeCorrelation)
+	if res.Retry {
+		t.Fatalf("a mined revert must not be retryable, got %+v", res)
+	}
+	if got := f.status(t, bridgeCorrelation); got != ledger.StatusFailed {
+		t.Fatalf("status = %s, want FAILED", got)
+	}
+	if got := f.chain.burns(); got != 1 {
+		t.Fatalf("BridgeBurn was called %d times, want 1", got)
+	}
+	if got := f.chain.mints(); got != 1 {
+		t.Fatalf("BridgeMint was called %d times, want 1 (only the seeding issuance)", got)
+	}
+	// The reservation is released: the whole 200 USD-X is back in the source
+	// wallet, nothing was minted on the destination.
+	if got := f.balance(t, f.usdxWallet.AccountID); got != "200000000" {
+		t.Fatalf("source USD-X balance = %s, want 200000000 (reservation released)", got)
+	}
+	if got := f.balance(t, solana.AccountID); got != "0" {
+		t.Fatalf("destination USD-X balance = %s, want 0", got)
+	}
+}
+
+// TestSagaMinedThenRevertedBridgeMintCompensates is the destination half of a
+// bridge: the source burn is final and irreversible, so a mint that landed and
+// reverted must re-mint on the source chain rather than settle or retry.
+func TestSagaMinedThenRevertedBridgeMintCompensates(t *testing.T) {
+	f := newFixture(t)
+
+	mintCorrelation := f.issue(t, 300_00)
+	if res := f.saga.Execute(f.ctx, mintCorrelation); res.Failed() {
+		t.Fatalf("seeding mint failed: %+v", res)
+	}
+
+	solana, err := f.repo.EnsureWallet(f.ctx, f.user, "USDX", "SOLANA", "So11111111111111111111111111111111111111112", "USD-X Solana", "test")
+	if err != nil {
+		t.Fatalf("EnsureWallet SOLANA: %v", err)
+	}
+
+	bridgeCorrelation := f.key("bridge-saga")
+	if _, err := f.repo.UpsertTransfer(f.ctx, &ledger.BridgeTransfer{
+		CorrelationID:  bridgeCorrelation,
+		Kind:           ledger.SagaBridge,
+		SourceAddress:  f.usdxWallet.Address,
+		TargetAddress:  solana.Address,
+		Amount:         big.NewInt(100_000000),
+		SourceChain:    f.usdxWallet.Chain,
+		TargetChain:    solana.Chain,
+		Status:         ledger.StatusPending,
+		UserID:         f.user,
+		SourceWalletID: f.usdxWallet.ID,
+		TargetWalletID: solana.ID,
+	}); err != nil {
+		t.Fatalf("UpsertTransfer: %v", err)
+	}
+
+	// Wait call 1 was the seeding mint; 2 is the bridge burn (final), 3 is the
+	// destination mint (mined, then reverted).
+	f.chain.waitErr = func(n int) error {
+		if n >= 3 {
+			return fmt.Errorf("tx 0xmint reverted: %w", bridge.ErrTxFailedOnChain)
+		}
+		return nil
+	}
+
+	res := f.saga.Execute(f.ctx, bridgeCorrelation)
+	if res.Retry {
+		t.Fatalf("a mined revert must not be retryable, got %+v", res)
+	}
+	if got := f.status(t, bridgeCorrelation); got != ledger.StatusCompensated {
+		t.Fatalf("status = %s, want COMPENSATED", got)
+	}
+	if got := f.chain.burns(); got != 1 {
+		t.Fatalf("BridgeBurn was called %d times, want 1", got)
+	}
+	// The seeding issuance, the failed destination mint, and the compensation
+	// mint on the source chain.
+	if got := f.chain.mints(); got != 3 {
+		t.Fatalf("BridgeMint was called %d times, want 3 (seed, destination, compensation)", got)
+	}
+	// The holder is made whole on the source chain: the burned 100 is back.
+	if got := f.balance(t, f.usdxWallet.AccountID); got != "300000000" {
+		t.Fatalf("source USD-X balance = %s, want 300000000 (compensation restored the burn)", got)
+	}
+	if got := f.balance(t, solana.AccountID); got != "0" {
+		t.Fatalf("destination USD-X balance = %s, want 0", got)
 	}
 }

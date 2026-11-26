@@ -15,8 +15,23 @@ type Config struct {
 	// database per service, isolation by GRANT (docs/building-plan.md).
 	DatabaseURL string `env:"DATABASE_URL" required:"true"`
 
-	CoreLedgerURL      string `env:"CORE_LEDGER_URL" required:"true"`
-	CoreLedgerSvcToken string `env:"CORE_LEDGER_SERVICE_TOKEN" default:""`
+	CoreLedgerURL string `env:"CORE_LEDGER_URL" required:"true"`
+
+	// H2 service-to-service auth: the indexer posts chain supply snapshots
+	// as the svc-indexer Keycloak client (client-credentials). Both required
+	// — core-ledger authenticates every call and there is no unauthenticated
+	// mode.
+	ServiceClientID     string `env:"SERVICE_CLIENT_ID" required:"true"`
+	ServiceClientSecret string `env:"SERVICE_CLIENT_SECRET" required:"true"`
+	KeycloakBaseURL     string `env:"KEYCLOAK_BASE_URL" default:"http://localhost:8080"`
+	KeycloakRealm       string `env:"KEYCLOAK_REALM" default:"damp"`
+
+	// H3 inbound auth: the indexer's own read surface verifies every call
+	// against the `indexer` resource client (core-ledger's worker carries
+	// indexer.finality for GET /finality). Required — no unauthenticated
+	// mode.
+	AuthIssuerURL string `env:"AUTH_ISSUER_URL" required:"true"`
+	AuthAudience  string `env:"AUTH_AUDIENCE" default:"indexer"`
 
 	EthRPCURL        string `env:"ETH_RPC_URL" required:"true"`
 	USDXProxyAddress string `env:"USDX_PROXY_ADDRESS" required:"true"`

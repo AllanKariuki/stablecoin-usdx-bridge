@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PlatformMetricsService } from '@damp/nest-platform';
+import { PlatformMetricsService, ServiceTokenClient } from '@damp/nest-platform';
 import { Counter, Gauge } from 'prom-client';
 import { OutboxRepository, OutboxRow } from './outbox.repository';
 
@@ -41,6 +41,7 @@ export class OutboxRelay implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly outbox: OutboxRepository,
     config: ConfigService,
+    private readonly serviceTokens: ServiceTokenClient,
     @Optional() metrics?: PlatformMetricsService,
   ) {
     this.baseUrl = config.get<string>('NOTIFICATIONS_URL', { infer: true }) ?? '';
@@ -137,7 +138,13 @@ export class OutboxRelay implements OnModuleInit, OnModuleDestroy {
     try {
       const res = await fetch(new URL('/internal/events', this.baseUrl), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': row.id },
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': row.id,
+          // H3: notifications authenticates every call; the event carries
+          // svc-payments' own token (notifications.ingest).
+          Authorization: `Bearer ${await this.serviceTokens.accessToken()}`,
+        },
         body: JSON.stringify({ event: row.event, partyId: row.party_id, payload: row.payload, dedupeKey: row.id }),
         signal: AbortSignal.timeout(10_000),
       });

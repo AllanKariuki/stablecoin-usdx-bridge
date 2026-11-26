@@ -20,6 +20,7 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/audit-trail/internal/config"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/audit-trail/internal/store"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/oidcverify"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -40,6 +41,14 @@ func main() {
 
 	logger := platform.NewLogger(serviceName, cfg.LogLevel)
 	slog.SetDefault(logger)
+
+	// Fails closed: recording is the one write on this service, and an
+	// unauthenticated one lets anything that can reach the port speak as any
+	// actor, permanently. Outside local that is a refusal, not a warning.
+	if err := cfg.RequireIngestToken(); err != nil {
+		logger.Error("refusing to start with an unauthenticated audit ingest", slog.Any("error", err))
+		os.Exit(1)
+	}
 
 	st, err := store.Open(cfg.DatabaseURL)
 	if err != nil {
@@ -85,6 +94,16 @@ func main() {
 	defer cancel()
 	go anchorSvc.Run(ctx)
 
+	// H3: the read surface requires a service token carrying
+	// audit-trail.user-proxy, and recording accepts one carrying
+	// audit-trail.ingest beside INGEST_TOKEN. Discovery happens once at boot,
+	// the same way core-ledger builds its verifier.
+	verifier, err := oidcverify.New(ctx, cfg.AuthIssuerURL, cfg.AuthAudience)
+	if err != nil {
+		logger.Error("building the OIDC verifier", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	health := platform.NewHealth(serviceName, version, commit)
 	health.AddCheck("database", st.Ping)
 
@@ -95,9 +114,11 @@ func main() {
 	health.Register(app)
 	app.Get("/metrics", metrics.Handler())
 	if cfg.IngestToken == "" {
-		logger.Warn("INGEST_TOKEN is not set; any caller that can reach this port can record events as any actor")
+		// Reached only when ENV=local: RequireIngestToken refused to start
+		// otherwise, above.
+		logger.Warn("starting WITHOUT INGEST_TOKEN in ENV=local: any caller that can reach this port can record events as any actor")
 	}
-	api.New(st, logger, cfg.IngestToken).Register(app)
+	api.New(st, logger, cfg.IngestToken, verifier).Register(app)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	err = platform.Run(app, addr, health, logger, platform.ShutdownConfig{}, func(context.Context) error {

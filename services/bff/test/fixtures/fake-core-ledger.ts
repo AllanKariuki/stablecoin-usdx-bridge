@@ -14,6 +14,8 @@ export class FakeCoreLedger {
   private sagas = new Map<string, Record<string, unknown>>();
   /** The X-User-Id core-ledger last saw on a write — what its actor() would stamp as initiated_by. */
   lastActor = '';
+  /** The Authorization header core-ledger last saw — bff's service-account bearer (H2). */
+  lastAuth = '';
   /** Every write core-ledger was asked to post, for asserting a rejected request never reached it. */
   writes: Array<{ path: string; actor: string }> = [];
   private transactions: Array<{ id: string; user_id: string; created_at: string; amount: string }> = [];
@@ -34,6 +36,7 @@ export class FakeCoreLedger {
   }
 
   private handle(req: http.IncomingMessage, res: http.ServerResponse): void {
+    this.lastAuth = String(req.headers.authorization ?? '');
     const chunks: Buffer[] = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {

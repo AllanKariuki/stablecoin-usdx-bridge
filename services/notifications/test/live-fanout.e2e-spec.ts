@@ -14,6 +14,12 @@ import { WsGateway } from '../src/ws/ws.gateway';
  * the same port as compose publishes it.
  */
 const NATS_URL = process.env.NOTIFICATIONS_TEST_NATS_URL ?? 'nats://localhost:54222';
+// H7: the broker authenticates per-service users and NatsService refuses to
+// start with a URL and no credentials, so the replicas below carry the dev
+// credentials. Defaults match compose, and an unauthenticated broker simply
+// ignores them, so the suite works against both.
+const NATS_USER = process.env.NOTIFICATIONS_TEST_NATS_USER ?? 'notifications';
+const NATS_PASSWORD = process.env.NOTIFICATIONS_TEST_NATS_PASSWORD ?? 'dev-notifications-password';
 
 const config = (values: Record<string, unknown>) => ({ get: (key: string) => values[key] }) as never;
 
@@ -34,7 +40,7 @@ async function replica(natsUrl: string): Promise<Replica> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   gateway.attach(server);
 
-  const nats = new NatsService(config({ NATS_URL: natsUrl }));
+  const nats = new NatsService(config({ NATS_URL: natsUrl, NATS_USER, NATS_PASSWORD }));
   nats.onModuleInit();
   const fanout = new LiveFanout(nats, gateway);
   fanout.onModuleInit();

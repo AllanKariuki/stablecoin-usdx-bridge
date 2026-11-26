@@ -162,7 +162,7 @@ INSERT INTO policies (id, action, description, approvals_required, approver_role
 
     ('pol_blacklist', 'compliance.blacklist',
      'Blacklisting an address on-chain. Freezes a holder''s tokens.',
-     1, ARRAY['compliance'], 24),
+     1, ARRAY['compliance', 'admin'], 24),
 
     ('pol_pause', 'compliance.pause',
      'Pausing the contract. Halts every transfer on the chain.',

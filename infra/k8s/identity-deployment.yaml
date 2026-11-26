@@ -40,11 +40,18 @@ spec:
               value: "http://keycloak.default.svc.cluster.local:8080"
             - name: KEYCLOAK_REALM
               value: "damp"
-            - name: KEYCLOAK_ADMIN_CLIENT_ID
+            - name: SERVICE_CLIENT_ID
               value: "identity-service"
-            # KEYCLOAK_ADMIN_CLIENT_SECRET comes from identity-secrets —
+            # SERVICE_CLIENT_SECRET comes from identity-secrets —
             # never hardcode the real value here (damp-realm.json's
             # placeholder is dev-only).
+            # H3: every request must carry a service-account JWT with
+            # audience `identity` (auth-proxy and notifications carry
+            # identity.resolve for /internal/parties/by-subject).
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "identity"
             # services/audit-trail. audit_outbox rows are written in the same
             # transaction as each change; this relay delivers them. The
             # token is audit-trail's INGEST_TOKEN — one Secret, shared by

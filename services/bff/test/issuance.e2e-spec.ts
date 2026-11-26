@@ -1,23 +1,28 @@
 import { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { FakeCoreLedger } from './fixtures/fake-core-ledger';
+import { FakeKyc } from './fixtures/fake-kyc';
 import { bootstrapBffApp } from './fixtures/bootstrap';
 
 const ETH_ADDRESS = '0x4e29A6a3689F37db9a93985A0f6424420cc2CD49';
 
 describe('bff issuance/redemption (e2e, against a fake core-ledger)', () => {
   let coreLedger: FakeCoreLedger;
+  let kyc: FakeKyc;
   let app: NestExpressApplication;
 
   beforeAll(async () => {
     coreLedger = new FakeCoreLedger();
     const url = await coreLedger.listen();
-    app = await bootstrapBffApp(url);
+    kyc = new FakeKyc();
+    const kycUrl = await kyc.listen();
+    app = await bootstrapBffApp(url, kycUrl);
   });
 
   afterAll(async () => {
     await app.close();
     await coreLedger.close();
+    await kyc.close();
   });
 
   const as = (userId: string, permissions: string[] = []) => ({
@@ -69,6 +74,7 @@ describe('bff issuance/redemption (e2e, against a fake core-ledger)', () => {
   });
 
   it('POST /issuances answers 202 with the journal entry and a saga handle, stamping the caller as actor', async () => {
+    kyc.setTier('kate', 'TIER_1');
     const { fiatId, usdxId } = await walletsFor('kate');
     const res = await request(app.getHttpServer())
       .post('/issuances')
@@ -83,6 +89,9 @@ describe('bff issuance/redemption (e2e, against a fake core-ledger)', () => {
   });
 
   it("refuses to mint to another user's USD-X wallet", async () => {
+    // At the minimum tier, so the refusal asserted here is the ownership
+    // check — the KYC gate passes and never masks it.
+    kyc.setTier('mallory', 'TIER_1');
     const victim = await walletsFor('liam');
     const attacker = await walletsFor('mallory');
     await request(app.getHttpServer())
@@ -94,6 +103,7 @@ describe('bff issuance/redemption (e2e, against a fake core-ledger)', () => {
   });
 
   it('GET /transfers/:id reports progress and links the mint to the explorer once it has a hash', async () => {
+    kyc.setTier('nina', 'TIER_1');
     const { fiatId, usdxId } = await walletsFor('nina');
     const accepted = await request(app.getHttpServer())
       .post('/issuances')
@@ -117,6 +127,7 @@ describe('bff issuance/redemption (e2e, against a fake core-ledger)', () => {
   });
 
   it("GET /transfers/:id hides another user's transfer unless the caller holds transactions:read:any", async () => {
+    kyc.setTier('oscar', 'TIER_1');
     const { fiatId, usdxId } = await walletsFor('oscar');
     const accepted = await request(app.getHttpServer())
       .post('/issuances')
@@ -135,6 +146,7 @@ describe('bff issuance/redemption (e2e, against a fake core-ledger)', () => {
   });
 
   it('POST /redemptions enqueues a burn whose hash links on the source chain', async () => {
+    kyc.setTier('quinn', 'TIER_1');
     const { fiatId, usdxId } = await walletsFor('quinn');
     const accepted = await request(app.getHttpServer())
       .post('/redemptions')
@@ -151,5 +163,49 @@ describe('bff issuance/redemption (e2e, against a fake core-ledger)', () => {
       .expect(200);
     expect(done.body.kind).toBe('REDEEM');
     expect(done.body.sourceTxUrl).toBe(`https://sepolia.etherscan.io/tx/${hash}`);
+  });
+
+  describe('issuance/redemption — KYC gate (H5)', () => {
+    it('refuses an unverified party on POST /issuances with 403 KYC_REQUIRED, before any core-ledger call', async () => {
+      // 'unverified' has no tier row -> TIER_0 in the fake kyc, and the gate
+      // runs before the ownership read, so even another user's wallet ids
+      // answer KYC_REQUIRED rather than leaking the ownership check's result.
+      const before = coreLedger.writes.length;
+      await request(app.getHttpServer())
+        .post('/issuances')
+        .set({ ...as('unverified', ['issuance:create']), 'idempotency-key': 'issue-unverified-1' })
+        .send({ fiatWalletId: 'not-mine', usdxWalletId: 'not-mine', amount: '1.00' })
+        .expect(403)
+        .expect((res) => expect(res.body.code).toBe('KYC_REQUIRED'));
+      expect(coreLedger.writes).toHaveLength(before);
+    });
+
+    it('refuses an unverified party on POST /redemptions with 403 KYC_REQUIRED', async () => {
+      const before = coreLedger.writes.length;
+      await request(app.getHttpServer())
+        .post('/redemptions')
+        .set({ ...as('unverified', ['issuance:create']), 'idempotency-key': 'redeem-unverified-1' })
+        .send({ usdxWalletId: 'not-mine', fiatWalletId: 'not-mine', amount: '1.00' })
+        .expect(403)
+        .expect((res) => expect(res.body.code).toBe('KYC_REQUIRED'));
+      expect(coreLedger.writes).toHaveLength(before);
+    });
+
+    it('fails closed with 503 KYC_UNAVAILABLE when kyc is unreachable', async () => {
+      kyc.setTier('unverified', 'TIER_1'); // even a verified party is stopped
+      const before = coreLedger.writes.length;
+      kyc.down = true;
+      try {
+        await request(app.getHttpServer())
+          .post('/issuances')
+          .set({ ...as('unverified', ['issuance:create']), 'idempotency-key': 'issue-down-1' })
+          .send({ fiatWalletId: 'w1', usdxWalletId: 'w2', amount: '1.00' })
+          .expect(503)
+          .expect((res) => expect(res.body.code).toBe('KYC_UNAVAILABLE'));
+      } finally {
+        kyc.down = false;
+      }
+      expect(coreLedger.writes).toHaveLength(before);
+    });
   });
 });

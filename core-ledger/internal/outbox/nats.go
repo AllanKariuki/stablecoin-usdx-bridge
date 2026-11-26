@@ -33,15 +33,25 @@ type NATSPublisher struct {
 // environment to one `docker compose up`, and it is idempotent — a stream that
 // already exists with the same subjects is updated in place, not recreated, so
 // no message is ever dropped by a redeploy.
-func NewNATSPublisher(ctx context.Context, url, stream string) (*NATSPublisher, error) {
-	conn, err := nats.Connect(url,
+//
+// user/password are this service's NATS credentials (H7): the broker
+// authenticates one user per service and each user may publish only its own
+// subjects. Empty both connects without credentials, which tests and an
+// unauthenticated broker can use; config.validateNATS keeps a production
+// worker from ever getting here without them.
+func NewNATSPublisher(ctx context.Context, url, stream, user, password string) (*NATSPublisher, error) {
+	opts := []nats.Option{
 		nats.Name("core-ledger-outbox-relay"),
 		// The relay retries from the outbox anyway, so a reconnect storm is
 		// harmless; what matters is that a NATS restart doesn't kill the relay
 		// process and leave the queue draining nowhere.
 		nats.MaxReconnects(-1),
-		nats.ReconnectWait(2*time.Second),
-	)
+		nats.ReconnectWait(2 * time.Second),
+	}
+	if user != "" {
+		opts = append(opts, nats.UserInfo(user, password))
+	}
+	conn, err := nats.Connect(url, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to NATS at %s: %w", url, err)
 	}

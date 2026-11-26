@@ -1,5 +1,6 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { APP_GUARD } from '@nestjs/core';
+import { PlatformConfigModule, PlatformModule, ServiceAuthGuard } from '@damp/nest-platform';
 import { AuditRelayService } from './audit/audit-relay.service';
 import { WorkflowConfig } from './config/workflow-config';
 import { DbModule } from './db/db.module';
@@ -26,7 +27,14 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
     // In the root module because that is where PlatformModule's exports
     // (the metrics registry the relay's backlog gauge registers on) are
     // visible.
-    providers: [AuditRelayService],
+    providers: [
+      AuditRelayService,
+      // H3: every route carries a Keycloak service-account JWT whose audience
+      // is the `workflow` resource client. Reads default to
+      // workflow.user-proxy (svc-bff); POST /approval-requests declares
+      // workflow.propose OR workflow.user-proxy.
+      { provide: APP_GUARD, useClass: ServiceAuthGuard },
+    ],
   };
 }
 

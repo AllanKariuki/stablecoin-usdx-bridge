@@ -1,5 +1,6 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { APP_GUARD } from '@nestjs/core';
+import { PlatformConfigModule, PlatformModule, ServiceAuthGuard } from '@damp/nest-platform';
 import { AuditRelayService } from './audit/audit-relay.service';
 import { IdentityConfig } from './config/identity-config';
 import { CoreLedgerModule } from './core-ledger/core-ledger.module';
@@ -35,7 +36,14 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
     // In the root module because that is where PlatformModule's exports
     // (the metrics registry the relay's backlog gauge registers on) are
     // visible.
-    providers: [AuditRelayService],
+    providers: [
+      AuditRelayService,
+      // H3: every route carries a Keycloak service-account JWT whose audience
+      // is the `identity` resource client. The default role is
+      // identity.user-proxy; GET /internal/parties/by-subject declares
+      // identity.resolve (svc-auth-proxy, svc-notifications).
+      { provide: APP_GUARD, useClass: ServiceAuthGuard },
+    ],
   };
 }
 

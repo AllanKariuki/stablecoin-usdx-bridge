@@ -44,6 +44,12 @@ spec:
             - name: CALLBACK_SECRET
               valueFrom:
                 secretKeyRef: { name: workflow-callback, key: secret }
+            # H3: every request must carry a service-account JWT with
+            # audience `workflow`.
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "workflow"
             # services/audit-trail. audit_outbox rows are written in the same
             # transaction as each decision; this relay delivers them. The
             # token is audit-trail's INGEST_TOKEN — one Secret, shared by
@@ -129,6 +135,23 @@ spec:
               value: "postgres://kyc:kyc@postgres.default.svc.cluster.local:5432/kyc?sslmode=disable"
             - name: CORE_LEDGER_URL
               value: "http://core-ledger.default.svc.cluster.local:8081"
+            # Service-account credentials for core-ledger (H2): core-ledger
+            # rejects any call without a svc-kyc bearer token.
+            - name: SERVICE_CLIENT_ID
+              value: "svc-kyc"
+            - name: SERVICE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: kyc-secrets, key: service-client-secret }
+            - name: KEYCLOAK_BASE_URL
+              value: "http://keycloak.default.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "damp"
+            # H3: every request must carry a service-account JWT with
+            # audience `kyc` (the approval callback is HMAC-authenticated).
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "kyc"
             - name: WORKFLOW_URL
               value: "http://workflow.default.svc.cluster.local:3006"
             # Where workflow posts decisions back. Must be the Service name,
@@ -219,6 +242,37 @@ spec:
               value: "postgres://compliance:compliance@postgres.default.svc.cluster.local:5432/compliance?sslmode=disable"
             - name: CORE_LEDGER_URL
               value: "http://core-ledger.default.svc.cluster.local:8081"
+            # Service-account credentials for core-ledger (H2): core-ledger
+            # rejects any call without a svc-compliance bearer token.
+            - name: SERVICE_CLIENT_ID
+              value: "svc-compliance"
+            - name: SERVICE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: compliance-secrets, key: service-client-secret }
+            - name: KEYCLOAK_BASE_URL
+              value: "http://keycloak.default.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "damp"
+            # H3: every request must carry a service-account JWT with
+            # audience `compliance` (the approval callback is
+            # HMAC-authenticated; /internal/outbox needs compliance.ingest).
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "compliance"
+            # H6: enforcement finality arrives on JetStream (durable
+            # compliance-enforcement, filtered to the enforcement subject).
+            - name: NATS_URL
+              value: "nats://nats.default.svc.cluster.local:4222"
+            # H7: the broker authenticates one user per service with
+            # per-subject permissions (infra/nats/nats.conf); the consumer
+            # fails boot when NATS_URL is set and these are missing — its
+            # subscription is the money path for enforcement finality.
+            - name: NATS_USER
+              value: "compliance"
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: nats-credentials, key: compliance-password }
             - name: WORKFLOW_URL
               value: "http://workflow.default.svc.cluster.local:3006"
             - name: SELF_URL

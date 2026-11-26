@@ -31,8 +31,34 @@ export class RmsConfig {
   @IsNotEmpty()
   CORE_LEDGER_URL!: string;
 
+  // --- Service-to-service auth (H2). Every core-ledger call carries rms'
+  // own service-account token; core-ledger verifies it and checks
+  // ledger.reserves.custodian.
   @IsString()
-  CORE_LEDGER_SERVICE_TOKEN = '';
+  @IsNotEmpty()
+  SERVICE_CLIENT_ID!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_SECRET!: string;
+
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  KEYCLOAK_BASE_URL!: string;
+
+  @IsString()
+  KEYCLOAK_REALM = 'damp';
+
+  // --- Inbound service-to-service auth (H3). Every request must carry a
+  // service-account JWT whose audience is the `rms` resource client. Both
+  // required — there is no unauthenticated mode.
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  AUTH_ISSUER_URL!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  AUTH_AUDIENCE = 'rms';
 
   /**
    * How often the poller asks every active custodian what it holds.

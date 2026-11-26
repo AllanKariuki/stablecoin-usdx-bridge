@@ -93,6 +93,16 @@ func NewIndexerFinality(baseURL string, fallback FinalityChecker, logger *slog.L
 	}
 }
 
+// WithHTTPClient swaps the transport for the caller's own client — the
+// worker passes the H3 serviceauth client, so every finality question
+// carries svc-core-ledger-worker's token (indexer.finality). A refused
+// token surfaces as a failed query and therefore the chain-poll fallback,
+// never as a silently unauthenticated call.
+func (f *IndexerFinality) WithHTTPClient(client *http.Client) *IndexerFinality {
+	f.http = client
+	return f
+}
+
 type finalityResponse struct {
 	Status        string `json:"status"` // UNSEEN | CONFIRMING | FINAL | ORPHANED
 	BlockHeight   uint64 `json:"block_height"`

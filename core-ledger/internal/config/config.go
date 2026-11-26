@@ -19,6 +19,16 @@ type Config struct {
 	Port     int    `env:"PORT" default:"8081"`
 	LogLevel string `env:"LOG_LEVEL" default:"info"`
 
+	// AuthIssuerURL is the Keycloak realm issuer (the URL OIDC discovery is
+	// relative to, e.g. http://localhost:8080/realms/damp). Every API request
+	// must carry a service-account JWT verified against it — required, with
+	// no unauthenticated mode, because core-ledger holds the money (H2).
+	AuthIssuerURL string `env:"AUTH_ISSUER_URL" required:"true"`
+	// AuthAudience is the client a caller's token must name in `aud`: the
+	// bearer-only `core-ledger` resource client from infra/keycloak's realm
+	// template, whose client roles this API's route table checks.
+	AuthAudience string `env:"AUTH_AUDIENCE" default:"core-ledger"`
+
 	DatabaseURL string `env:"DATABASE_URL" required:"true"`
 
 	EthRPCURL        string `env:"ETH_RPC_URL" required:"true"`
@@ -89,6 +99,15 @@ type Config struct {
 	// absent, which keeps a fresh environment to one `docker compose up`.
 	NATSStream string `env:"NATS_STREAM" default:"DAMP"`
 
+	// NATSUser/NATSPassword are this relay's NATS credentials (H7). The
+	// broker's own config (infra/nats/nats.conf) declares one user per
+	// service with per-subject permissions; connecting with none means the
+	// relay has no permission to publish anything, and events pile up in the
+	// outbox with every attempt failing. So both are required whenever
+	// NATSURL is set — see validateNATS.
+	NATSUser     string `env:"NATS_USER" default:""`
+	NATSPassword string `env:"NATS_PASSWORD" default:""`
+
 	// ReconcilePreferSnapshots makes the reconciliation job read chain supply
 	// from the indexer's snapshots rather than calling the chains itself.
 	// Default off: a deployment with no indexer must not silently reconcile
@@ -129,6 +148,31 @@ type Config struct {
 
 	// AuditTrailToken is the bearer token audit-trail's INGEST_TOKEN expects.
 	AuditTrailToken string `env:"AUDIT_TRAIL_TOKEN" default:""`
+
+	// --- H3: the worker's outbound service-to-service auth. The worker's
+	// relay (notifications/compliance) and its indexer finality checks all
+	// carry a client-credentials token minted for svc-core-ledger-worker
+	// (internal/serviceauth). H4 gives the API server outbound calls of its
+	// own — it proposes break-glass approvals to services/workflow — and it
+	// uses its own client, svc-core-ledger. Both binaries read these same
+	// fields; which client id they hold is decided by the environment
+	// (core-ledger/.env for the server, stack.sh and the k8s worker
+	// deployment overriding it for the worker). Required in cmd/server and
+	// cmd/worker, optional here so `reconcile` can keep loading config it
+	// never calls anyone from.
+	ServiceClientID     string `env:"SERVICE_CLIENT_ID" default:""`
+	ServiceClientSecret string `env:"SERVICE_CLIENT_SECRET" default:""`
+	KeycloakBaseURL     string `env:"KEYCLOAK_BASE_URL" default:"http://localhost:8080"`
+	KeycloakRealm       string `env:"KEYCLOAK_REALM" default:"damp"`
+
+	// --- H4: break-glass maker-checker. The server proposes approvals to
+	// services/workflow (WORKFLOW_URL), receives the signed decisions on
+	// CORE_LEDGER_SELF_URL/internal/approvals/callback, and verifies them
+	// with WORKFLOW_CALLBACK_SECRET — the same shared secret workflow, kyc
+	// and compliance already use.
+	WorkflowURL            string `env:"WORKFLOW_URL" default:""`
+	WorkflowCallbackSecret string `env:"WORKFLOW_CALLBACK_SECRET" default:""`
+	CoreLedgerSelfURL      string `env:"CORE_LEDGER_SELF_URL" default:""`
 }
 
 func Load() (Config, error) {
@@ -142,7 +186,29 @@ func Load() (Config, error) {
 	if err := cfg.validateSigning(); err != nil {
 		return cfg, err
 	}
+	if err := cfg.validateNATS(); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
+}
+
+// validateNATS refuses a boot where the relay has a broker but no
+// credentials for it. NATSURL set with NATS_USER/NATS_PASSWORD missing is a
+// deployment that would start, connect, and be refused permission on every
+// publish — the outbox would hold the events durably, which is exactly the
+// failure mode that looks healthy from outside (no error logs, events
+// accumulating) until compliance stops seeing enforcement finality. Failing
+// at boot with the variable names is the cheaper place to learn about it.
+func (c Config) validateNATS() error {
+	if c.NATSURL == "" {
+		return nil
+	}
+	if c.NATSUser == "" || c.NATSPassword == "" {
+		return &platform.ConfigError{Problems: []string{
+			"NATS_USER and NATS_PASSWORD are required when NATS_URL is set (the broker authenticates per-service users — see infra/nats/nats.conf)",
+		}}
+	}
+	return nil
 }
 
 // validateSigning makes the either/or explicit.

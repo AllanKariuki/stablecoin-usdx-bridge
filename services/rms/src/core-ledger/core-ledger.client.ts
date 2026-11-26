@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ServiceTokenClient } from '@damp/nest-platform';
 import { Money, toMoney } from '../money/money';
 
 /** The subset of core-ledger's GET /reserves/status that rms reads. */
@@ -29,15 +30,16 @@ export interface ReserveStatus {
 export class CoreLedgerClient {
   private readonly logger = new Logger(CoreLedgerClient.name);
   private readonly baseUrl: string;
-  private readonly serviceToken: string;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    private readonly serviceTokens: ServiceTokenClient,
+  ) {
     this.baseUrl = config.get<string>('CORE_LEDGER_URL', { infer: true })!;
-    this.serviceToken = config.get<string>('CORE_LEDGER_SERVICE_TOKEN', { infer: true }) ?? '';
   }
 
   async reserveStatus(): Promise<ReserveStatus> {
-    const res = await fetch(new URL('/reserves/status', this.baseUrl), { headers: this.headers() });
+    const res = await fetch(new URL('/reserves/status', this.baseUrl), { headers: await this.headers() });
     if (!res.ok) {
       throw new Error(`core-ledger GET /reserves/status returned ${res.status}`);
     }
@@ -75,7 +77,7 @@ export class CoreLedgerClient {
     const res = await fetch(new URL('/reserves/custodian-snapshots', this.baseUrl), {
       method: 'POST',
       headers: {
-        ...this.headers(),
+        ...(await this.headers()),
         'Content-Type': 'application/json',
         'Idempotency-Key': `custodian:${input.custodianId}:${input.currency}:${input.asOf.toISOString()}`,
       },
@@ -94,9 +96,13 @@ export class CoreLedgerClient {
     }
   }
 
-  private headers(): Record<string, string> {
-    const headers: Record<string, string> = { 'X-User-Id': 'rms' };
-    if (this.serviceToken) headers['X-Service-Token'] = this.serviceToken;
-    return headers;
+  private async headers(): Promise<Record<string, string>> {
+    // X-User-Id names rms for the journal; the bearer is rms' own
+    // service-account token (H2: core-ledger authenticates every call and
+    // rms holds ledger.reserves.custodian).
+    return {
+      'X-User-Id': 'rms',
+      Authorization: `Bearer ${await this.serviceTokens.accessToken()}`,
+    };
   }
 }

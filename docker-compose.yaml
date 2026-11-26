@@ -96,11 +96,22 @@ services:
   nats:
     image: nats:2.10-alpine
     container_name: usdx-nats
-    command: ["-js", "-sd", "/data", "-m", "8222"]
+    # H7: -js -sd /data -m 8222 moved into infra/nats/nats.conf, which also
+    # adds the three per-service users (subject permissions). The store dir
+    # is unchanged (/data on the same natsdata volume), so the DAMP stream
+    # and every consumer cursor survive the switch.
+    command: ["-c", "/etc/nats/nats.conf"]
+    environment:
+      # Dev passwords for the three users nats.conf declares. Real
+      # deployments override via the same variables.
+      NATS_CORE_LEDGER_PASSWORD: ${NATS_CORE_LEDGER_PASSWORD:-dev-core-ledger-password}
+      NATS_NOTIFICATIONS_PASSWORD: ${NATS_NOTIFICATIONS_PASSWORD:-dev-notifications-password}
+      NATS_COMPLIANCE_PASSWORD: ${NATS_COMPLIANCE_PASSWORD:-dev-compliance-password}
     ports:
       - "54222:4222"
       - "58222:8222"
     volumes:
+      - ./infra/nats/nats.conf:/etc/nats/nats.conf:ro
       - natsdata:/data
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]

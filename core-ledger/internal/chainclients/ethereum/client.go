@@ -2,9 +2,11 @@ package ethereum
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -34,6 +36,16 @@ type Client struct {
 	contract *gen.USDX
 	chainID  *big.Int
 	signer   Signer
+
+	// proxy is the USDX proxy address this client is bound to — the contract
+	// VerifyBurn requires the receipt to be for, never the bare implementation
+	// address (see chains/ethereum/script/USDX.s.sol).
+	proxy common.Address
+
+	// finalityLevel is the same vocabulary WaitForFinality accepts
+	// ("finalized" or a confirmation count); VerifyBurn uses it as the depth
+	// a burn must have reached before it counts as proof.
+	finalityLevel string
 }
 
 // NewClient dials rpcURL and binds to the USDX proxy at contractAddress
@@ -57,7 +69,8 @@ func NewClientWithSigner(rpcURL, contractAddress string, signer Signer) (*Client
 		return nil, fmt.Errorf("dialing ethereum rpc: %w", err)
 	}
 
-	contract, err := gen.NewUSDX(common.HexToAddress(contractAddress), ec)
+	proxy := common.HexToAddress(contractAddress)
+	contract, err := gen.NewUSDX(proxy, ec)
 	if err != nil {
 		return nil, fmt.Errorf("binding USDX contract: %w", err)
 	}
@@ -67,7 +80,26 @@ func NewClientWithSigner(rpcURL, contractAddress string, signer Signer) (*Client
 		return nil, fmt.Errorf("fetching chain id: %w", err)
 	}
 
-	return &Client{ec: ec, contract: contract, chainID: chainID, signer: signer}, nil
+	return &Client{
+		ec:       ec,
+		contract: contract,
+		chainID:  chainID,
+		signer:   signer,
+		proxy:    proxy,
+		// The same default the saga ships with; dial.go overrides it from
+		// CHAIN_FINALITY.
+		finalityLevel: "finalized",
+	}, nil
+}
+
+// WithFinalityLevel sets the depth a burn must have reached before VerifyBurn
+// accepts it — the same "finalized"/confirmation-count vocabulary
+// WaitForFinality uses.
+func (c *Client) WithFinalityLevel(level string) *Client {
+	if level != "" {
+		c.finalityLevel = level
+	}
+	return c
 }
 
 // transactor builds the options the generated bindings sign through.
@@ -105,6 +137,99 @@ func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) 
 	return tx.Hash().Hex(), nil
 }
 
+// Blacklist adds addr to the USD-X blacklist — the on-chain half of a
+// compliance enforcement action (H6). The call needs COMPLIANCE_ROLE, which
+// the chain enforces; reference is the compliance action id, carried to the
+// signer as the correlation id so a retry re-signs the same authorisation.
+func (c *Client) Blacklist(addr, reference string) (string, error) {
+	return c.enforcementTx("blacklist", reference, addr, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.contract.Blacklist(opts, common.HexToAddress(addr))
+	})
+}
+
+// Unblacklist lifts addr off the blacklist (COMPLIANCE_ROLE).
+func (c *Client) Unblacklist(addr, reference string) (string, error) {
+	return c.enforcementTx("unblacklist", reference, addr, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.contract.Unblacklist(opts, common.HexToAddress(addr))
+	})
+}
+
+// Pause halts every transfer on the chain (PAUSER_ROLE).
+func (c *Client) Pause(reference string) (string, error) {
+	return c.enforcementTx("pause", reference, "", func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.contract.Pause(opts)
+	})
+}
+
+// Unpause resumes transfers (PAUSER_ROLE).
+func (c *Client) Unpause(reference string) (string, error) {
+	return c.enforcementTx("unpause", reference, "", func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.contract.Unpause(opts)
+	})
+}
+
+// enforcementTx is the shared path for the four role-gated methods: it builds
+// the transactor with the method name and reference a remote signer's policy
+// is written against (blacklist/unblacklist/pause/unpause), runs call, and
+// returns the transaction hash.
+func (c *Client) enforcementTx(method, reference, addr string, call func(*bind.TransactOpts) (*types.Transaction, error)) (string, error) {
+	opts, err := c.transactor(context.Background(), method, reference, nil, addr)
+	if err != nil {
+		return "", err
+	}
+	tx, err := call(opts)
+	if err != nil {
+		return "", fmt.Errorf("%s tx: %w", method, err)
+	}
+	return tx.Hash().Hex(), nil
+}
+
+// IsPauseAuthority reads PAUSER_ROLE from the contract and reports whether
+// this client's signer holds it — a read, never a write, so a PAUSE request
+// whose relayer lacks the role is refused by the API with a clear 422
+// instead of paying gas for a transaction that reverts.
+func (c *Client) IsPauseAuthority(ctx context.Context) (bool, error) {
+	role, err := c.contract.PAUSERROLE(&bind.CallOpts{Context: ctx})
+	if err != nil {
+		return false, fmt.Errorf("reading PAUSER_ROLE: %w", err)
+	}
+	has, err := c.contract.HasRole(&bind.CallOpts{Context: ctx}, role, c.signer.Address())
+	if err != nil {
+		return false, fmt.Errorf("checking PAUSER_ROLE for %s: %w", c.signer.Address(), err)
+	}
+	return has, nil
+}
+
+// FinalityStatus is the non-blocking half of WaitForFinality, for the
+// enforcement sweep: receipt lookup and depth check, each one call, no
+// polling. final=false and nil error means "not there yet — ask again on the
+// sweep's schedule"; a mined revert wraps ErrTxFailedOnChain so the sweep can
+// mark the row FAILED without guessing from error text.
+func (c *Client) FinalityStatus(txHash string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	hash := common.HexToHash(txHash)
+	receipt, err := c.ec.TransactionReceipt(ctx, hash)
+	if err == ethereum.NotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("fetching receipt for %s: %w", txHash, err)
+	}
+	if receipt.Status == 0 {
+		return false, fmt.Errorf("tx %s reverted: %w", txHash, bridge.ErrTxFailedOnChain)
+	}
+	if err := c.requireFinal(ctx, receipt.BlockNumber); err != nil {
+		if errors.Is(err, bridge.ErrBurnNotFinal) {
+			// Included but not deep enough yet: not final, nothing wrong.
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // WaitForFinality matches bridge.ChainClient's signature (the same string
 // vocabulary the saga uses for both chains). finalityLevel is either
 // "finalized" (wait for post-merge Ethereum's finalized checkpoint to pass
@@ -119,7 +244,9 @@ func (c *Client) WaitForFinality(txHash string, finalityLevel string) error {
 		return err
 	}
 	if receipt.Status == 0 {
-		return fmt.Errorf("tx %s reverted", txHash)
+		// Mined and reverted: the hash itself is permanently failed, so the
+		// saga must treat it as terminal rather than wait on it again.
+		return fmt.Errorf("tx %s reverted: %w", txHash, bridge.ErrTxFailedOnChain)
 	}
 
 	if finalityLevel == "finalized" {
@@ -213,4 +340,135 @@ func (c *Client) TotalSupply() (*big.Int, uint64, error) {
 		return nil, 0, fmt.Errorf("calling totalSupply: %w", err)
 	}
 	return supply, blockNumber, nil
+}
+
+// ValidTxHash reports whether txHash has the shape of an Ethereum transaction
+// hash (0x + 32 bytes of hex), before anything bothers to ask the chain about
+// it.
+func (c *Client) ValidTxHash(txHash string) bool {
+	if len(txHash) != 66 || txHash[:2] != "0x" && txHash[:2] != "0X" {
+		return false
+	}
+	for _, r := range txHash[2:] {
+		if !('0' <= r && r <= '9' || 'a' <= r && r <= 'f' || 'A' <= r && r <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// VerifyBurn is the on-chain half of H4's break-glass control: given a
+// transaction hash, it proves the burn really happened before fiat is
+// released. It is deliberately non-blocking — a maker-checker callback should
+// answer in seconds, not park a goroutine polling finality like the saga's
+// wait does — so a burn that has not reached the configured depth is reported
+// as ErrBurnNotFinal and the operator proposes again later.
+//
+// What is checked, in order: the receipt exists and succeeded; it is for the
+// USDX proxy this client is bound to; it has reached finalityDepth; and it
+// contains exactly one BridgeBurned event with the right source address,
+// amount and correlation id.
+func (c *Client) VerifyBurn(ctx context.Context, txHash, from string, amount *big.Int, correlationID string) error {
+	hash := common.HexToHash(txHash)
+	receipt, err := c.ec.TransactionReceipt(ctx, hash)
+	if err != nil {
+		if err == ethereum.NotFound {
+			return fmt.Errorf("burn %s: %w", txHash, bridge.ErrBurnNotFound)
+		}
+		return fmt.Errorf("fetching receipt for %s: %w", txHash, err)
+	}
+
+	if receipt.Status == 0 {
+		return fmt.Errorf("burn %s reverted: %w", txHash, bridge.ErrBurnReverted)
+	}
+	// go-ethereum's Receipt no longer carries To; the transaction does, and a
+	// burn for any contract but the USDX proxy is not our burn.
+	origTx, _, err := c.ec.TransactionByHash(ctx, hash)
+	if err != nil {
+		return fmt.Errorf("fetching transaction %s: %w", txHash, err)
+	}
+	if origTx.To() == nil || !strings.EqualFold(origTx.To().Hex(), c.proxy.Hex()) {
+		return &bridge.ErrBurnMismatch{Field: "contract"}
+	}
+	if err := c.requireFinal(ctx, receipt.BlockNumber); err != nil {
+		return err
+	}
+
+	// Parse every BridgeBurned event the proxy emitted in this transaction.
+	// Events from any other contract are ignored here and reported as not
+	// found — the burn that matters is the proxy's own.
+	var events []*gen.USDXBridgeBurned
+	for i := range receipt.Logs {
+		ev, perr := c.contract.ParseBridgeBurned(*receipt.Logs[i])
+		if perr != nil || !strings.EqualFold(ev.Raw.Address.Hex(), c.proxy.Hex()) {
+			continue
+		}
+		events = append(events, ev)
+	}
+	if len(events) == 0 {
+		return fmt.Errorf("burn %s: %w: no BridgeBurned event from the USDX proxy", txHash, bridge.ErrBurnNotFound)
+	}
+
+	wantCorrelation := bridge.CorrelationIDHash(correlationID)
+	matches := 0
+	for _, ev := range events {
+		if strings.EqualFold(ev.From.Hex(), from) && ev.Amount.Cmp(amount) == 0 && ev.CorrelationId == wantCorrelation {
+			matches++
+		}
+	}
+	switch {
+	case matches == 1:
+		return nil
+	case matches > 1:
+		// The contract's processedBurns guard makes one burn per correlation
+		// id, so this is a broken chain state rather than an ordinary burn.
+		return &bridge.ErrBurnMismatch{Field: "count"}
+	}
+
+	// No event matched everything. Report which field disagreed, preferring
+	// the event that at least carries this correlation id.
+	candidate := events[0]
+	for _, ev := range events {
+		if ev.CorrelationId == wantCorrelation {
+			candidate = ev
+			break
+		}
+	}
+	switch {
+	case !strings.EqualFold(candidate.From.Hex(), from):
+		return &bridge.ErrBurnMismatch{Field: "from"}
+	case candidate.Amount.Cmp(amount) != 0:
+		return &bridge.ErrBurnMismatch{Field: "amount"}
+	default:
+		return &bridge.ErrBurnMismatch{Field: "correlation_id"}
+	}
+}
+
+// requireFinal is the non-blocking form of WaitForFinality's depth check: the
+// receipt is already in hand, so the question is only whether the chain has
+// advanced far enough past it.
+func (c *Client) requireFinal(ctx context.Context, blockNumber *big.Int) error {
+	if c.finalityLevel == "finalized" {
+		header, err := c.ec.HeaderByNumber(ctx, big.NewInt(rpc.FinalizedBlockNumber.Int64()))
+		if err != nil {
+			return fmt.Errorf("fetching finalized header: %w", err)
+		}
+		if header.Number.Cmp(blockNumber) < 0 {
+			return fmt.Errorf("burn block %s is not final yet: %w", blockNumber, bridge.ErrBurnNotFinal)
+		}
+		return nil
+	}
+
+	confirmations, err := strconv.ParseUint(c.finalityLevel, 10, 64)
+	if err != nil {
+		return fmt.Errorf("finalityLevel must be \"finalized\" or a confirmation count, got %q", c.finalityLevel)
+	}
+	latest, err := c.ec.BlockNumber(ctx)
+	if err != nil {
+		return fmt.Errorf("fetching latest block number: %w", err)
+	}
+	if have := latest - blockNumber.Uint64() + 1; have < confirmations {
+		return fmt.Errorf("burn block %s has %d of %d confirmations: %w", blockNumber, have, confirmations, bridge.ErrBurnNotFinal)
+	}
+	return nil
 }

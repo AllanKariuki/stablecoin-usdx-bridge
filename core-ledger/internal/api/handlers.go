@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
 	"time"
 
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/workflowclient"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
 
 	"github.com/gofiber/fiber/v2"
@@ -23,19 +26,45 @@ type CustodyResolver interface {
 	CustodyAddress(chain string) (string, bool)
 }
 
+// WorkflowProposer opens approval requests in services/workflow — the seam
+// H4's break-glass confirm proposes through, and the thing handler tests fake.
+type WorkflowProposer interface {
+	Propose(ctx context.Context, in workflowclient.ProposeInput) (*workflowclient.ProposedRequest, error)
+}
+
 type Handlers struct {
-	repo    *ledger.Repository
-	ledger  *ledger.Service
-	logger  *slog.Logger
-	custody CustodyResolver
+	repo     *ledger.Repository
+	ledger   *ledger.Service
+	logger   *slog.Logger
+	custody  CustodyResolver
+	router   *bridge.Router
+	workflow WorkflowProposer
+
+	// workflowCallbackSecret verifies the HMAC on workflow's decision
+	// callbacks (WORKFLOW_CALLBACK_SECRET, shared with services/workflow).
+	workflowCallbackSecret string
 }
 
 // NewHandlers no longer takes a saga. The API's job on a money-moving write
 // ends at persisting the intent: cmd/worker claims it from the queue and runs
 // it. That split is what makes the saga survive a restart of the process that
 // accepted the request.
-func NewHandlers(repo *ledger.Repository, svc *ledger.Service, logger *slog.Logger, custody CustodyResolver) *Handlers {
-	return &Handlers{repo: repo, ledger: svc, logger: logger, custody: custody}
+//
+// router and workflow are H4's additions: the break-glass confirm no longer
+// settles on the operator's word — it proposes to services/workflow, and the
+// decision callback proves the burn through router before the ledger moves.
+// router may be nil in a deployment that never uses break-glass; workflow and
+// workflowCallbackSecret are required when the routes are exercised.
+func NewHandlers(repo *ledger.Repository, svc *ledger.Service, logger *slog.Logger, custody CustodyResolver, router *bridge.Router, workflow WorkflowProposer, workflowCallbackSecret string) *Handlers {
+	return &Handlers{
+		repo:                   repo,
+		ledger:                 svc,
+		logger:                 logger,
+		custody:                custody,
+		router:                 router,
+		workflow:               workflow,
+		workflowCallbackSecret: workflowCallbackSecret,
+	}
 }
 
 func (h *Handlers) Register(app *fiber.App) {
@@ -56,7 +85,18 @@ func (h *Handlers) Register(app *fiber.App) {
 	app.Post("/issuances", h.idempotent, h.issue)
 	app.Post("/redemptions", h.idempotent, h.redeem)
 	app.Post("/redemptions/:transactionId/confirm", h.idempotent, h.confirmRedemption)
+	app.Get("/redemptions/:transactionId/break-glass", h.getBreakGlass)
 	app.Post("/bridges", h.idempotent, h.bridgeTransfer)
+
+	// workflow's decision callback for break-glass proposals (H4). Exempt
+	// from the JWT check in auth.go's hmacPaths; the handler verifies the
+	// HMAC itself.
+	app.Post(workflowclient.CallbackPath(), h.approvalCallback)
+
+	// Chain enforcement (H6): compliance's approved actions, submitted with
+	// the relayer's keys — 202 on broadcast, finality by the worker's sweep.
+	app.Post("/chain/enforcement", h.idempotent, h.enforcement)
+	app.Get("/chain/enforcement/:reference", h.getEnforcement)
 
 	// Journal
 	app.Get("/transactions", h.listTransactions)
@@ -560,9 +600,12 @@ func (h *Handlers) redeem(c *fiber.Ctx) error {
 // endpoint that will not serve the receipt — where the alternative is a
 // customer's fiat held indefinitely against USD-X that is already destroyed.
 //
-// It therefore demands a reason, records who used it, and marks the saga
-// settled so the worker does not also burn. Putting it behind maker-checker is
-// P5's job (services/workflow); until then the audit trail is the control.
+// Since H4 it settles nothing. It validates the claim, opens a maker-checker
+// approval in services/workflow for a second person to decide on, and returns
+// 202 while that decision is pending. The burn is then proven on chain
+// (right contract, right source, right amount, right correlation id, final)
+// before the ledger moves — see breakglass.go's approvalCallback, which is
+// the only thing that calls settleBreakGlass.
 func (h *Handlers) confirmRedemption(c *fiber.Ctx) error {
 	var req struct {
 		ChainTxHash string `json:"chain_tx_hash"`
@@ -579,26 +622,100 @@ func (h *Handlers) confirmRedemption(c *fiber.Ctx) error {
 	}
 
 	redeemTxID := c.Params("transactionId")
-	h.logger.Warn("break-glass redemption settlement",
+
+	// The saga this request would settle. It must exist, be a redemption, and
+	// not already be settled — approving break-glass for a redemption the
+	// worker already completed would release the fiat twice.
+	t, err := h.repo.TransferForLedgerTx(c.Context(), redeemTxID)
+	if err != nil {
+		return fail(c, err)
+	}
+	if t.Kind != ledger.SagaRedeem {
+		return fail(c, &ledger.PostingError{
+			Code:    "NOT_A_REDEMPTION",
+			Message: fmt.Sprintf("transaction %s is not a redemption; break-glass settles redemptions only", redeemTxID),
+		})
+	}
+	if t.Status.Terminal() {
+		return fail(c, &ledger.PostingError{
+			Code:    "SAGA_ALREADY_SETTLED",
+			Message: fmt.Sprintf("redemption %s's saga is already %s; break-glass only applies while it is in flight", redeemTxID, t.Status),
+		})
+	}
+
+	// The hash must at least look like this chain's before it is asked to be
+	// believed.
+	client, ok := h.router.For(t.SourceChain)
+	if !ok {
+		return fail(c, fmt.Errorf("unknown source_chain %q", t.SourceChain))
+	}
+	if !client.ValidTxHash(req.ChainTxHash) {
+		return badRequest(c, "chain_tx_hash does not look like a "+t.SourceChain+" transaction hash")
+	}
+
+	// One open proposal per redemption. A second confirm while one is
+	// pending is a double-submit, and letting it through would mean two
+	// approvers each approving "the" break-glass for one payout.
+	if existing, err := h.repo.PendingBreakGlass(c.Context(), redeemTxID); err == nil && existing != nil {
+		return fail(c, &ledger.PostingError{
+			Code:    "BREAK_GLASS_PENDING",
+			Message: fmt.Sprintf("a break-glass confirmation for redemption %s is already pending approval (request %s)", redeemTxID, existing.WorkflowRequestID),
+		})
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fail(c, err)
+	}
+
+	h.logger.Warn("break-glass redemption confirmation requested; proposing maker-checker approval",
 		slog.String("transaction_id", redeemTxID),
 		slog.String("chain_tx_hash", req.ChainTxHash),
 		slog.String("actor", actor(c)),
 		slog.String("reason", req.Reason))
 
-	tx, err := h.ledger.ConfirmRedemption(c.Context(), redeemTxID, req.ChainTxHash, "", actor(c))
+	// The payload the approver is agreeing to, and the digest both sides
+	// compute over it. The callback re-derives the same object from the saga
+	// row and the proposal row before it acts — an approval against anything
+	// else is refused.
+	payload := breakGlassPayload(t, req.ChainTxHash, req.Reason)
+	proposal, err := h.workflow.Propose(c.Context(), workflowclient.ProposeInput{
+		Action:      "redemption.break_glass",
+		SubjectType: breakGlassSubjectType,
+		SubjectID:   redeemTxID,
+		Payload:     payload,
+		Summary: map[string]any{
+			"transaction_id": redeemTxID,
+			"correlation_id": t.CorrelationID,
+			"chain":          t.SourceChain,
+			"amount":         ledger.FormatDecimal(t.Amount, ledger.USDXDecimals),
+			"chain_tx_hash":  req.ChainTxHash,
+		},
+		RequestedBy: actor(c),
+		Reason:      req.Reason,
+	})
 	if err != nil {
+		// Refused, not waved through: a break-glass that cannot get an
+		// approval is not settled by other means.
+		return platform.WriteError(c, fiber.StatusBadGateway, "WORKFLOW_UNAVAILABLE",
+			"could not open the maker-checker approval: "+err.Error())
+	}
+
+	row := &ledger.BreakGlassRequest{
+		ID:                uuid.New().String(),
+		TransactionID:     redeemTxID,
+		ChainTxHash:       req.ChainTxHash,
+		Reason:            req.Reason,
+		RequestedBy:       actor(c),
+		WorkflowRequestID: proposal.ID,
+		Status:            string(ledger.BreakGlassPending),
+	}
+	if err := h.repo.CreateBreakGlass(c.Context(), row); err != nil {
 		return fail(c, err)
 	}
 
-	// Settle the saga too, or the worker will submit the burn this route just
-	// declared already done.
-	if t, err := h.repo.TransferForLedgerTx(c.Context(), redeemTxID); err == nil {
-		_ = h.repo.RecordChainTx(c.Context(), t.CorrelationID, "source_tx_hash", req.ChainTxHash)
-		_ = h.repo.SettleTransfer(c.Context(), t.CorrelationID, ledger.StatusCompleted,
-			"settled by operator break-glass: "+req.Reason)
-	}
-
-	return c.JSON(h.renderTransaction(c, tx))
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+		"status":              "PENDING_APPROVAL",
+		"approval_request_id": proposal.ID,
+		"transaction_id":      redeemTxID,
+	})
 }
 
 // bridgeTransfer moves a user's existing USD-X from one chain to the other.
@@ -1063,9 +1180,18 @@ func deriveCorrelationID(idempotencyKey string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("saga:"+idempotencyKey)).String()
 }
 
+// actor is who a write is stamped as. X-User-Id (set by the gateway via
+// auth-proxy, or by a service naming the party it acts for) wins; without
+// it, the authenticated service client itself is the actor — "service:<azp>"
+// rather than the pre-auth "api" fallback, so the journal names the caller
+// instead of anonymizing it. The bare "api" fallback survives only for
+// tests that call handlers without the auth middleware.
 func actor(c *fiber.Ctx) string {
 	if sub := c.Get("X-User-Id"); sub != "" {
 		return sub
+	}
+	if client, ok := c.Locals(authClientLocalsKey).(string); ok && client != "" {
+		return "service:" + client
 	}
 	return "api"
 }
@@ -1226,7 +1352,8 @@ func statusFor(code string) int {
 		return fiber.StatusNotFound
 	case "INSUFFICIENT_FUNDS", "ACCOUNT_FROZEN", "ACCOUNT_CLOSED", "PERIOD_CLOSED",
 		"ALREADY_REVERSED", "WALLET_NOT_EMPTY", "QUOTE_EXPIRED",
-		"IDEMPOTENCY_KEY_REUSED", "IDEMPOTENT_REQUEST_IN_PROGRESS":
+		"IDEMPOTENCY_KEY_REUSED", "IDEMPOTENT_REQUEST_IN_PROGRESS",
+		"BREAK_GLASS_PENDING", "SAGA_ALREADY_SETTLED":
 		return fiber.StatusConflict
 	default:
 		return fiber.StatusBadRequest

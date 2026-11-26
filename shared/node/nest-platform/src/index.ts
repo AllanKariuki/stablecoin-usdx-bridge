@@ -3,6 +3,24 @@ export { PlatformConfigModule, PlatformConfigOptions } from './config/config.mod
 export { PlatformConfigError } from './config/config.error';
 export { createConfigValidator, flattenValidationErrors, ClassConstructor } from './config/config.validate';
 
+// Auth (service-to-service)
+export { ServiceTokenClient } from './auth/service-token.client';
+export {
+  HmacAuthenticated,
+  Public,
+  RequireServiceRole,
+  ServiceAuthGuard,
+  ServiceAuthRequest,
+  VerifiedServiceClaims,
+  bearerToken,
+  normalizeClaims,
+} from './auth/service-auth.guard';
+export { CurrentUser } from './auth/current-user.decorator';
+export { ServiceIdentity, ServiceIdentityOptions, serviceIdentityFrom } from './auth/service-identity';
+
+// Testing
+export { FakeIssuer } from './testing/fake-issuer';
+
 // Logging
 export { PlatformLoggingModule, PlatformLoggingOptions } from './logging/logging.module';
 export { RequestIdInterceptor } from './logging/request-id.interceptor';
@@ -29,6 +47,9 @@ export { PlatformMetricsController } from './metrics/metrics.controller';
 export { ErrorResponse } from './errors/error-response.interface';
 export { ErrorEnvelopeFilter } from './errors/error-envelope.filter';
 export { PlatformException } from './errors/platform.exception';
+
+// KYC gating (H5)
+export { KycGate, KycTierResponse } from './kyc/kyc-gate';
 
 // Shutdown
 export { installGracefulShutdown, runShutdownSequence, ShutdownOptions } from './shutdown/shutdown';

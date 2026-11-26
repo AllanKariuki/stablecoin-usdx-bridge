@@ -19,6 +19,10 @@ const (
 	acctToken   = 2 // destination (mint) or source (burn) token account
 	acctRelayer = 5
 	minAccounts = 8
+
+	// configSeed is the BridgeConfig PDA seed (chains/solana constants.rs
+	// CONFIG_SEED) — what set_paused's first account must derive from.
+	configSeed = "bridge-config"
 )
 
 func anchorDisc(name string) [8]byte {
@@ -86,6 +90,13 @@ func Solana(message []byte, dep Deployment, claimedWallet string) (*Decoded, err
 	}
 	if bridge == nil {
 		return nil, errors.New("the message contains no bridge instruction")
+	}
+
+	// set_paused has its own account layout and data shape, and nothing in
+	// common with the bridge instructions beyond the program — branch before
+	// the bridge layout is assumed, so a pause is not misread as a burn.
+	if disc := anchorDisc("set_paused"); len(bridge.Data) >= 8 && bytes.Equal(bridge.Data[:8], disc[:]) {
+		return decodeSetPaused(msg, bridge, ataCreates)
 	}
 
 	if len(bridge.Data) != 8+8+32 {
@@ -177,4 +188,62 @@ func Solana(message []byte, dep Deployment, claimedWallet string) (*Decoded, err
 	}
 	d.Destination = wallet.String()
 	return d, nil
+}
+
+// decodeSetPaused decodes the program's set_paused instruction: the config
+// PDA first, the admin signer second, one Borsh bool after the discriminator
+// (config.rs's AdminOnly). There is no mint, destination or on-chain id —
+// pause moves nothing — so the decoded method is pause or unpause, the same
+// vocabulary policy rules are written in for Ethereum.
+func decodeSetPaused(msg solanago.Message, ix *solanago.CompiledInstruction, ataCreates []*solanago.CompiledInstruction) (*Decoded, error) {
+	if len(ix.Data) != 9 {
+		return nil, fmt.Errorf("set_paused data is %d bytes, want 9", len(ix.Data))
+	}
+	if len(ataCreates) > 0 {
+		return nil, errors.New("set_paused must not be accompanied by token-account creates")
+	}
+	if len(ix.Accounts) != 2 {
+		return nil, fmt.Errorf("set_paused has %d accounts, want 2 (config, admin)", len(ix.Accounts))
+	}
+	key := func(pos int) (solanago.PublicKey, error) {
+		idx := int(ix.Accounts[pos])
+		if idx >= len(msg.AccountKeys) {
+			return solanago.PublicKey{}, errors.New("account index out of range")
+		}
+		return msg.AccountKeys[idx], nil
+	}
+	config, err := key(0)
+	if err != nil {
+		return nil, err
+	}
+	admin, err := key(1)
+	if err != nil {
+		return nil, err
+	}
+
+	// The config account must be the program's BridgeConfig PDA — the same
+	// derivation core-ledger uses — or the instruction would write whatever
+	// other account it names.
+	wantConfig, _, err := solanago.FindProgramAddress([][]byte{[]byte(configSeed)}, msg.AccountKeys[ix.ProgramIDIndex])
+	if err != nil {
+		return nil, err
+	}
+	if config != wantConfig {
+		return nil, fmt.Errorf("set_paused config account %s is not the program's BridgeConfig PDA", config)
+	}
+	// The admin (account 1) must be the fee payer and a signer — the message
+	// half of AdminOnly's `admin: Signer` constraint. Whether it is the
+	// configured admin is a chain-state question the program answers.
+	if len(msg.AccountKeys) == 0 || msg.AccountKeys[0] != admin || msg.Header.NumRequiredSignatures < 1 {
+		return nil, errors.New("the admin must be the fee payer and a signer")
+	}
+
+	method := "pause"
+	if ix.Data[8] == 0 {
+		method = "unpause"
+	}
+	return &Decoded{
+		Method: method,
+		Target: msg.AccountKeys[ix.ProgramIDIndex].String(),
+	}, nil
 }

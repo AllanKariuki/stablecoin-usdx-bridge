@@ -107,14 +107,16 @@ test-unit:
 # The init scripts only run on a fresh volume, so an older volume is missing
 # whatever later phases added (bridge_test, signer_test, audit_trail_test);
 # db-backfill creates what is missing.
+NATS_TEST_URL ?= nats://localhost:54222
 test-integration: up db-backfill
 	@set -euo pipefail; \
 	LEDGER_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" \
 	SIGNER_TEST_DATABASE_URL="$(SIGNER_TEST_DATABASE_URL)" \
 	AUDIT_TRAIL_TEST_DATABASE_URL="$(AUDIT_TRAIL_TEST_DATABASE_URL)" \
+	NATS_TEST_URL="$(NATS_TEST_URL)" \
 		go test -p 1 ./core-ledger/... ./services/signer/... ./services/audit-trail/... ./shared/go/platform/... -count=1 -race -v 2>&1 | tee /tmp/usdx-go-test.log; \
 	if grep -q '^--- SKIP:' /tmp/usdx-go-test.log; then \
-		echo "a test was skipped — LEDGER_TEST_DATABASE_URL must be set and reachable"; \
+		echo "a test was skipped — the test databases and NATS_TEST_URL must be set and reachable"; \
 		grep '^--- SKIP:' /tmp/usdx-go-test.log; \
 		exit 1; \
 	fi

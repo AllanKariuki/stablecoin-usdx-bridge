@@ -1,5 +1,5 @@
-import { Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
+import { Type, Transform } from 'class-transformer';
+import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUrl, Max, Min } from 'class-validator';
 
 export class NotificationsConfig {
   /**
@@ -31,11 +31,11 @@ export class NotificationsConfig {
    *
    * The upgrade cannot go through Traefik's ForwardAuth the way an HTTP
    * request does — a browser cannot set headers on `new WebSocket()` — so the
-   * token arrives as a query parameter and is verified here. Empty disables
-   * verification, which is only acceptable in local development and is logged
-   * loudly at boot.
+   * token arrives as a query parameter and is verified here. Required since
+   * H3: without it every upgrade is refused (see ws.auth.ts) — there is no
+   * unauthenticated fallback except the explicit dev opt-in
+   * NOTIFICATIONS_WS_DEV_AUTH below.
    */
-  @IsOptional()
   @IsString()
   KEYCLOAK_ISSUER_URL = '';
 
@@ -55,12 +55,57 @@ export class NotificationsConfig {
 
   /**
    * identity, to map a Keycloak subject to the party id every other service
-   * uses. Without it the subject is passed through — the same fallback
-   * auth-proxy shipped with.
+   * uses. The lookup carries notifications' own service token
+   * (identity.resolve) since H3.
    */
   @IsOptional()
   @IsString()
   IDENTITY_SERVICE_URL = '';
+
+  // --- Inbound HTTP service-to-service auth (H3). Every HTTP request must
+  // carry a service-account JWT whose audience is the `notifications`
+  // resource client. Both required — there is no unauthenticated mode.
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  AUTH_ISSUER_URL!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  AUTH_AUDIENCE = 'notifications';
+
+  // --- The service account notifications calls OUT with (identity.resolve
+  // for the WebSocket subject->party lookup).
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_ID!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_SECRET!: string;
+
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  KEYCLOAK_BASE_URL!: string;
+
+  @IsString()
+  KEYCLOAK_REALM = 'damp';
+
+  /**
+   * The one escape hatch from WebSocket authentication, and it is opt-in
+   * twice over: only when ENV=local AND this is explicitly set to true does
+   * the WS endpoint accept an unverified partyId query parameter. Never set
+   * it anywhere a real user can reach the port.
+   */
+  // Parsed by hand: class-transformer's implicit Boolean() would read the
+  // env string "false" as true, and without any conversion @IsBoolean rejects
+  // the string outright.
+  @Transform(({ obj, key }) => {
+    const raw = (obj as Record<string, unknown>)[key];
+    return raw === true || String(raw).toLowerCase() === 'true';
+  })
+  @IsOptional()
+  @IsBoolean()
+  NOTIFICATIONS_WS_DEV_AUTH = false;
 
   // --- SMTP. Mailpit locally: :58025 web UI, 1025 SMTP. ---
   @IsOptional()
@@ -108,6 +153,17 @@ export class NotificationsConfig {
   @IsString()
   NATS_STREAM = 'DAMP';
 
+  // --- H7: this service's NATS credentials. infra/nats/nats.conf declares
+  // one user per service with per-subject permissions; NatsService refuses
+  // to start when NATS_URL is set and either is missing.
+  @IsOptional()
+  @IsString()
+  NATS_USER = '';
+
+  @IsOptional()
+  @IsString()
+  NATS_PASSWORD = '';
+
   /**
    * The durable consumer's name. Every replica must use the same one — that
    * is what makes them share the work rather than each receive everything.
@@ -129,6 +185,18 @@ export class NotificationsConfig {
   @IsInt()
   @Min(1)
   OUTBOX_CONSUMER_MAX_DELIVERIES = 10;
+
+  /**
+   * When > 0, the durable is created with this `inactive_threshold`, so the
+   * server removes it after that long with no interest. Unset (0) in every
+   * real deployment — the durable must outlive restarts — and set only by
+   * the e2e suite, which cannot delete its test durables any more (no NATS
+   * user may delete a consumer since H7).
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS = 0;
 
   /**
    * How old a PENDING delivery's lease must be before a replay or the sweeper

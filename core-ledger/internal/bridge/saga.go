@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 )
@@ -91,9 +92,11 @@ func NewSaga(repo *ledger.Repository, svc *ledger.Service, router *Router, logge
 }
 
 // UseIndexerFinality points the saga at services/indexer, keeping the chain
-// poll as the fallback for anything the indexer cannot answer.
-func (s *Saga) UseIndexerFinality(baseURL string) {
-	s.Checker = NewIndexerFinality(baseURL, NewChainFinality(s.router, s.Finality), s.logger)
+// poll as the fallback for anything the indexer cannot answer. authClient
+// is the H3 bearer-minting client (internal/serviceauth) — the worker's
+// token carries indexer.finality, which the indexer's route table requires.
+func (s *Saga) UseIndexerFinality(baseURL string, authClient *http.Client) {
+	s.Checker = NewIndexerFinality(baseURL, NewChainFinality(s.router, s.Finality), s.logger).WithHTTPClient(authClient)
 }
 
 // awaitFinality is the one place the saga waits on a chain. Routing all three

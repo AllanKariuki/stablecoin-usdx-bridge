@@ -46,6 +46,21 @@ spec:
               value: "postgres://indexer:indexer@timescaledb.default.svc.cluster.local:5432/indexer?sslmode=disable"
             - name: CORE_LEDGER_URL
               value: "http://core-ledger.default.svc.cluster.local:8081"
+            - name: SERVICE_CLIENT_ID
+              value: "svc-indexer"
+            # SERVICE_CLIENT_SECRET comes from indexer-secrets — never
+            # hardcode a real one here.
+            - name: KEYCLOAK_BASE_URL
+              value: "http://keycloak.default.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "damp"
+            # H3: the indexer's own read surface verifies every call against
+            # the `indexer` resource client (core-ledger's worker carries
+            # indexer.finality for GET /finality).
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "indexer"
             - name: USDX_ABI_PATH
               value: "/app/abi/USDX.json"
             - name: ETH_CONFIRMATIONS

@@ -37,6 +37,32 @@ spec:
               value: "postgres://payments:payments@postgres.default.svc.cluster.local:5432/payments?sslmode=disable"
             - name: CORE_LEDGER_URL
               value: "http://core-ledger.default.svc.cluster.local:8081"
+            # KYC gate (H5): every intent creation checks the party's tier
+            # against KYC_MIN_TIER_FIAT before any write. KycGate calls
+            # kyc's GET /internal/parties/:partyId/tier with this base URL
+            # (svc-payments holds kyc.tier-read).
+            - name: KYC_URL
+              value: "http://kyc.default.svc.cluster.local:3007"
+            - name: KYC_MIN_TIER_FIAT
+              value: "TIER_1"
+            # Service-account credentials for core-ledger (H2): core-ledger
+            # rejects any call without a svc-payments bearer token.
+            - name: SERVICE_CLIENT_ID
+              value: "svc-payments"
+            - name: SERVICE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: payments-secrets, key: service-client-secret }
+            - name: KEYCLOAK_BASE_URL
+              value: "http://keycloak.default.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "damp"
+            # H3: every request must carry a service-account JWT with
+            # audience `payments` (the rail callback is @Public and still
+            # checks RAIL_CALLBACK_SECRET).
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "payments"
             - name: NOTIFICATIONS_URL
               value: "http://notifications.default.svc.cluster.local:3000"
             - name: OUTBOX_RELAY_SECONDS

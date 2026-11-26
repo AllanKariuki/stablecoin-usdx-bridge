@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PlatformMetricsService } from '@damp/nest-platform';
-import { AckPolicy, ConsumerMessages, DeliverPolicy, JsMsg, NatsConnection, nanos } from 'nats';
+import { AckPolicy, ConsumerMessages, DeliverPolicy, JsMsg, JetStreamManager, NatsConnection, nanos } from 'nats';
 import { Counter } from 'prom-client';
 import { NatsService } from '../nats/nats.service';
 import { OutboxHandler } from './outbox-handler';
@@ -67,6 +67,8 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly backoffMaxMs: number;
   private readonly retryMs: number;
   private readonly deliverNew: boolean;
+  private readonly startSequence: number | null;
+  private readonly inactiveThresholdMs: number;
   private readonly messagesTotal: Counter<'outcome'>;
 
   private stopped = false;
@@ -91,6 +93,18 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
     this.backoffMaxMs = num('OUTBOX_CONSUMER_BACKOFF_MAX_MS', 300_000);
     this.retryMs = num('OUTBOX_CONSUMER_RETRY_MS', 2_000);
     this.deliverNew = config.get<string>('OUTBOX_CONSUMER_DELIVER_POLICY') === 'new';
+    // Test-facing only, and unset everywhere else: the e2e suite shares a
+    // developer's stream, whose existing events would otherwise be replayed
+    // into every fresh durable. Production sets neither key.
+    const startSequence = Number(config.get<string | number>('OUTBOX_CONSUMER_START_SEQUENCE') ?? 0);
+    this.startSequence = Number.isFinite(startSequence) && startSequence > 0 ? startSequence : null;
+    // Test-facing only, and unset everywhere else: with NATS granting no
+    // client the right to delete a consumer (H7 least privilege), a test
+    // durable would otherwise leak in a developer's broker forever. When set
+    // the server removes this durable after that long with no interest — the
+    // cleanup the test suite can no longer do itself. Production sets no
+    // value, so its durable lives for the life of the stream.
+    this.inactiveThresholdMs = num('OUTBOX_CONSUMER_INACTIVE_THRESHOLD_MS', 0);
 
     this.messagesTotal = new Counter({
       name: 'notifications_outbox_messages_total',
@@ -178,18 +192,40 @@ export class OutboxConsumer implements OnApplicationBootstrap, OnModuleDestroy {
    * consumed it, and anything the HTTP door already delivered is dropped by
    * the shared dedupe key. `new` is for an environment where up to 30 days of
    * backlog would be noise rather than news.
+   *
+   * `OUTBOX_CONSUMER_START_SEQUENCE` (tests only) pins that first cursor to
+   * a chosen stream sequence instead. It is consulted only while creating
+   * the durable: an existing durable keeps the server's position, so a
+   * restart still resumes where the last ack left off.
    */
   private async ensureConsumer(nc: NatsConnection): Promise<void> {
     const jsm = await nc.jetstreamManager();
+    // With a pinned start, an existing durable is left exactly as it is — no
+    // re-add, so its config (and cursor) cannot be mistaken for a change.
+    if (this.startSequence && (await this.consumerExists(jsm))) return;
     await jsm.consumers.add(this.stream, {
       durable_name: this.durable,
       ack_policy: AckPolicy.Explicit,
-      deliver_policy: this.deliverNew ? DeliverPolicy.New : DeliverPolicy.All,
+      ...(this.startSequence
+        ? { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: this.startSequence }
+        : { deliver_policy: this.deliverNew ? DeliverPolicy.New : DeliverPolicy.All }),
       filter_subjects: OUTBOX_SUBJECTS,
       ack_wait: nanos(this.ackWaitMs),
       max_deliver: -1,
       max_ack_pending: 256,
+      // Only when configured (tests): the server removes this durable after
+      // that long idle, so a suite that cannot delete consumers leaves
+      // nothing behind. Production sets nothing, so this field is absent and
+      // the durable behaves exactly as before.
+      ...(this.inactiveThresholdMs > 0 ? { inactive_threshold: nanos(this.inactiveThresholdMs) } : {}),
     });
+  }
+
+  private async consumerExists(jsm: JetStreamManager): Promise<boolean> {
+    return jsm.consumers.info(this.stream, this.durable).then(
+      () => true,
+      () => false,
+    );
   }
 
   private async consume(nc: NatsConnection): Promise<void> {

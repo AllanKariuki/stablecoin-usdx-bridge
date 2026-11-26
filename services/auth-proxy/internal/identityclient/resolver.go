@@ -38,6 +38,11 @@ func (SubjectPassthroughResolver) Resolve(_ context.Context, subject string) (st
 // and caches the result in Redis — auth-proxy owns no database of its own
 // (see the service table in docs/building-plan.md: "nothing (Redis
 // cache)"), so every uncached request costs one identity round trip.
+//
+// Since H3 the lookup carries auth-proxy's own service-account bearer
+// (identity.resolve): httpClient is expected to be the
+// clientcredentials.Config.Client from cmd/server, which mints and attaches
+// the token on every request.
 type IdentityHTTPResolver struct {
 	baseURL string
 	http    *http.Client
@@ -45,13 +50,16 @@ type IdentityHTTPResolver struct {
 	ttl     time.Duration
 }
 
-func NewIdentityHTTPResolver(baseURL string, redisClient *redis.Client, ttl time.Duration) *IdentityHTTPResolver {
+func NewIdentityHTTPResolver(baseURL string, httpClient *http.Client, redisClient *redis.Client, ttl time.Duration) *IdentityHTTPResolver {
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
 	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 5 * time.Second}
+	}
 	return &IdentityHTTPResolver{
 		baseURL: baseURL,
-		http:    &http.Client{Timeout: 5 * time.Second},
+		http:    httpClient,
 		redis:   redisClient,
 		ttl:     ttl,
 	}

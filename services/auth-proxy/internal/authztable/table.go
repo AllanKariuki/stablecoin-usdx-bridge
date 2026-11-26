@@ -118,6 +118,10 @@ var Default = Table{
 	compile("POST", "/issuances", authz.PermissionIssuanceCreate),
 	compile("POST", "/redemptions", authz.PermissionRedemptionCreate),
 	compile("POST", "/redemptions/:transactionId/confirm", authz.PermissionLedgerAdmin), // break-glass operator path, see P2
+	// H4: the break-glass proposal's status — read-only poll surface for the
+	// same operator roles that can propose (ledger:read, which both
+	// treasury and admin hold; customers have neither).
+	compile("GET", "/redemptions/:transactionId/break-glass", authz.PermissionLedgerRead),
 	compile("POST", "/bridges", authz.PermissionBridgeCreate),
 
 	// Journal / ledger

@@ -27,8 +27,50 @@ export class PaymentsConfig {
   @IsNotEmpty()
   CORE_LEDGER_URL!: string;
 
+  // --- KYC gate (H5). Every intent creation checks the party's tier against
+  // KYC_MIN_TIER_FIAT before any write or core-ledger call; KycGate calls
+  // kyc's GET /internal/parties/:partyId/tier with this base URL. Empty is a
+  // deliberate failure: the gate fails CLOSED (503 KYC_UNAVAILABLE) on every
+  // intent rather than moving money past an unconfigured check.
   @IsString()
-  CORE_LEDGER_SERVICE_TOKEN = '';
+  KYC_URL = '';
+
+  // The tier name (from kyc's kyc_tiers seed) every intent requires.
+  // TIER_1 is the first non-zero tier: TIER_0 can do nothing by construction.
+  @IsString()
+  @IsNotEmpty()
+  KYC_MIN_TIER_FIAT = 'TIER_1';
+
+  // --- Service-to-service auth (H2). Every core-ledger call carries
+  // payments' own service-account token; core-ledger verifies it and checks
+  // ledger.settlement.
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_ID!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  SERVICE_CLIENT_SECRET!: string;
+
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  KEYCLOAK_BASE_URL!: string;
+
+  @IsString()
+  KEYCLOAK_REALM = 'damp';
+
+  // --- Inbound service-to-service auth (H3). Every request to payments must
+  // carry a service-account JWT whose audience is the `payments` resource
+  // client; AUTH_AUDIENCE names that client and AUTH_ISSUER_URL is where its
+  // keys come from. Both required — there is no unauthenticated mode (the
+  // rail callback is @Public but still checks RAIL_CALLBACK_SECRET).
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  AUTH_ISSUER_URL!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  AUTH_AUDIENCE = 'payments';
 
   // Where the outbox relay delivers payment events. Empty is fine: events
   // queue in the outbox and are delivered once it is set. Either way a
@@ -82,6 +124,23 @@ export class PaymentsConfig {
   @IsOptional()
   @IsString()
   MPESA_PASSKEY = '';
+
+  // --- M-Pesa B2C (payouts) ---
+  //
+  // Daraja's B2C API authenticates as the initiator configured in the portal,
+  // not as the business shortcode: InitiatorName is that account's username,
+  // and SecurityCredential is its password encrypted with Safaricom's public
+  // certificate. The portal generates the encrypted value; it is used
+  // verbatim here and never logged. Both are needed only for payouts — STK
+  // deposits are unaffected — so leaving them blank keeps the rail usable for
+  // collection and refuses disbursement with RAIL_UNAVAILABLE.
+  @IsOptional()
+  @IsString()
+  MPESA_INITIATOR_NAME = '';
+
+  @IsOptional()
+  @IsString()
+  MPESA_SECURITY_CREDENTIAL = '';
 
   // Must be publicly reachable for Daraja to POST to it — an ngrok tunnel in
   // local development. An unreachable callback URL is the single most common

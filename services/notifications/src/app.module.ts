@@ -1,5 +1,6 @@
 import { DynamicModule, Global, Module } from '@nestjs/common';
-import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { APP_GUARD } from '@nestjs/core';
+import { PlatformConfigModule, PlatformModule, ServiceAuthGuard, ServiceTokenClient } from '@damp/nest-platform';
 import { NotificationsConfig } from './config/notifications-config';
 import { DbModule } from './db/db.module';
 import { DeliveryService } from './delivery/delivery.service';
@@ -32,6 +33,9 @@ import { WsGateway } from './ws/ws.gateway';
     DeliveryService,
     OutboxHandler,
     OutboxConsumer,
+    // WsAuth calls identity's /internal/parties/by-subject with
+    // notifications' own service token (identity.resolve).
+    ServiceTokenClient,
   ],
   exports: [WsGateway, LiveFanout, WsAuth, DeliveryService],
 })
@@ -49,6 +53,13 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       { ...PlatformModule.forRoot({ service: 'notifications', version, commit }), global: true },
       DbModule,
       NotificationsModule,
+    ],
+    providers: [
+      // H3: every route carries a Keycloak service-account JWT whose audience
+      // is the `notifications` resource client. Default role is
+      // notifications.user-proxy (svc-bff); the two ingest routes declare
+      // notifications.ingest.
+      { provide: APP_GUARD, useClass: ServiceAuthGuard },
     ],
   };
 }
