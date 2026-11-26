@@ -78,6 +78,10 @@ func (h *Handlers) Register(app *fiber.App) {
 	app.Get("/wallets/:walletId/statement", h.getStatement)
 	app.Post("/wallets/:walletId/status", h.setWalletStatus)
 
+	// Currencies: the supported set the portal's wallet/conversion screens
+	// render from (slice 4b).
+	app.Get("/currencies", h.listCurrencies)
+
 	// Money movement. Every one of these goes through h.idempotent, so a
 	// retry replays the first call's bytes instead of re-running the handler.
 	app.Post("/deposits", h.idempotent, h.deposit)
@@ -261,6 +265,28 @@ func (h *Handlers) setWalletStatus(c *fiber.Ctx) error {
 		return fail(c, err)
 	}
 	return c.JSON(h.renderWallet(c, w))
+}
+
+// listCurrencies is the supported-currency set the portal renders its
+// wallet and conversion screens from (slice 4b). native_chain is derived
+// (ledger.NativeChain), not stored: a currency's chain is a property of the
+// platform's custody model, not of the currency row.
+func (h *Handlers) listCurrencies(c *fiber.Ctx) error {
+	cs, err := h.repo.Currencies(c.Context())
+	if err != nil {
+		return fail(c, err)
+	}
+	out := make([]fiber.Map, 0, len(cs))
+	for i := range cs {
+		out = append(out, fiber.Map{
+			"code":         cs[i].Code,
+			"kind":         cs[i].Kind,
+			"decimals":     cs[i].Decimals,
+			"name":         cs[i].Name,
+			"native_chain": ledger.NativeChain(cs[i].Code),
+		})
+	}
+	return c.JSON(fiber.Map{"currencies": out})
 }
 
 func (h *Handlers) getStatement(c *fiber.Ctx) error {
@@ -917,16 +943,26 @@ func (h *Handlers) getTransaction(c *fiber.Ctx) error {
 // scoped to transactions:read:own only is expected to always pass their
 // own id — enforcement of that is the gateway/BFF's job (see
 // services/auth-proxy's route table), not this handler's.
+//
+// type is an optional repeated or comma-separated filter
+// (?type=FX_CONVERSION&type=USDX_ISSUE or ?type=FX_CONVERSION,USDX_ISSUE),
+// validated against the known TxType values — an unknown type is a 400, not
+// a silently empty page. The filter runs in the query, before the limit and
+// the keyset cursor, so paging a filtered feed never skips matches.
 func (h *Handlers) listTransactions(c *fiber.Ctx) error {
 	afterCreatedAt, afterID, err := decodeTxCursor(c.Query("cursor"))
 	if err != nil {
 		return badRequest(c, err.Error())
 	}
 	limit := clampLimit(c.QueryInt("limit"), 50, 200)
+	types, err := txTypesParam(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
 
 	// Fetch one extra row to know whether a next page exists without a
 	// separate COUNT query — trimmed back to limit before rendering.
-	txs, err := h.repo.ListTransactionsPage(c.Context(), c.Query("user_id"), afterCreatedAt, afterID, limit+1)
+	txs, err := h.repo.ListTransactionsPage(c.Context(), c.Query("user_id"), types, afterCreatedAt, afterID, limit+1)
 	if err != nil {
 		return fail(c, err)
 	}

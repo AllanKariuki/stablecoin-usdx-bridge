@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PRICE_FEEDS } from '../feeds/feeds.module';
 import { PriceFeed } from '../feeds/price-feed';
@@ -11,6 +11,7 @@ import {
   parseRate,
   RATE_SCALE,
 } from '../money/rate';
+import { HISTORY_SYMBOLS, PriceHistoryService } from './price-history.service';
 
 /** A rate the aggregator is willing to stand behind, with its provenance. */
 export interface RateResult {
@@ -30,6 +31,9 @@ export interface SymbolStatus {
   status: PriceStatus;
   sources: string[];
   at: string | null;
+  /** The board's 24h change on the displayed rate, set by RatesController
+   * from the recorded series when history has enough points for it. */
+  change_24h_pct?: string | null;
 }
 
 /**
@@ -94,6 +98,9 @@ export class Aggregator implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(PRICE_FEEDS) private readonly feeds: PriceFeed[],
     config: ConfigService,
+    // Optional: unit tests construct the aggregator bare (no store behind
+    // it), and recording history is a side effect, not an aggregation rule.
+    @Optional() private readonly history?: PriceHistoryService,
   ) {
     this.pollMs = config.get<number>('PRICING_POLL_MS', { infer: true }) ?? 5000;
     this.minSources = config.get<number>('PRICING_MIN_SOURCES', { infer: true }) ?? 2;
@@ -138,6 +145,27 @@ export class Aggregator implements OnModuleInit, OnModuleDestroy {
         }
       }),
     );
+    await this.recordHistory();
+  }
+
+  /**
+   * Writes each history symbol's aggregated mid to price_points — and only
+   * when the symbol is OK. A stale or tripped symbol is deliberately not
+   * recorded: the chart must never show a price the quote path refuses to
+   * stand behind, and the gap is the chart's own TRIPPED marker.
+   */
+  private async recordHistory(): Promise<void> {
+    if (!this.history) return;
+    for (const symbol of HISTORY_SYMBOLS) {
+      try {
+        const result = this.evaluateSymbol(symbol);
+        await this.history.record(symbol, result.at, result.rate, result.sources);
+      } catch (err) {
+        // Expected for every symbol with no data (or a disagreement): not an
+        // error, and at debug level so a poll loop doesn't spam the log.
+        this.logger.debug(`not recording ${symbol}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /**

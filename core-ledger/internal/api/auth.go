@@ -144,6 +144,8 @@ var routeTable = authzTable{
 	compile("PATCH", "/wallets/:walletId", roleUserProxy),
 	compile("GET", "/wallets/:walletId/statement", roleUserProxy, roleReportsRead),
 	compile("POST", "/wallets/:walletId/status", roleWalletStatus, roleUserProxy),
+	// The supported-currency set (slice 4b), reached by bff for the portal.
+	compile("GET", "/currencies", roleUserProxy),
 
 	// Chain enforcement (H6): the only routes that submit with compliance
 	// authority, and the only ones that role exists for. The GET is the

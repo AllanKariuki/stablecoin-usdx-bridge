@@ -1,8 +1,19 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { PlatformException } from '@damp/nest-platform';
 import { AuthContext, CurrentUser } from '../auth/current-user.decorator';
+import { WalletOwnership } from './wallet-ownership.service';
 import { WalletsService } from './wallets.service';
 import { StatementView, WalletView } from './wallet.types';
+
+interface CreateWalletBody {
+  currency?: string;
+  label?: string;
+}
+
+interface UpdateWalletBody {
+  is_default?: boolean;
+  label?: string;
+}
 
 /**
  * Ownership (wallets:read:own vs wallets:read:any) is enforced here, not at
@@ -14,11 +25,60 @@ import { StatementView, WalletView } from './wallet.types';
  */
 @Controller('wallets')
 export class WalletsController {
-  constructor(private readonly wallets: WalletsService) {}
+  constructor(
+    private readonly wallets: WalletsService,
+    private readonly ownership: WalletOwnership,
+  ) {}
 
   @Get()
   listOwn(@CurrentUser() auth: AuthContext): Promise<WalletView[]> {
     return this.wallets.listOwnWallets(auth.userId);
+  }
+
+  /**
+   * Opens a wallet in any supported currency for the caller (slice 4b).
+   * The user is never taken from the body — only from the auth context —
+   * and USD-X is refused: it lives on two chains, so it goes through the
+   * existing POST /wallets/usdx route which requires one. Idempotency is
+   * core-ledger's: EnsureWallet returns the existing wallet for the same
+   * (user, currency, chain).
+   */
+  @Post()
+  async create(@Body() body: CreateWalletBody, @CurrentUser() auth: AuthContext): Promise<WalletView> {
+    const currency = (body.currency ?? '').trim().toUpperCase();
+    if (!currency) {
+      throw new PlatformException(400, 'INVALID_REQUEST', 'currency is required');
+    }
+    if (currency === 'USDX') {
+      throw new PlatformException(
+        422,
+        'USE_USDX_ROUTE',
+        'USD-X lives on two chains: open it through POST /wallets/usdx with the chain you want',
+      );
+    }
+    return this.wallets.createWallet({
+      userId: auth.userId,
+      currency,
+      chain: this.wallets.nativeChainFor(currency),
+      address: '',
+      label: body.label ?? '',
+    });
+  }
+
+  /**
+   * PATCHes the metadata a wallet owner may change — the default flag and
+   * the label. Ownership is checked here exactly like every other write on
+   * a :walletId route (see WalletOwnership); core-ledger enforces the rest
+   * (is_default may only be set true, labels are capped at 64 runes).
+   */
+  @Patch(':walletId')
+  async update(
+    @Param('walletId') walletId: string,
+    @Body() body: UpdateWalletBody,
+    @CurrentUser() auth: AuthContext,
+  ): Promise<WalletView> {
+    await this.ownership.requireOwnWallets(auth, [walletId]);
+    return this.wallets.updateWallet(walletId, { isDefault: body.is_default, label: body.label });
   }
 
   @Get(':walletId')

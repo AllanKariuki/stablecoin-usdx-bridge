@@ -4,3 +4,6 @@ export * from './types';
 export * from './ledger';
 export * from './approvals';
 export * from './kyc';
+export * from './wallets';
+export * from './fx';
+export * from './rates';

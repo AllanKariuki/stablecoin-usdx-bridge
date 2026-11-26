@@ -32,4 +32,17 @@ export class PricingProxyController {
   pricing(@Req() req: Request, @Res() res: Response) {
     return this.proxy.forward(this.baseUrl, req, res, req.originalUrl.replace(/^\/api/, '').replace(/^\/pricing/, ''));
   }
+
+  /**
+   * The customer-facing rates surface (slice 4b), separate from the ops
+   * console's /pricing/* paths: the portal reads GET /rates and
+   * GET /rates/history at bff's root, and they forward to the same pricing
+   * origin the ops paths do (svc-bff holds pricing.read). They are listed
+   * explicitly like every other proxy route, so the set stays one-for-one
+   * with services/auth-proxy's table.
+   */
+  @All(['rates', 'rates/history'])
+  rates(@Req() req: Request, @Res() res: Response) {
+    return this.proxy.forward(this.baseUrl, req, res);
+  }
 }

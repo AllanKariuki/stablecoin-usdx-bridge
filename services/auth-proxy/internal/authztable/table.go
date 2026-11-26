@@ -97,6 +97,13 @@ var Default = Table{
 	compile("POST", "/wallets/:walletId/status", authz.PermissionWalletsStatusManage),
 	// Opens the caller's own USD-X wallet (bff-only; always the caller's, so no :any variant).
 	compile("POST", "/wallets/usdx", authz.PermissionWalletsWriteOwn),
+	// Slice 4b: opening any other wallet and editing its metadata are own-
+	// wallet writes like /transfers; ownership of the :walletId is checked
+	// downstream in bff, never here.
+	compile("POST", "/wallets", authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny),
+	compile("PATCH", "/wallets/:walletId", authz.PermissionWalletsWriteOwn, authz.PermissionWalletsWriteAny),
+	// The supported-currency set the portal renders (core-ledger's chart).
+	compile("GET", "/currencies", authz.PermissionWalletsReadOwn),
 
 	// Dashboard (bff-only aggregation, no core-ledger equivalent)
 	compile("GET", "/dashboard", authz.PermissionWalletsReadOwn, authz.PermissionWalletsReadAny),
@@ -123,6 +130,19 @@ var Default = Table{
 	// treasury and admin hold; customers have neither).
 	compile("GET", "/redemptions/:transactionId/break-glass", authz.PermissionLedgerRead),
 	compile("POST", "/bridges", authz.PermissionBridgeCreate),
+
+	// Slice 4b: the customer-facing quote/conversion surface. /conversions
+	// and /quotes are bff routes (the ledger's own /fx/* shapes stay under
+	// the permissions they already have); the wallet ownership every one of
+	// them depends on is enforced downstream in bff.
+	compile("POST", "/quotes", authz.PermissionFxQuote),
+	compile("POST", "/conversions", authz.PermissionFxConvert),
+	// The caller's own conversion history — the same shape as GET /transactions.
+	compile("GET", "/conversions", authz.PermissionTransactionsReadOwn),
+	// The portal's price chart and rates board (services/pricing, through
+	// bff's proxy — distinct from the ops console's /pricing/* paths above).
+	compile("GET", "/rates", authz.PermissionWalletsReadOwn),
+	compile("GET", "/rates/history", authz.PermissionWalletsReadOwn),
 
 	// Journal / ledger
 	compile("GET", "/transactions", authz.PermissionTransactionsReadOwn, authz.PermissionTransactionsReadAny),

@@ -3,6 +3,96 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-27 — Portal money API: wallets, quotes, conversions and price history (slices 4b/4c)
+
+### Added — price history (services/pricing, slice 4c)
+
+- New migration `003_price_points.sql`: one row per (symbol, 1-minute
+  bucket) holding the aggregated mid and its sources. The aggregator
+  upserts after every poll — for each crypto USD leg (BTC/ETH/SOL vs USD)
+  and each fiat USD leg (USD/EUR, USD/GBP, USD/KES) — but only while the
+  symbol is OK: a stale or tripped symbol is deliberately not recorded, so
+  the chart can never show a price the quote path refuses (the gap is the
+  chart's own TRIPPED marker). A retention job (at boot, then daily) keeps
+  minute buckets for 2 days, downsamples older rows to the last point per
+  hour, and deletes rows older than 400 days.
+- `GET /rates/history?symbols=BTC,ETH&range=1H|1D|1W|1M|1Y|ALL&base=USD`
+  (role `pricing.read`): per symbol, points `[{t, price}]` converted into
+  `base` through the USD legs at each point's own time (the base leg
+  contributes the point whose bucket is closest, ties going to the earlier
+  point so a chart never uses lookahead), downsampled to at most 300
+  points, plus `change_pct` = (last−first)/first×100 as an exactly-2-dp
+  string — computed on fixed-point BigInts, never floats. A fiat base leg
+  is fetched in full (a daily point's closest match can predate a short
+  window); a crypto leg from the window's start.
+- `GET /rates` (the board) gains `change_24h_pct` per entry — the newest
+  recorded point against the newest at or before 24h ago, computed on the
+  *displayed* rate (a crypto entry's inverted leg) — when history has
+  enough points; a database outage degrades the field, never the board.
+  Non-USD boards omit it: their cross-rate change needs both legs composed
+  per point, which is the history endpoint's job, not the board's.
+
+### Added — the portal money API (core-ledger + bff + auth-proxy)
+
+- core-ledger gains `GET /currencies` (`ledger.user-proxy`): the active
+  currencies from the chart with kind, decimals, name and the derived
+  `native_chain` (NativeChain — a property of the custody model, not of the
+  currency row).
+- bff customer routes, every one deriving the caller from the auth context
+  (never a body field) and ownership-checking every wallet it names before
+  any other service hears about it:
+  - `GET /currencies` — core-ledger's chart in camelCase.
+  - `POST /wallets {currency, label?}` — any supported currency, stamped
+    with the native chain for crypto, idempotent per (user, currency) by
+    core-ledger's EnsureWallet; USD-X answers 422 `USE_USDX_ROUTE` (it
+    lives on two chains — open it through the existing POST /wallets/usdx).
+  - `PATCH /wallets/:walletId {is_default?, label?}` — ownership-checked,
+    then core-ledger's PATCH (is_default may only be set true, labels
+    capped at 64 runes). Wallet views gain `isDefault`.
+  - `POST /quotes {fromWalletId, toWalletId? | toCurrency?, amount,
+    amountSide?}` — derives both currencies from the wallets, quotes
+    through services/pricing with `party_id` = the caller. The
+    USD<->USD-X pair answers a synthetic 1:1 peg preview (`quote_id: null`,
+    `rate: "1"`, `fee: "0"`, `route: "ISSUANCE" | "REDEMPTION"` — nothing
+    is minted; bff does not know the issuance fee schedule, which lives in
+    core-ledger); any other USD-X pair answers 422 `USDX_USES_ISSUANCE`.
+    Every response carries `route: "FX" | "ISSUANCE" | "REDEMPTION"`.
+  - `POST /conversions {fromWalletId, toWalletId, amount, quoteId?}` —
+    KYC-gated exactly like POST /transfers (the caller's tier, before any
+    ownership read or core-ledger call), Idempotency-Key mandatory. FX
+    books core-ledger's POST /fx/conversions (201); the peg routes reuse
+    the issuance/redemption journals with the same shapes, idempotency
+    discipline and saga handle (202); other USD-X pairs answer 422
+    `USDX_TWO_STEP` ("convert to USD first"). Response: `{route,
+    transaction, correlationId, sagaStatus, status}`.
+  - `GET /conversions` — the caller's FX_CONVERSION / USDX_ISSUE /
+    USDX_REDEEM transactions. core-ledger's `GET /transactions` gains an
+    optional repeated or comma-separated `type` filter (validated against
+    the known TxType values, 400 on an unknown one), applied in SQL before
+    the limit and keyset cursor — so bff passes the three types through and
+    returns core-ledger's cursor directly, and a conversion older than a
+    page of deposits still pages into view.
+  - `GET /rates` and `GET /rates/history` — customer paths proxied to
+    services/pricing (svc-bff holds pricing.read), separate from the ops
+    console's `/pricing/*` surface.
+- `services/auth-proxy` route table (no new permissions): `GET /currencies`
+  → wallets:read:own; `POST /wallets`, `PATCH /wallets/:walletId` →
+  wallets:write:own/:any; `POST /quotes` → fx:quote; `POST /conversions` →
+  fx:convert; `GET /conversions` → transactions:read:own; `GET /rates`,
+  `GET /rates/history` → wallets:read:own. POST /bridges was already
+  customer-reachable (bridge:create) — unchanged.
+
+### Added — shared frontend API (@damp/web-shared)
+
+- `wallets.ts` (`currencies`, `createWallet`, `updateWallet`), `fx.ts`
+  (`quote`, `convert`, `conversions` — typed against bff's exact wire
+  shapes including `route`) and `rates.ts` (`rates`, `history`, plus the
+  normalizing `historyQuery` helper), exported from the api barrel.
+- `payments.ts`: `createIntent` and `payInvoice` accept the cross-asset
+  legs `sourceWalletId`/`sourceAmount`/`quoteId` (passed through to
+  services/payments untouched — verified by a new bff passthrough e2e), and
+  `PaymentIntent` carries them back.
+
 ## 2026-11-26 — Pay from any wallet: cross-asset payments (slice 4a)
 
 ### Added — TO-side quotes (services/pricing)

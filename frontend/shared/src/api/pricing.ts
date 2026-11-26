@@ -25,6 +25,9 @@ export interface SymbolStatus {
   status: PriceStatus;
   sources: string[];
   at: string | null;
+  /** The 24h change on the displayed rate, set from the price-history
+   * series when it has enough points — absent when it doesn't. */
+  change_24h_pct?: string | null;
 }
 
 export interface RateBoard {
