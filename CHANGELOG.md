@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-26 — CI: the H7 NATS auth suite runs instead of skipping
+
+### Fixed — the Go workspace job failed on three skipped tests
+
+- `.github/workflows/ci.yml`: the Go job now starts `nats:2.10-alpine` with
+  `infra/nats/nats.conf` and the dev passwords, then sets `NATS_TEST_URL`.
+  The H7 `TestNATSAuth*` suite skips without that variable, and the job's
+  no-skip guard failed the run. The broker is a `docker run` step, not a
+  service container, because service containers start before checkout and
+  can't mount the config file.
+- `Makefile`: `test-integration` passes `NATS_TEST_URL` (default
+  `nats://localhost:54222`, compose's broker), so the same skip no longer
+  fails it locally.
+
 ## 2026-11-26 — Ops Console entry page; Keycloak login surface synced per portal
 
 ### Fixed — the Ops Console redirected straight to Keycloak
