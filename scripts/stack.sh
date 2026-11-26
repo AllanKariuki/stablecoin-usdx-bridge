@@ -487,6 +487,7 @@ service_env() {
 		echo "REPORTING_URL=http://localhost:13008"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "RMS_URL=http://localhost:13005"
+		echo "PRICING_URL=http://localhost:13009"
 		;;
 	auth-proxy)
 		echo "PORT=18090"

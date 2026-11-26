@@ -160,6 +160,21 @@ var Default = Table{
 	compile("POST", "/attestations", authz.PermissionReservesManage),
 	compile("POST", "/attestations/:attestationId/publish", authz.PermissionReservesManage),
 
+	// Crypto exposure & treasury desk (services/rms) and the pricing pair
+	// policy (services/pricing), both reached through bff's upstream proxy.
+	// The exposure/rebalance reads and pricing reads sit with the other
+	// treasury reads on reserves:read; the writes (setting a mandate, posting
+	// a rebalance, tuning a pair) are reserves:manage — the same segregation
+	// as the reserve targets above, and admin deliberately does not hold it.
+	compile("GET", "/exposure", authz.PermissionReservesRead),
+	compile("GET", "/exposure/limits/:currency", authz.PermissionReservesRead),
+	compile("GET", "/treasury/rebalances", authz.PermissionReservesRead),
+	compile("PUT", "/exposure/limits/:currency", authz.PermissionReservesManage),
+	compile("POST", "/treasury/rebalances", authz.PermissionReservesManage),
+	compile("GET", "/pricing/pairs", authz.PermissionReservesRead),
+	compile("GET", "/pricing/rates", authz.PermissionReservesRead),
+	compile("PATCH", "/pricing/pairs/:base/:quote", authz.PermissionReservesManage),
+
 	// Payments (P4). services/payments, reached through bff's upstream proxy.
 	//
 	// Bank accounts read and write under the same wallets:write permissions a

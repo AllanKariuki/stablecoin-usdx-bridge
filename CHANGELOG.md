@@ -3,6 +3,37 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-26 — Ops Console: crypto exposure, rebalances and pricing (slice 3b)
+
+### Added — the treasury/exposure and pricing surfaces reach the Ops Console
+
+- `services/auth-proxy` route table now exposes rms's exposure and rebalance
+  surface (`GET /exposure`, `GET/PUT /exposure/limits/:currency`,
+  `GET/POST /treasury/rebalances`) and pricing's pair policy
+  (`GET /pricing/pairs`, `GET /pricing/rates`, `PATCH /pricing/pairs/:base/:quote`).
+  Reads sit on `reserves:read`; the writes (set a mandate, post a rebalance,
+  tune a pair) on `reserves:manage` — the same segregation as reserve
+  targets, so `admin` (which holds `reserves:read` only) cannot change them.
+  No new permissions were added.
+- `services/bff` forwards both surfaces: the rms routes join
+  `RmsProxyController`, and a new `PricingProxyController` maps
+  `/pricing/*` → pricing's `/pairs` and `/rates` (stripping the `/pricing`
+  prefix), using the same `UpstreamProxy` + svc-bff service-account token
+  (svc-bff already holds `pricing.read`/`pricing.admin` and `rms.user-proxy`).
+  New `PRICING_URL` config (empty answers 503 like the other proxies),
+  wired through `scripts/stack.sh` (`http://localhost:13009`) and bff's
+  `.env.example`.
+- `@damp/web-shared/api` gains `treasury.ts` (exposure rows, limits,
+  rebalances) and `pricing.ts` (pairs, indicative rates) with a new `patch`
+  client helper, typed against the exact upstream response shapes.
+- Ops Console treasury workspace gains two pages — **Crypto exposure**
+  (per-asset liabilities/holdings/net exposure with signed short styling,
+  mandate, utilisation bar, custodian MATCH/DRIFT badge, edit-mandate and
+  record-rebalance modals, and rebalance history) and **Pricing** (indicative
+  rates with OK/STALE/TRIPPED status, pair policy table, pair edit drawer).
+  Both are gated on `reserves:read` for the route/nav like Custodians, with
+  mutating controls behind `reserves:manage`.
+
 ## 2026-11-26 — Treasury and exposure for custodial crypto (slice 3a)
 
 ### Added — ledger treasury positions and the rebalance journal (core-ledger)

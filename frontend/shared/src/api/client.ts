@@ -58,6 +58,10 @@ export async function put<T>(url: string, body?: unknown): Promise<T> {
   return (await http.put<T>(url, body)).data;
 }
 
+export async function patch<T>(url: string, body?: unknown): Promise<T> {
+  return (await http.patch<T>(url, body)).data;
+}
+
 export async function del<T>(url: string): Promise<T> {
   return (await http.delete<T>(url)).data;
 }
