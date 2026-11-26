@@ -221,26 +221,27 @@ func (a *Account) Postable() error {
 type TxType string
 
 const (
-	TxFiatDeposit     TxType = "FIAT_DEPOSIT"      // custodian credit -> user fiat wallet
-	TxFiatWithdrawal  TxType = "FIAT_WITHDRAWAL"   // user fiat wallet -> custodian debit
-	TxUSDXIssue       TxType = "USDX_ISSUE"        // fiat claim -> USDX claim (mint)
-	TxUSDXRedeem      TxType = "USDX_REDEEM"       // USDX claim -> fiat claim (burn)
-	TxFXConversion    TxType = "FX_CONVERSION"     // fiat -> fiat across a quote
-	TxFXPayment       TxType = "FX_PAYMENT"        // wallet -> wallet across a quote, owners may differ
-	TxInternalXfer    TxType = "INTERNAL_TRANSFER" // wallet -> wallet, same currency
-	TxChainBridgeOut  TxType = "CHAIN_BRIDGE_OUT"  // burn leg: wallet -> bridge suspense
-	TxChainBridgeIn   TxType = "CHAIN_BRIDGE_IN"   // mint leg: bridge suspense -> wallet
-	TxBridgeCompensat TxType = "BRIDGE_COMPENSATE" // failed mint: suspense -> source wallet
-	TxFee             TxType = "FEE"               // standalone fee charge
-	TxManualJournal   TxType = "MANUAL_JOURNAL"    // operator-entered adjustment
-	TxReversal        TxType = "REVERSAL"          // contra-entry of another transaction
+	TxFiatDeposit     TxType = "FIAT_DEPOSIT"       // custodian credit -> user fiat wallet
+	TxFiatWithdrawal  TxType = "FIAT_WITHDRAWAL"    // user fiat wallet -> custodian debit
+	TxUSDXIssue       TxType = "USDX_ISSUE"         // fiat claim -> USDX claim (mint)
+	TxUSDXRedeem      TxType = "USDX_REDEEM"        // USDX claim -> fiat claim (burn)
+	TxFXConversion    TxType = "FX_CONVERSION"      // fiat -> fiat across a quote
+	TxFXPayment       TxType = "FX_PAYMENT"         // wallet -> wallet across a quote, owners may differ
+	TxInternalXfer    TxType = "INTERNAL_TRANSFER"  // wallet -> wallet, same currency
+	TxChainBridgeOut  TxType = "CHAIN_BRIDGE_OUT"   // burn leg: wallet -> bridge suspense
+	TxChainBridgeIn   TxType = "CHAIN_BRIDGE_IN"    // mint leg: bridge suspense -> wallet
+	TxBridgeCompensat TxType = "BRIDGE_COMPENSATE"  // failed mint: suspense -> source wallet
+	TxFee             TxType = "FEE"                // standalone fee charge
+	TxManualJournal   TxType = "MANUAL_JOURNAL"     // operator-entered adjustment
+	TxReversal        TxType = "REVERSAL"           // contra-entry of another transaction
+	TxTreasuryRebal   TxType = "TREASURY_REBALANCE" // treasury bought/sold custodial crypto with fiat at a custodian
 )
 
 func (t TxType) Valid() bool {
 	switch t {
 	case TxFiatDeposit, TxFiatWithdrawal, TxUSDXIssue, TxUSDXRedeem, TxFXConversion,
 		TxFXPayment, TxInternalXfer, TxChainBridgeOut, TxChainBridgeIn, TxBridgeCompensat,
-		TxFee, TxManualJournal, TxReversal:
+		TxFee, TxManualJournal, TxReversal, TxTreasuryRebal:
 		return true
 	}
 	return false
@@ -265,6 +266,13 @@ const (
 	EntityBankPayment    EntityType = "BANK_PAYMENT"
 	EntityFXConversion   EntityType = "FX_CONVERSION"
 	EntityWallet         EntityType = "WALLET"
+
+	// EntityTreasuryRebalance names a treasury desk's crypto purchase or
+	// sale at a custodian — the journal-side half of services/rms'
+	// treasury_rebalances row. It is chosen by the rebalance flow itself,
+	// not by callers, so it is deliberately absent from the
+	// ValidateCallerEntity allow-list.
+	EntityTreasuryRebalance EntityType = "TREASURY_REBALANCE"
 )
 
 // ValidateCallerEntity checks a back-reference supplied by a caller rather

@@ -36,6 +36,11 @@ spec:
               value: "postgres://pricing:pricing@postgres.default.svc.cluster.local:5432/pricing?sslmode=disable"
             - name: CORE_LEDGER_URL
               value: "http://core-ledger.default.svc.cluster.local:8081"
+            # rms' exposure check: every crypto-legged quote is bounded
+            # against the house's position before it is minted, and the
+            # guard fails closed when rms is unreachable.
+            - name: RMS_URL
+              value: "http://rms.default.svc.cluster.local:3005"
             # Service-account credentials for core-ledger (H2): core-ledger
             # rejects any POST /fx/quotes without a svc-pricing bearer token
             # — quote creation is locked to this one client's role.

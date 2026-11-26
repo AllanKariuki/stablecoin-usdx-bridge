@@ -57,6 +57,11 @@ const (
 	// roleReportsRead is services/reporting's role: the read surface a
 	// report run assembles from.
 	roleReportsRead = "ledger.reports.read"
+	// roleTreasury is services/rms' treasury desk role: post rebalance
+	// journal entries when the desk buys or sells custodial crypto at a
+	// custodian. rms alone holds it — a rebalance posting moves the house's
+	// own position, and no user-facing surface should ever produce one.
+	roleTreasury = "ledger.treasury"
 )
 
 // authClient is the resource client whose roles authorize this API — the
@@ -187,6 +192,13 @@ var routeTable = authzTable{
 	compile("GET", "/reserves/reconciliation-runs", roleUserProxy, roleReportsRead),
 	compile("GET", "/reserves/reconciliation-runs/:runId", roleUserProxy, roleReportsRead),
 	compile("GET", "/reserves/reconciliation-breaks", roleUserProxy, roleReportsRead),
+
+	// Treasury & custodial-crypto exposure. The positions read serves rms'
+	// exposure checks (via ledger.reserves.custodian), the ops console and
+	// reporting; the rebalance writer is rms' treasury desk alone — the same
+	// writer-isolation reasoning as the reserves writers above.
+	compile("GET", "/treasury/positions", roleReservesCustodian, roleUserProxy, roleReportsRead),
+	compile("POST", "/treasury/rebalances", roleTreasury),
 
 	// Bridge saga state
 	compile("GET", "/transfers/:correlationId", roleUserProxy),

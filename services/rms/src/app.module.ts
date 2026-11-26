@@ -7,6 +7,7 @@ import { RmsConfig } from './config/rms-config';
 import { CoreLedgerModule } from './core-ledger/core-ledger.module';
 import { CustodiansModule } from './custodians/custodians.module';
 import { DbModule } from './db/db.module';
+import { ExposureModule } from './exposure/exposure.module';
 import { ReservesModule } from './reserves/reserves.module';
 
 /**
@@ -27,6 +28,7 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       CustodiansModule,
       ReservesModule,
       AttestationsModule,
+      ExposureModule,
     ],
     // In the root module, beside the other producers'.
     providers: [

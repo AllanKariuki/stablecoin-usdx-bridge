@@ -49,6 +49,9 @@ describe('pricing quotes endpoint (e2e, FakeIssuer, overridden ledger/guard/db)'
     process.env.LOG_LEVEL = 'error';
     process.env.DATABASE_URL = 'postgres://unused:unused@127.0.0.1:1/unused';
     process.env.CORE_LEDGER_URL = 'http://127.0.0.1:1';
+    // The guard is overridden below, so this never needs to answer — but the
+    // config validates it at boot, exactly like CORE_LEDGER_URL.
+    process.env.RMS_URL = 'http://127.0.0.1:1';
     process.env.SERVICE_CLIENT_ID = 'svc-pricing';
     process.env.SERVICE_CLIENT_SECRET = 'dev-svc-pricing-secret';
     process.env.KEYCLOAK_BASE_URL = 'http://127.0.0.1:1';

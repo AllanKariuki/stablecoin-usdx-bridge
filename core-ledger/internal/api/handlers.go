@@ -121,6 +121,9 @@ func (h *Handlers) Register(app *fiber.App) {
 	// Reserves and reconciliation (P3) — see reserves.go.
 	h.registerReserves(app)
 
+	// Treasury and custodial-crypto exposure — see treasury.go.
+	h.registerTreasury(app)
+
 	// Bridge saga state
 	app.Get("/transfers/:correlationId", h.getTransfer)
 	app.Get("/sagas/dead-letters", h.listDeadLetters)

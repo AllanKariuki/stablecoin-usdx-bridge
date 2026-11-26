@@ -30,6 +30,14 @@ export class PricingConfig {
   @IsNotEmpty()
   CORE_LEDGER_URL!: string;
 
+  // --- rms. POST /exposure/check bounds every crypto-legged quote against
+  // the house's current exposure before a rate is minted; the guard fails
+  // closed when it is unreachable (503 RMS_UNAVAILABLE), because quoting
+  // past a limit you cannot see is the risk the limit exists to prevent.
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  RMS_URL!: string;
+
   // --- Service-to-service auth (H2). Every core-ledger call carries
   // pricing's own service-account token; core-ledger verifies it and checks
   // ledger.pricing.

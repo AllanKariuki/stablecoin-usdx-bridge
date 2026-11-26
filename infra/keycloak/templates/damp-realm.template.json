@@ -81,6 +81,12 @@
           "clientRole": true
         },
         {
+          "name": "ledger.treasury",
+          "description": "services/rms' treasury desk: POST /treasury/rebalances (rebalance journal entries; the positions read stays on ledger.reserves.custodian)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
           "name": "ledger.reserves.chain-supply",
           "description": "services/indexer: POST /reserves/chain-supply-snapshots",
           "composite": false,
@@ -156,6 +162,12 @@
         {
           "name": "rms.user-proxy",
           "description": "services/bff: every user-facing rms route",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "rms.exposure.check",
+          "description": "services/pricing: POST /exposure/check (bound a quote against the house's crypto exposure limits)",
           "composite": false,
           "clientRole": true
         }
@@ -848,7 +860,7 @@
     {
       "clientId": "svc-rms",
       "name": "services/rms (confidential)",
-      "description": "Service account for services/rms: client-credentials only, carrying ledger.reserves.custodian (core-ledger) and audit-trail.ingest (H3).",
+      "description": "Service account for services/rms: client-credentials only, carrying ledger.reserves.custodian + ledger.treasury (core-ledger) and audit-trail.ingest (H3).",
       "enabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
@@ -909,6 +921,18 @@
             "access.token.claim": "true"
           },
           "_comment": "core-ledger verifies aud=core-ledger; without this mapper the service's tokens carry aud: [\"account\"] and every call 401s."
+        },
+        {
+          "name": "aud-mapper-rms",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "rms",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "Slice 3a: the exposure check calls rms' POST /exposure/check with svc-pricing's own token, which must carry the rms audience."
         },
         {
           "name": "aud-mapper-audit-trail",
@@ -1218,7 +1242,8 @@
       {
         "client": "svc-rms",
         "roles": [
-          "ledger.reserves.custodian"
+          "ledger.reserves.custodian",
+          "ledger.treasury"
         ]
       },
       {
@@ -1311,6 +1336,12 @@
         "client": "svc-bff",
         "roles": [
           "rms.user-proxy"
+        ]
+      },
+      {
+        "client": "svc-pricing",
+        "roles": [
+          "rms.exposure.check"
         ]
       }
     ],
@@ -1577,7 +1608,8 @@
       "serviceAccountClientId": "svc-rms",
       "clientRoles": {
         "core-ledger": [
-          "ledger.reserves.custodian"
+          "ledger.reserves.custodian",
+          "ledger.treasury"
         ],
         "audit-trail": [
           "audit-trail.ingest"
@@ -1591,6 +1623,9 @@
       "clientRoles": {
         "core-ledger": [
           "ledger.pricing"
+        ],
+        "rms": [
+          "rms.exposure.check"
         ],
         "audit-trail": [
           "audit-trail.ingest"

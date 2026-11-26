@@ -456,6 +456,7 @@ service_env() {
 	pricing)
 		echo "PORT=13009"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
+		echo "RMS_URL=http://localhost:13005"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
