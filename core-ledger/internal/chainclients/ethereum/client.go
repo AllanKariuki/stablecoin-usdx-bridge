@@ -119,7 +119,9 @@ func (c *Client) WaitForFinality(txHash string, finalityLevel string) error {
 		return err
 	}
 	if receipt.Status == 0 {
-		return fmt.Errorf("tx %s reverted", txHash)
+		// Mined and reverted: the hash itself is permanently failed, so the
+		// saga must treat it as terminal rather than wait on it again.
+		return fmt.Errorf("tx %s reverted: %w", txHash, bridge.ErrTxFailedOnChain)
 	}
 
 	if finalityLevel == "finalized" {

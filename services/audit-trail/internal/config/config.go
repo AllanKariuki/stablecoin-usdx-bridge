@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
@@ -9,6 +10,12 @@ import (
 type Config struct {
 	Port     int    `env:"PORT" default:"8085"`
 	LogLevel string `env:"LOG_LEVEL" default:"info"`
+
+	// Env is the same variable services/signer reads. ENV=local is the only
+	// value that lets this service start without INGEST_TOKEN; anything else
+	// refuses to start, because an open ingest surface is not a local-only
+	// concern — see RequireIngestToken.
+	Env string `env:"ENV" default:"local"`
 
 	DatabaseURL string `env:"DATABASE_URL" required:"true"`
 
@@ -42,4 +49,21 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// RequireIngestToken refuses an unauthenticated ingest surface outside local
+// development. Recording is the only write on this service, and it is
+// permanent: an unauthenticated caller can put words in any actor's mouth and
+// nobody can take them back out. A shared token is the floor, so a deployment
+// that has not set one must not start.
+//
+// Factored out of main so the rule is testable without binding a port.
+func (c Config) RequireIngestToken() error {
+	if c.Env != "local" && c.IngestToken == "" {
+		return fmt.Errorf(
+			"INGEST_TOKEN is required when ENV is not local (ENV=%q): without it any caller that can reach this port can record audit events as any actor",
+			c.Env,
+		)
+	}
+	return nil
 }

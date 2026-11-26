@@ -23,9 +23,9 @@ type Handlers struct {
 }
 
 // New takes the shared ingest token producers present as a bearer token.
-// Empty leaves recording open to anything that can reach the port, which is
-// what it was before producers existed — main.go warns when it starts that
-// way.
+// Empty leaves recording open to anything that can reach the port, a state
+// main.go permits only when ENV=local; every accepted unauthenticated request
+// is warned about.
 func New(st *store.Store, logger *slog.Logger, ingestToken string) *Handlers {
 	return &Handlers{store: st, logger: logger, ingestToken: ingestToken}
 }
@@ -52,6 +52,12 @@ func (h *Handlers) Register(app *fiber.App) {
 // relay already sends.
 func (h *Handlers) authenticateProducer(c *fiber.Ctx) error {
 	if h.ingestToken == "" {
+		// Only reachable in local development — main.go refuses to start with
+		// an empty token otherwise. Warn on every accepted call rather than
+		// once at boot: a silently open ingest surface is exactly the state
+		// nobody should be comfortable leaving running.
+		h.logger.Warn("accepting an audit event with no ingest token; recording is unauthenticated (ENV=local only)",
+			slog.String("remote_ip", c.IP()))
 		return c.Next()
 	}
 	presented, ok := strings.CutPrefix(c.Get(fiber.HeaderAuthorization), "Bearer ")

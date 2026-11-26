@@ -15,6 +15,55 @@ import (
 	"github.com/google/uuid"
 )
 
+// With no token configured, local development keeps working: every caller is
+// allowed through. This is the behaviour main.go permits only when ENV=local.
+// The store is nil here because the middleware is exercised on its own — no
+// event is written.
+func TestAuthenticateProducerAllowsEmptyToken(t *testing.T) {
+	h := New(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+
+	app := fiber.New()
+	reached := false
+	app.Post("/internal/events", h.authenticateProducer, func(c *fiber.Ctx) error {
+		reached = true
+		return c.SendStatus(fiber.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/events", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("status = %d, want 204; an empty token is allowed in local mode", resp.StatusCode)
+	}
+	if !reached {
+		t.Fatal("the recording handler was not reached")
+	}
+}
+
+// The same middleware with a token configured still rejects, so the local
+// allowance above does not weaken the authenticated path.
+func TestAuthenticateProducerRequiresConfiguredToken(t *testing.T) {
+	h := New(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "s3cret")
+
+	app := fiber.New()
+	app.Post("/internal/events", h.authenticateProducer, func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/events", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 without the bearer token", resp.StatusCode)
+	}
+}
+
 // The recording contract producers' relays depend on: 401 without the token
 // (dead-lettered, not retried), 201 the first time, 200 on a redelivery, 409
 // for a different event under a recorded id. Real Postgres in

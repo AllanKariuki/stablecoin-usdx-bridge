@@ -31,6 +31,15 @@ func TestClassify(t *testing.T) {
 			errors.New("something nobody has seen before"), ClassTransient},
 
 		// Terminal: the chain answered, and the answer will not change.
+		{"mined-and-reverted ethereum tx",
+			fmt.Errorf("tx 0xabc reverted: %w", ErrTxFailedOnChain), ClassTerminal},
+		{"mined-and-failed solana tx",
+			fmt.Errorf("tx 3x failed: InstructionError(0, Custom(1)): %w", ErrTxFailedOnChain), ClassTerminal},
+		// The sentinel never outranks a replay guard. A landed Solana failure
+		// whose status text is a replay guard means an earlier transaction
+		// already did the work; unwinding here would destroy real money.
+		{"mined failure that is really a replay guard",
+			fmt.Errorf("tx 3x failed: already in use: %w", ErrTxFailedOnChain), ClassAlreadyProcessed},
 		{"ethereum revert",
 			errors.New("bridgeMint tx: execution reverted: Pausable: paused"), ClassTerminal},
 		{"blacklisted",

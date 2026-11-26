@@ -41,6 +41,14 @@ func main() {
 	logger := platform.NewLogger(serviceName, cfg.LogLevel)
 	slog.SetDefault(logger)
 
+	// Fails closed: recording is the one write on this service, and an
+	// unauthenticated one lets anything that can reach the port speak as any
+	// actor, permanently. Outside local that is a refusal, not a warning.
+	if err := cfg.RequireIngestToken(); err != nil {
+		logger.Error("refusing to start with an unauthenticated audit ingest", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	st, err := store.Open(cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("opening the audit database", slog.Any("error", err))
@@ -95,7 +103,9 @@ func main() {
 	health.Register(app)
 	app.Get("/metrics", metrics.Handler())
 	if cfg.IngestToken == "" {
-		logger.Warn("INGEST_TOKEN is not set; any caller that can reach this port can record events as any actor")
+		// Reached only when ENV=local: RequireIngestToken refused to start
+		// otherwise, above.
+		logger.Warn("starting WITHOUT INGEST_TOKEN in ENV=local: any caller that can reach this port can record events as any actor")
 	}
 	api.New(st, logger, cfg.IngestToken).Register(app)
 
