@@ -8,13 +8,13 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/testdb"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -51,10 +51,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	dsn := os.Getenv("LEDGER_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set LEDGER_TEST_DATABASE_URL to run api integration tests")
-	}
+	dsn := testdb.DSN(t, "LEDGER_TEST_DATABASE_URL")
 	apiOnce.Do(func() {
 		apiRepo, apiErr = ledger.NewRepository(dsn)
 		if apiErr == nil {

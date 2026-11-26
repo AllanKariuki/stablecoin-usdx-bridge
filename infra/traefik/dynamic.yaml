@@ -1,5 +1,6 @@
-# Traefik dynamic configuration: the gateway at :8082 the frontend's
-# runtime-config.js points VITE_API_BASE_URL at (http://localhost:8082/api).
+# Traefik dynamic configuration: the gateway the frontend's runtime-config.js
+# points VITE_API_BASE_URL at (http://localhost:18082/api; Traefik listens on
+# :8082 inside its container and compose publishes that as 18082 on the host).
 #
 # Local dev topology: Traefik runs in Docker, but core-ledger, auth-proxy,
 # and bff still run on the host (`make run`, `cd services/auth-proxy && go
@@ -20,7 +21,7 @@ http:
     bff:
       loadBalancer:
         servers:
-          - url: "http://host.docker.internal:3002"
+          - url: "http://host.docker.internal:13002"
 
   middlewares:
     # Order matters: cors first so an OPTIONS preflight is answered here and
@@ -50,7 +51,7 @@ http:
 
     require-auth:
       forwardAuth:
-        address: "http://host.docker.internal:8090/verify"
+        address: "http://host.docker.internal:18090/verify"
         trustForwardHeader: true
         authResponseHeaders:
           - "X-User-Id"

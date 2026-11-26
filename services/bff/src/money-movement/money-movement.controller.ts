@@ -2,6 +2,7 @@ import { Body, Controller, Headers, Post } from '@nestjs/common';
 import { PlatformException } from '@damp/nest-platform';
 import { AuthContext, CurrentUser } from '../auth/current-user.decorator';
 import { CoreLedgerClient } from '../core-ledger/core-ledger.client';
+import { WalletOwnership } from '../wallets/wallet-ownership.service';
 import { CoreLedgerTransaction, toTransactionView, TransactionView } from '../transactions/transaction.types';
 
 interface DepositBody {
@@ -24,12 +25,24 @@ interface TransferBody {
 }
 
 /**
- * P1 scope only (see docs/building-plan.md's P1 DoD: "Make a deposit and an
- * internal transfer from the UI and watch the statement line appear").
- * fx/issuance/redemption/bridge reach core-ledger endpoints that already
- * exist and services/auth-proxy's route table already covers, but wiring
- * them through bff is deliberately left for the phase that actually needs
- * them (P2's redemption/saga work) rather than built speculatively now.
+ * The money-movement routes, and who is allowed to reach which one.
+ *
+ * - **POST /deposits and POST /withdrawals are operator-only manual
+ *   adjustments.** A customer's fiat moves through services/payments'
+ *   payment-intent path, where a rail has to confirm the money moved before
+ *   core-ledger is asked to book it. These routes skip the rail entirely, so
+ *   they require wallets:adjust:manual (treasury and admin only, checked here
+ *   as well as at the gateway) and are for treasury corrections, never
+ *   self-service money movement. An operator adjusts somebody else's wallet
+ *   by design, so the permission — not wallet ownership — is the control.
+ * - **POST /transfers is own-wallet-only.** The destination of a transfer may
+ *   be someone else's wallet by design, but the source must belong to the
+ *   caller; core-ledger has no caller identity of its own and will post
+ *   against whatever wallet id it is handed. A transfer never crosses the
+ *   platform boundary, so no rail is involved.
+ * - **The actor is always forwarded.** Without X-User-Id, core-ledger records
+ *   initiated_by="api", which makes a money movement impossible to attribute
+ *   to the person who asked for it.
  *
  * Idempotency-Key is mandatory on every write here, matching core-ledger's
  * own requirement (core-ledger/internal/api/handlers.go's idempotencyKey())
@@ -38,67 +51,83 @@ interface TransferBody {
  */
 @Controller()
 export class MoneyMovementController {
-  constructor(private readonly coreLedger: CoreLedgerClient) {}
-
-  // Ownership (does fromWalletId/walletId actually belong to the caller) is
-  // enforced by core-ledger's own posting engine returning UNKNOWN_WALLET/
-  // insufficient-funds-style errors for a wallet the caller has no business
-  // touching — bff doesn't duplicate that check on the write path (unlike
-  // the wallets/transactions read paths, which do, because there the
-  // alternative was silently leaking another user's data, not just a write
-  // core-ledger would reject anyway). @CurrentUser() below still runs, so a
-  // request missing X-User-Id entirely is still rejected before reaching
-  // core-ledger at all.
+  constructor(
+    private readonly coreLedger: CoreLedgerClient,
+    private readonly ownership: WalletOwnership,
+  ) {}
 
   @Post('deposits')
   deposit(
     @Body() body: DepositBody,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
-    @CurrentUser() _auth: AuthContext,
+    @CurrentUser() auth: AuthContext,
   ): Promise<TransactionView> {
     requireIdempotencyKey(idempotencyKey);
-    return this.post('/deposits', {
-      wallet_id: body.walletId,
-      amount: body.amount,
-      reference: body.reference ?? '',
-    }, idempotencyKey);
+    requireManualAdjustment(auth);
+    return this.post(
+      '/deposits',
+      {
+        wallet_id: body.walletId,
+        amount: body.amount,
+        reference: body.reference ?? '',
+      },
+      idempotencyKey,
+      auth.userId,
+    );
   }
 
   @Post('withdrawals')
   withdraw(
     @Body() body: WithdrawBody,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
-    @CurrentUser() _auth: AuthContext,
+    @CurrentUser() auth: AuthContext,
   ): Promise<TransactionView> {
     requireIdempotencyKey(idempotencyKey);
-    return this.post('/withdrawals', {
-      wallet_id: body.walletId,
-      amount: body.amount,
-      reference: body.reference ?? '',
-    }, idempotencyKey);
+    // An operator debits somebody else's wallet by design, so this is
+    // permission-gated rather than ownership-checked.
+    requireManualAdjustment(auth);
+    return this.post(
+      '/withdrawals',
+      {
+        wallet_id: body.walletId,
+        amount: body.amount,
+        reference: body.reference ?? '',
+      },
+      idempotencyKey,
+      auth.userId,
+    );
   }
 
   @Post('transfers')
-  transfer(
+  async transfer(
     @Body() body: TransferBody,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
-    @CurrentUser() _auth: AuthContext,
+    @CurrentUser() auth: AuthContext,
   ): Promise<TransactionView> {
     requireIdempotencyKey(idempotencyKey);
-    return this.post('/transfers', {
-      from_wallet_id: body.fromWalletId,
-      to_wallet_id: body.toWalletId,
-      amount: body.amount,
-      reference: body.reference ?? '',
-    }, idempotencyKey);
+    // Only the source is checked: sending money to another user's wallet is
+    // the point of a transfer, and core-ledger rejects an unknown destination.
+    await this.ownership.requireOwnWallets(auth, [body.fromWalletId]);
+    return this.post(
+      '/transfers',
+      {
+        from_wallet_id: body.fromWalletId,
+        to_wallet_id: body.toWalletId,
+        amount: body.amount,
+        reference: body.reference ?? '',
+      },
+      idempotencyKey,
+      auth.userId,
+    );
   }
 
   private async post(
     path: string,
     coreLedgerBody: Record<string, unknown>,
     idempotencyKey: string,
+    actor: string,
   ): Promise<TransactionView> {
-    const tx = await this.coreLedger.post<CoreLedgerTransaction>(path, coreLedgerBody, { idempotencyKey });
+    const tx = await this.coreLedger.post<CoreLedgerTransaction>(path, coreLedgerBody, { idempotencyKey, actor });
     return toTransactionView(tx);
   }
 }
@@ -106,5 +135,20 @@ export class MoneyMovementController {
 export function requireIdempotencyKey(key: string | undefined): asserts key is string {
   if (!key) {
     throw new PlatformException(400, 'MISSING_IDEMPOTENCY_KEY', 'Idempotency-Key header is required');
+  }
+}
+
+/**
+ * Defence in depth: auth-proxy already limits /deposits and /withdrawals to
+ * wallets:adjust:manual, but a bff reachable without the gateway must not
+ * become a way to move fiat with no payment rail behind it.
+ */
+export function requireManualAdjustment(auth: AuthContext): void {
+  if (!auth.permissions.includes('wallets:adjust:manual')) {
+    throw new PlatformException(
+      403,
+      'INSUFFICIENT_PERMISSIONS',
+      'moving fiat without a payment rail requires wallets:adjust:manual',
+    );
   }
 }

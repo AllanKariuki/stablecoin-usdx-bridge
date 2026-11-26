@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/testdb"
 )
 
 // These run against real Postgres, because the properties worth doubting are
@@ -21,10 +22,7 @@ import (
 //	  go test ./services/signer/internal/audit/
 func testLog(t *testing.T) (*Log, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("SIGNER_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set SIGNER_TEST_DATABASE_URL to run signer audit tests")
-	}
+	dsn := testdb.DSN(t, "SIGNER_TEST_DATABASE_URL")
 	log, err := Open(dsn)
 	if err != nil {
 		t.Fatalf("opening the audit log: %v", err)

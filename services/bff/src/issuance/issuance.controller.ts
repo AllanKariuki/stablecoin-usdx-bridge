@@ -3,14 +3,17 @@ import { ConfigService } from '@nestjs/config';
 import { PlatformException } from '@damp/nest-platform';
 import { AuthContext, CurrentUser } from '../auth/current-user.decorator';
 import { CoreLedgerClient } from '../core-ledger/core-ledger.client';
+import { WalletOwnership } from '../wallets/wallet-ownership.service';
 import { WalletsService } from '../wallets/wallets.service';
 import { WalletView } from '../wallets/wallet.types';
 import { requireIdempotencyKey } from '../money-movement/money-movement.controller';
 import {
+  BridgeAcceptedView,
   CoreLedgerSagaAccepted,
   CoreLedgerTransfer,
   ExplorerTemplates,
   SagaAcceptedView,
+  toBridgeAcceptedView,
   toSagaAcceptedView,
   toTransferView,
   TransferView,
@@ -34,6 +37,12 @@ interface RedeemBody {
   amount: string;
 }
 
+interface BridgeBody {
+  fromWalletId: string;
+  toWalletId: string;
+  amount: string;
+}
+
 const USDX = 'USDX';
 
 /**
@@ -42,13 +51,13 @@ const USDX = 'USDX';
  * "issue from a 250.00 USD balance … Sepolia hash is a clickable Etherscan
  * link").
  *
- * Unlike deposits and transfers (see MoneyMovementController's note on why
- * it leaves ownership to core-ledger), both wallets are checked here. An
- * issuance mints to the USD-X wallet's on-chain address and a redemption
- * burns from it; core-ledger's posting engine would happily debit Alice's
- * fiat and mint to Bob's address, because nothing about that journal is
- * unbalanced. The gateway only knows the caller holds issuance:create, not
- * whose wallets these are.
+ * Both wallets are checked here. An issuance mints to the USD-X wallet's
+ * on-chain address, a redemption burns from it, and a bridge burns from one of
+ * the caller's wallets and re-mints to another; core-ledger's posting engine
+ * would happily debit Alice's fiat and mint to Bob's address, because nothing
+ * about that journal is unbalanced. The gateway only knows the caller holds
+ * issuance:create (or bridge:create), not whose wallets these are — see
+ * WalletOwnership.
  */
 @Controller()
 export class IssuanceController {
@@ -57,6 +66,7 @@ export class IssuanceController {
   constructor(
     private readonly coreLedger: CoreLedgerClient,
     private readonly wallets: WalletsService,
+    private readonly ownership: WalletOwnership,
     config: ConfigService,
   ) {
     this.explorers = {
@@ -95,7 +105,7 @@ export class IssuanceController {
     @CurrentUser() auth: AuthContext,
   ): Promise<SagaAcceptedView> {
     requireIdempotencyKey(idempotencyKey);
-    await this.requireOwnWallets(auth, [body.fiatWalletId, body.usdxWalletId]);
+    await this.ownership.requireOwnWallets(auth, [body.fiatWalletId, body.usdxWalletId]);
     const raw = await this.coreLedger.post<CoreLedgerSagaAccepted>(
       '/issuances',
       { fiat_wallet_id: body.fiatWalletId, usdx_wallet_id: body.usdxWalletId, amount: body.amount },
@@ -112,7 +122,7 @@ export class IssuanceController {
     @CurrentUser() auth: AuthContext,
   ): Promise<SagaAcceptedView> {
     requireIdempotencyKey(idempotencyKey);
-    await this.requireOwnWallets(auth, [body.usdxWalletId, body.fiatWalletId]);
+    await this.ownership.requireOwnWallets(auth, [body.usdxWalletId, body.fiatWalletId]);
     const raw = await this.coreLedger.post<CoreLedgerSagaAccepted>(
       '/redemptions',
       { usdx_wallet_id: body.usdxWalletId, fiat_wallet_id: body.fiatWalletId, amount: body.amount },
@@ -135,17 +145,35 @@ export class IssuanceController {
     return toTransferView(raw, this.explorers);
   }
 
-  private async requireOwnWallets(auth: AuthContext, walletIds: string[]): Promise<void> {
-    for (const walletId of walletIds) {
-      if (!walletId) {
-        throw new PlatformException(400, 'INVALID_REQUEST', 'both a fiat and a USD-X wallet id are required');
-      }
-      const wallet = await this.wallets.getWallet(walletId);
-      // No *:any escape hatch: an operator moving a customer's money goes
-      // through maker-checker, not through the customer's own issuance form.
-      if (wallet.userId !== auth.userId) {
-        throw new PlatformException(403, 'FORBIDDEN', "cannot issue or redeem against another user's wallet");
-      }
+  /**
+   * Starts a bridge: moving the caller's own USD-X between their own wallets
+   * on two different chains. Both wallets are checked here (as for issuance
+   * and redemption) because the gateway only knows the caller holds
+   * bridge:create, and core-ledger posts the journal from the wallet ids it
+   * is handed without any notion of who is calling.
+   *
+   * core-ledger's response is renderTransfer, not a ledger transaction: the
+   * bridge's journal entry posts when the burn confirms, so there is no
+   * synchronously-posted transaction to return the way an issuance has one.
+   * BridgeAcceptedView is the same saga handle without a fabricated transaction.
+   */
+  @Post('bridges')
+  @HttpCode(202)
+  async bridge(
+    @Body() body: BridgeBody,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @CurrentUser() auth: AuthContext,
+  ): Promise<BridgeAcceptedView> {
+    requireIdempotencyKey(idempotencyKey);
+    await this.ownership.requireOwnWallets(auth, [body.fromWalletId, body.toWalletId]);
+    if (!body.amount) {
+      throw new PlatformException(400, 'INVALID_REQUEST', 'amount is required');
     }
+    const raw = await this.coreLedger.post<CoreLedgerTransfer>(
+      '/bridges',
+      { from_wallet_id: body.fromWalletId, to_wallet_id: body.toWalletId, amount: body.amount },
+      { idempotencyKey, actor: auth.userId },
+    );
+    return toBridgeAcceptedView(raw);
   }
 }

@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 /**
  * Runs against a live stack, not a mocked one — per docs/building-plan.md's
  * P1 Verify section ("npx playwright test e2e/login.spec.ts"). That means
- * Keycloak (:8080, realm `damp` imported), Traefik (:8082), auth-proxy, bff
+ * Keycloak (:8080, realm `damp` imported), Traefik (:18082), auth-proxy, bff
  * and core-ledger all need to already be up (`make up`, then `make run` for
  * the host-mode services — see infra/traefik/dynamic.yaml) and the Vite dev
  * server running on :5173, matching the Keycloak client's redirect URI.

@@ -44,12 +44,6 @@ export class IntentsService {
   }): Promise<PaymentIntent> {
     this.assertAmount(input.amount, input.currency);
 
-    // The wallet the money lands in or leaves from. Ensured rather than
-    // looked up: core-ledger's POST /wallets is idempotent on
-    // (user, currency, chain), so a first-ever deposit doesn't need a
-    // separate onboarding step.
-    const wallet = await this.ledger.ensureWallet(input.partyId, input.currency);
-
     let rail = 'stub';
     let accountRef = input.phoneNumber ?? '';
     let accountName = '';
@@ -83,6 +77,22 @@ export class IntentsService {
       // settles immediately below.
       rail = beneficiary.kind === 'WALLET' ? 'internal' : rail;
     }
+
+    // Resolve the rail before touching core-ledger or writing anything. A
+    // selected rail that this deployment has not registered means the money
+    // cannot move at all, so the intent fails here — before ensureWallet and
+    // before the row exists — rather than leaving a payment record behind for
+    // a movement that was never possible. 'internal' has no rail: the ledger's
+    // own transfer is the rail, and it settles inline below.
+    if (rail !== 'internal') {
+      this.rails.get(rail);
+    }
+
+    // The wallet the money lands in or leaves from. Ensured rather than
+    // looked up: core-ledger's POST /wallets is idempotent on
+    // (user, currency, chain), so a first-ever deposit doesn't need a
+    // separate onboarding step.
+    const wallet = await this.ledger.ensureWallet(input.partyId, input.currency);
 
     // The intent and its audit event commit together, and only a new intent
     // is audited: an idempotent retry asked for nothing new.

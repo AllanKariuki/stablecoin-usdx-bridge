@@ -13,9 +13,9 @@ import "testing"
 // would still pass if a *sixth* sensitive permission were added and quietly
 // granted to admin.
 func TestAdminIsNotTheDefaultRole(t *testing.T) {
-	const totalPermissions = 32
-	// 32 defined, minus the 6 excluded below.
-	const adminPermissions = 26
+	const totalPermissions = 33
+	// 33 defined, minus the 6 excluded below.
+	const adminPermissions = 27
 
 	if got := len(allPermissions()); got != totalPermissions {
 		t.Fatalf("expected %d total permissions defined, got %d", totalPermissions, got)
@@ -82,6 +82,7 @@ func allPermissions() map[Permission]bool {
 	return map[Permission]bool{
 		PermissionWalletsReadOwn: true, PermissionWalletsReadAny: true,
 		PermissionWalletsWriteOwn: true, PermissionWalletsWriteAny: true,
+		PermissionWalletsAdjustManual: true,
 		PermissionWalletsStatusManage: true, PermissionTransactionsReadOwn: true,
 		PermissionTransactionsReadAny: true, PermissionTransactionsReverse: true,
 		PermissionIssuanceCreate: true, PermissionRedemptionCreate: true,

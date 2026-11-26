@@ -70,7 +70,7 @@ export class WorkflowClient {
     }
   }
 
-  private selfUrl = process.env.SELF_URL ?? 'http://localhost:3007';
+  private selfUrl = process.env.SELF_URL ?? 'http://localhost:13007';
 
   /** Mirrors services/workflow/src/requests/digest.ts exactly. */
   digest(payload: unknown): string {

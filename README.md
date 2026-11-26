@@ -61,8 +61,10 @@ period closures that reject back-dated posts.
 
 ## How money actually moves
 
-1. **Fiat in.** `POST /deposits` credits the user's fiat wallet against the
-   custodian account.
+1. **Fiat in.** A payment intent in services/payments settles on a rail,
+   then calls core-ledger's `POST /deposits` to credit the user's fiat wallet
+   against the custodian account. Through the gateway, `/deposits` and
+   `/withdrawals` are operator-only manual adjustments (`wallets:adjust:manual`).
 2. **FX, if needed.** `POST /fx/quotes` records a rate; `POST /fx/conversions`
    applies it between two of the user's fiat wallets. USD-X is issued 1:1
    against USD, so a KES holder converts to USD first.

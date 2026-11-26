@@ -40,7 +40,7 @@ export class KycConfig {
   // Where workflow posts its decision back. Must be reachable from workflow.
   @IsOptional()
   @IsString()
-  SELF_URL = 'http://localhost:3007';
+  SELF_URL = 'http://localhost:13007';
 
   // --- Document storage. MinIO locally. ---
   @IsOptional()

@@ -39,7 +39,7 @@ and the demo is "change one number and watch a control fire" rather than
 ```bash
 # Arm the DoD's $1,000 shortfall. This also forces an immediate report, so
 # the break is open by the next reconciliation run rather than the next poll.
-curl -sX POST localhost:3005/custodians/primary/drift \
+curl -sX POST localhost:13005/custodians/primary/drift \
      -H 'Content-Type: application/json' -d '{"drift":"-1000.00"}' | jq .
 
 make reconcile          # exits 2, and LEG_C/CUSTODIAN_SHORTFALL is open
@@ -48,7 +48,7 @@ curl -s localhost:8081/reserves/reconciliation-breaks | jq .
 # Heal it. The break auto-resolves on the next run — a break is a statement
 # about the world, and when the world stops being that way the row says so
 # without anyone clicking anything.
-curl -sX POST localhost:3005/custodians/primary/drift \
+curl -sX POST localhost:13005/custodians/primary/drift \
      -H 'Content-Type: application/json' -d '{"drift":"0"}' | jq .
 make reconcile          # exits 0
 ```

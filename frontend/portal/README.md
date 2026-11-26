@@ -36,4 +36,4 @@ pnpm --filter portal e2e       # Playwright, against the full local stack
 
 ## Runtime config
 
-`public/runtime-config.js` holds the gateway URL, the Keycloak authority and client, the redirect URI and the WebSocket URL. You can also set `VITE_PAYMENTS_PUBLIC_URL` (default `http://localhost:3003`), which is the public origin that payment links resolve against. That route is deliberately not behind the gateway.
+`public/runtime-config.js` holds the gateway URL, the Keycloak authority and client, the redirect URI and the WebSocket URL. You can also set `VITE_PAYMENTS_PUBLIC_URL` (default `http://localhost:13003`), which is the public origin that payment links resolve against. That route is deliberately not behind the gateway.
