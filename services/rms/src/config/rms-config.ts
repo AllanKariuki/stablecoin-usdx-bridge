@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsString, IsUrl, Max, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsString, IsUrl, Matches, Max, Min } from 'class-validator';
 
 /**
  * rms's environment surface. Field names double as the env var names —
@@ -82,6 +82,15 @@ export class RmsConfig {
   @Type(() => Boolean)
   @IsBoolean()
   CUSTODIAN_POLL_ENABLED = true;
+
+  /**
+   * The drift a crypto custodian's word may be off the ledger's custody
+   * holdings by before GET /exposure calls it a DRIFT, in crypto units at
+   * the currency's own scale. Zero by default: with the stub reporting the
+   * ledger's own figure, any nonzero difference is a break by definition.
+   */
+  @Matches(/^\d+(\.\d+)?$/)
+  CRYPTO_RECON_TOLERANCE = '0';
 
   // services/audit-trail's base URL. The audit relay drains audit_outbox to
   // its POST /internal/events; empty means events wait, durably, until set.

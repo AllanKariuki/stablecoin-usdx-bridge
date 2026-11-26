@@ -174,7 +174,8 @@ func TestAuthEachRoleAuthorizesExactlyItsRoutes(t *testing.T) {
 
 	roles := []string{
 		roleUserProxy, roleSettlement, roleWalletProvision, roleWalletStatus,
-		roleReservesCustodian, roleReservesChainSupply, roleReportsRead, roleEnforcement,
+		roleReservesCustodian, roleReservesChainSupply, roleReportsRead, roleEnforcement, rolePricing,
+		roleTreasury,
 	}
 
 	for _, role := range roles {
@@ -209,6 +210,84 @@ func TestAuthEachRoleAuthorizesExactlyItsRoutes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Payments' settlement role gained the three routes its cross-asset payment
+// flow (slice 4a) drives: the source-wallet read it verifies a payment
+// against, the redemption a USD-X-funded payment starts, and the saga poll
+// that waits for the burn. Everything else stays out of reach — the role
+// cannot mint a quote or post an issuance, even though those are the
+// redemption's sibling flows.
+func TestAuthSettlementRoleOpensSourceWalletAndRedemptionSurface(t *testing.T) {
+	app, issuer := newAuthTestApp(t)
+
+	settlement := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-payments",
+		ClientRoles: map[string][]string{authClient: {roleSettlement}},
+	})
+	for _, path := range []string{"/wallets/wal_1", "/transfers/corr_1"} {
+		resp := do(app, http.MethodGet, path, settlement)
+		expectStatus(t, resp, fiber.StatusOK)
+	}
+	resp := do(app, http.MethodPost, "/redemptions", settlement)
+	expectStatus(t, resp, fiber.StatusOK)
+
+	resp = do(app, http.MethodPost, "/fx/quotes", settlement)
+	expectStatus(t, resp, fiber.StatusForbidden)
+	resp = do(app, http.MethodPost, "/issuances", settlement)
+	expectStatus(t, resp, fiber.StatusForbidden)
+}
+
+// Quote creation is the pricing service's alone: the user-facing role is
+// refused even though it can call every other fx route — a rate minted by
+// the wrong caller is a conversion nobody should have been able to price.
+func TestAuthQuoteCreationRequiresPricingRole(t *testing.T) {
+	app, issuer := newAuthTestApp(t)
+
+	userProxy := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-bff",
+		ClientRoles: map[string][]string{authClient: {roleUserProxy}},
+	})
+	resp := do(app, http.MethodPost, "/fx/quotes", userProxy)
+	expectStatus(t, resp, fiber.StatusForbidden)
+
+	pricing := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-pricing",
+		ClientRoles: map[string][]string{authClient: {rolePricing}},
+	})
+	resp = do(app, http.MethodPost, "/fx/quotes", pricing)
+	expectStatus(t, resp, fiber.StatusOK)
+}
+
+// Rebalance postings are the treasury desk's alone — the same writer
+// isolation as quote creation: a rebalance moves the house's own position,
+// and a user-facing role producing one would be a trade nobody authorized.
+func TestAuthTreasuryRebalanceRequiresTreasuryRole(t *testing.T) {
+	app, issuer := newAuthTestApp(t)
+
+	userProxy := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-bff",
+		ClientRoles: map[string][]string{authClient: {roleUserProxy}},
+	})
+	resp := do(app, http.MethodPost, "/treasury/rebalances", userProxy)
+	expectStatus(t, resp, fiber.StatusForbidden)
+
+	// The positions read, by contrast, is part of the read surface: the ops
+	// console and reporting see the exposure even though they cannot post.
+	resp = do(app, http.MethodGet, "/treasury/positions", userProxy)
+	expectStatus(t, resp, fiber.StatusOK)
+
+	treasury := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-rms",
+		ClientRoles: map[string][]string{authClient: {roleTreasury}},
+	})
+	resp = do(app, http.MethodPost, "/treasury/rebalances", treasury)
+	expectStatus(t, resp, fiber.StatusOK)
+
+	// The rebalance role opens nothing else: the writer role is for the one
+	// route it exists for.
+	resp = do(app, http.MethodPost, "/deposits", treasury)
+	expectStatus(t, resp, fiber.StatusForbidden)
 }
 
 func TestAuthProbesAndMetricsAreExempt(t *testing.T) {

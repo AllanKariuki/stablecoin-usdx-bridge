@@ -45,9 +45,12 @@ type harness struct {
 
 	// The fake OIDC issuer the app's auth middleware verifies against, and a
 	// valid ledger.user-proxy bearer token requests carry — the same call
-	// shape bff makes after H2.
-	issuer *oidctest.Server
-	bearer string
+	// shape bff makes after H2. pricingBearer is the services/pricing token
+	// quote creation needs since the role split: /fx/quotes no longer
+	// accepts user-proxy, so the harness speaks for both callers.
+	issuer        *oidctest.Server
+	bearer        string
+	pricingBearer string
 
 	user       string
 	usd        *ledger.Wallet
@@ -92,6 +95,10 @@ func newHarness(t *testing.T) *harness {
 		bearer: issuer.SignToken(t, testAuthAudience, oidctest.Claims{
 			Azp:         "svc-bff",
 			ClientRoles: map[string][]string{authClient: {roleUserProxy}},
+		}),
+		pricingBearer: issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+			Azp:         "svc-pricing",
+			ClientRoles: map[string][]string{authClient: {rolePricing}},
 		}),
 		user: "api-" + t.Name() + "-" + time.Now().UTC().Format("20060102150405.000000000")}
 
@@ -148,6 +155,10 @@ type response struct {
 }
 
 func (h *harness) post(t *testing.T, path, key string, payload any) response {
+	return h.postAs(t, path, key, h.bearer, payload)
+}
+
+func (h *harness) postAs(t *testing.T, path, key, bearer string, payload any) response {
 	t.Helper()
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -159,7 +170,7 @@ func (h *harness) post(t *testing.T, path, key string, payload any) response {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", key)
-	req.Header.Set("Authorization", "Bearer "+h.bearer)
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("X-User-Id", h.user)
 
 	// Generous timeout: these run a SERIALIZABLE posting against a real
@@ -179,7 +190,9 @@ func (h *harness) post(t *testing.T, path, key string, payload any) response {
 
 func (h *harness) quoteID(t *testing.T) string {
 	t.Helper()
-	resp := h.post(t, "/fx/quotes", h.user+":quote", fiber.Map{
+	// Quotes are the pricing service's route now; the harness asks as that
+	// service rather than as bff.
+	resp := h.postAs(t, "/fx/quotes", h.user+":quote", h.pricingBearer, fiber.Map{
 		"base_currency": "USD", "quote_currency": "KES", "rate": "129.5", "ttl_seconds": 3600,
 	})
 	if resp.status != fiber.StatusCreated {

@@ -20,10 +20,11 @@ import (
 //	  1100 Cash at custodian            1100.<CCY>
 //	  1200 FX position                  1200.<CCY>
 //	  1300 USD-X in circulation         (USDX, leaf)
+//	  1400 Crypto at custodian          1400.<CCY>
 //	2000 Liabilities
 //	  2100 Customer wallets             2100.<CCY> -> 2100.<CCY>.<walletID>
 //	  2200 Reserve backing              2200.<CCY>
-//	  2300 Suspense                     2300.BRIDGE, 2300.FIAT.<CCY>
+//	  2300 Suspense                     2300.BRIDGE, 2300.FIAT.<CCY>, 2300.CRYPTO.<CCY>
 //	3000 Equity
 //	  3100 Retained earnings
 //	4000 Revenue
@@ -37,10 +38,11 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	GLAssets      = "1000"
-	GLTrustBankHd = "1100"
-	GLFxPosHd     = "1200"
-	GLCirculation = "1300"
+	GLAssets          = "1000"
+	GLTrustBankHd     = "1100"
+	GLFxPosHd         = "1200"
+	GLCirculation     = "1300"
+	GLCryptoCustodyHd = "1400"
 
 	GLLiabilities    = "2000"
 	GLWalletsHd      = "2100"
@@ -65,14 +67,18 @@ const (
 // Per-currency leaf codes.
 func GLTrustBank(ccy string) string      { return GLTrustBankHd + "." + ccy }
 func GLFxPosition(ccy string) string     { return GLFxPosHd + "." + ccy }
+func GLCryptoCustody(ccy string) string  { return GLCryptoCustodyHd + "." + ccy }
 func GLReserveBacking(ccy string) string { return GLReserveHd + "." + ccy }
 func GLFiatSuspense(ccy string) string   { return GLSuspenseHd + ".FIAT." + ccy }
-func GLIssuanceFee(ccy string) string    { return GLIssuanceHd + "." + ccy }
-func GLRedemptionFee(ccy string) string  { return GLRedemptionHd + "." + ccy }
-func GLFxSpread(ccy string) string       { return GLFxSpreadHd + "." + ccy }
-func GLTransferFee(ccy string) string    { return GLTransferHd + "." + ccy }
-func GLGas(ccy string) string            { return GLGasHd + "." + ccy }
-func GLBankCharges(ccy string) string    { return GLBankChrgsHd + "." + ccy }
+func GLCryptoInTransit(ccy string) string {
+	return GLSuspenseHd + ".CRYPTO." + ccy
+}
+func GLIssuanceFee(ccy string) string   { return GLIssuanceHd + "." + ccy }
+func GLRedemptionFee(ccy string) string { return GLRedemptionHd + "." + ccy }
+func GLFxSpread(ccy string) string      { return GLFxSpreadHd + "." + ccy }
+func GLTransferFee(ccy string) string   { return GLTransferHd + "." + ccy }
+func GLGas(ccy string) string           { return GLGasHd + "." + ccy }
+func GLBankCharges(ccy string) string   { return GLBankChrgsHd + "." + ccy }
 
 // GLWalletParent is the per-currency rollup every user wallet in that currency
 // hangs off, so "total owed to customers in KES" is one subtree sum.
@@ -111,6 +117,8 @@ var baseChart = []accountSpec{
 		desc: "House currency exposure accumulated by conversions; revaluing these is the FX P&L."},
 	{code: GLCirculation, name: "USD-X in circulation", parent: GLAssets, typ: ASSET, currency: USDXCode, usage: UsageDetail,
 		desc: "Mirror of reserve backing, denominated in USD-X. Its debit balance is total USD-X outstanding and must equal on-chain supply across all chains."},
+	{code: GLCryptoCustodyHd, name: "Crypto at custodian", parent: GLAssets, typ: ASSET, usage: UsageHeader,
+		desc: "BTC/ETH/SOL the platform holds keys for; the liability side is the customer wallets below."},
 
 	{code: GLLiabilities, name: "Liabilities", typ: LIABILITY, usage: UsageHeader},
 	{code: GLWalletsHd, name: "Customer wallets", parent: GLLiabilities, typ: LIABILITY, usage: UsageHeader,
@@ -136,9 +144,11 @@ var baseChart = []accountSpec{
 	{code: GLBankChrgsHd, name: "Bank charges", parent: GLExpenses, typ: EXPENSE, usage: UsageHeader},
 }
 
-// perCurrencyChart returns the leaves a currency needs. Fiat and USD-X differ:
-// USD-X is issued rather than custodied, so it has no cash-at-custodian, no
-// reserve backing and no FX position of its own.
+// perCurrencyChart returns the leaves a currency needs. Fiat, custodial
+// crypto and USD-X differ: fiat and custodial crypto are both custodied, so
+// they get the custody, FX and suspense accounts a conversion through them
+// needs; USD-X is issued rather than custodied, so it has no cash-at-
+// custodian, no reserve backing and no FX position of its own.
 func perCurrencyChart(c Currency) []accountSpec {
 	specs := []accountSpec{
 		{code: GLWalletParent(c.Code), name: "Customer wallets — " + c.Code, parent: GLWalletsHd,
@@ -148,9 +158,27 @@ func perCurrencyChart(c Currency) []accountSpec {
 	}
 
 	if c.Kind == CurrencyCrypto {
-		return append(specs,
+		specs = append(specs,
 			accountSpec{code: GLGas(c.Code), name: "On-chain gas — " + c.Code, parent: GLGasHd,
 				typ: EXPENSE, currency: c.Code, usage: UsageDetail, manual: true},
+		)
+		if !IsCustodialCrypto(c.Code) {
+			// USD-X: issued, not custodied. Nothing more to seed.
+			return specs
+		}
+		return append(specs,
+			accountSpec{code: GLCryptoCustody(c.Code), name: "Crypto at custodian — " + c.Code, parent: GLCryptoCustodyHd,
+				typ: ASSET, currency: c.Code, usage: UsageDetail},
+			accountSpec{code: GLFxPosition(c.Code), name: "FX position — " + c.Code, parent: GLFxPosHd,
+				typ: ASSET, currency: c.Code, usage: UsageDetail},
+			accountSpec{code: GLFxSpread(c.Code), name: "FX spread — " + c.Code, parent: GLFxSpreadHd,
+				typ: REVENUE, currency: c.Code, usage: UsageDetail},
+			// The one custodial-crypto account an operator may hand-post to,
+			// mirroring the fiat in-transit account: a custodian credit with
+			// no matching instruction (or a correction) sits here until it is
+			// allocated, which is exactly the job manual entries do.
+			accountSpec{code: GLCryptoInTransit(c.Code), name: "Crypto in transit — " + c.Code, parent: GLSuspenseHd,
+				typ: LIABILITY, currency: c.Code, usage: UsageDetail, manual: true},
 		)
 	}
 
@@ -273,14 +301,18 @@ func newWalletAccount(w *Wallet, parent *Account) *Account {
 }
 
 // DefaultCurrencies seeds the currencies the platform launches with. USD-X's
-// decimals mirror both chains' on-chain decimals(); the fiat scales are the
-// ISO 4217 minor units.
+// decimals mirror both chains' on-chain decimals(); BTC/ETH/SOL mirror their
+// own chains' native units (8/18/9); the fiat scales are the ISO 4217 minor
+// units.
 func DefaultCurrencies() []Currency {
 	return []Currency{
 		{Code: "USD", Kind: CurrencyFiat, Decimals: 2, Name: "US Dollar", Active: true},
 		{Code: "EUR", Kind: CurrencyFiat, Decimals: 2, Name: "Euro", Active: true},
 		{Code: "GBP", Kind: CurrencyFiat, Decimals: 2, Name: "Pound Sterling", Active: true},
 		{Code: "KES", Kind: CurrencyFiat, Decimals: 2, Name: "Kenyan Shilling", Active: true},
+		{Code: "BTC", Kind: CurrencyCrypto, Decimals: 8, Name: "Bitcoin", Active: true},
+		{Code: "ETH", Kind: CurrencyCrypto, Decimals: 18, Name: "Ether", Active: true},
+		{Code: "SOL", Kind: CurrencyCrypto, Decimals: 9, Name: "Solana", Active: true},
 		{Code: USDXCode, Kind: CurrencyCrypto, Decimals: USDXDecimals, Name: "USD-X", Active: true},
 	}
 }

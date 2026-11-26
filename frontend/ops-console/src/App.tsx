@@ -27,6 +27,8 @@ const Reconciliation = lazy(() => import('./pages/treasury/Reconciliation'));
 const Custodians = lazy(() => import('./pages/treasury/Custodians'));
 const Attestations = lazy(() => import('./pages/treasury/Attestations'));
 const Ledger = lazy(() => import('./pages/treasury/Ledger'));
+const Exposure = lazy(() => import('./pages/treasury/Exposure'));
+const PricingPairs = lazy(() => import('./pages/treasury/PricingPairs'));
 const Audit = lazy(() => import('./pages/auditor/Audit'));
 const Reports = lazy(() => import('./pages/auditor/Reports'));
 const Directory = lazy(() => import('./pages/admin/Directory'));
@@ -85,6 +87,8 @@ function ConsoleShell() {
           <Route path="reconciliation" element={gated(['reserves:read'], <Reconciliation />)} />
           <Route path="custodians" element={gated(['reserves:read'], <Custodians />)} />
           <Route path="attestations" element={gated(['reserves:read'], <Attestations />)} />
+          <Route path="exposure" element={gated(['reserves:read'], <Exposure />)} />
+          <Route path="pricing" element={gated(['reserves:read'], <PricingPairs />)} />
           <Route path="ledger" element={gated(['ledger:read'], <Ledger />)} />
 
           <Route path="audit" element={gated(['audit:read'], <Audit />)} />

@@ -32,6 +32,11 @@ const (
 	// roleSettlement is services/payments' role: the routes a payment intent
 	// settles through.
 	roleSettlement = "ledger.settlement"
+	// rolePricing is services/pricing's role: issue FX quotes. Quote creation
+	// is locked to this single role so no other caller — including the
+	// user-facing surface — can mint a rate; a conversion is only as honest
+	// as the quote it consumes.
+	rolePricing = "ledger.pricing"
 	// roleWalletProvision is services/identity's role: create a party's
 	// default wallet.
 	roleWalletProvision = "ledger.wallet-provision"
@@ -52,6 +57,11 @@ const (
 	// roleReportsRead is services/reporting's role: the read surface a
 	// report run assembles from.
 	roleReportsRead = "ledger.reports.read"
+	// roleTreasury is services/rms' treasury desk role: post rebalance
+	// journal entries when the desk buys or sells custodial crypto at a
+	// custodian. rms alone holds it — a rebalance posting moves the house's
+	// own position, and no user-facing surface should ever produce one.
+	roleTreasury = "ledger.treasury"
 )
 
 // authClient is the resource client whose roles authorize this API — the
@@ -127,7 +137,11 @@ var routeTable = authzTable{
 	// Wallets
 	compile("POST", "/wallets", roleWalletProvision, roleSettlement, roleUserProxy),
 	compile("GET", "/users/:userId/wallets", roleWalletStatus, roleUserProxy),
-	compile("GET", "/wallets/:walletId", roleUserProxy),
+	// Settlement reads a single wallet to verify the source wallet a payment
+	// will debit (its owner is the payer, its currency the source currency,
+	// its status ACTIVE) before any movement is asked for (slice 4a).
+	compile("GET", "/wallets/:walletId", roleSettlement, roleUserProxy),
+	compile("PATCH", "/wallets/:walletId", roleUserProxy),
 	compile("GET", "/wallets/:walletId/statement", roleUserProxy, roleReportsRead),
 	compile("POST", "/wallets/:walletId/status", roleWalletStatus, roleUserProxy),
 
@@ -141,10 +155,14 @@ var routeTable = authzTable{
 	compile("POST", "/deposits", roleSettlement, roleUserProxy),
 	compile("POST", "/withdrawals", roleSettlement, roleUserProxy),
 	compile("POST", "/transfers", roleSettlement, roleUserProxy),
-	compile("POST", "/fx/quotes", roleUserProxy),
+	compile("POST", "/fx/quotes", rolePricing),
 	compile("POST", "/fx/conversions", roleUserProxy),
+	compile("POST", "/fx/payments", roleSettlement),
 	compile("POST", "/issuances", roleUserProxy),
-	compile("POST", "/redemptions", roleUserProxy),
+	// Settlement starts redemptions too: a payment funded from a USD-X wallet
+	// is a two-step (redeem into the payer's USD wallet, then settle the fiat
+	// leg), and payments drives the first step itself.
+	compile("POST", "/redemptions", roleSettlement, roleUserProxy),
 	// confirmRedemption is operator break-glass (see handlers.go); it stays
 	// behind user-proxy, i.e. bff + auth-proxy's ledger:admin.
 	compile("POST", "/redemptions/:transactionId/confirm", roleUserProxy),
@@ -181,8 +199,16 @@ var routeTable = authzTable{
 	compile("GET", "/reserves/reconciliation-runs/:runId", roleUserProxy, roleReportsRead),
 	compile("GET", "/reserves/reconciliation-breaks", roleUserProxy, roleReportsRead),
 
-	// Bridge saga state
-	compile("GET", "/transfers/:correlationId", roleUserProxy),
+	// Treasury & custodial-crypto exposure. The positions read serves rms'
+	// exposure checks (via ledger.reserves.custodian), the ops console and
+	// reporting; the rebalance writer is rms' treasury desk alone — the same
+	// writer-isolation reasoning as the reserves writers above.
+	compile("GET", "/treasury/positions", roleReservesCustodian, roleUserProxy, roleReportsRead),
+	compile("POST", "/treasury/rebalances", roleTreasury),
+
+	// Bridge saga state. Settlement polls the redemption saga a payment
+	// depends on — the USD fiat leg posts only once the burn is final.
+	compile("GET", "/transfers/:correlationId", roleSettlement, roleUserProxy),
 	// Dead letters: operator surface via bff only.
 	compile("GET", "/sagas/dead-letters", roleUserProxy),
 	compile("POST", "/sagas/dead-letters/:correlationId/resolve", roleUserProxy),
