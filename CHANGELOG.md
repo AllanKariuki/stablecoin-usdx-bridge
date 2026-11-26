@@ -3,6 +3,31 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-26 — Ops Console entry page; Keycloak login surface synced per portal
+
+### Fixed — the Ops Console redirected straight to Keycloak
+
+- `frontend/ops-console`: a signed-out visit to `/` now renders a staff entry
+  page (`pages/StaffEntry.tsx`, ported from `feat/ui-refresh`) with a
+  "Continue with company sign-in" button, instead of bouncing to Keycloak.
+  Deep links (`/kyc`, `/wallets/…`) still go straight to sign-in and return.
+
+### Fixed — the running realm drifted from `damp-realm.json`
+
+- `scripts/keycloak-sync.sh` gains `sync_realm_front_door`. From the realm file,
+  it re-applies the realm login settings (`loginTheme: damp`, self-registration,
+  remember-me, password reset), the `default-roles-damp` composites (a
+  self-registered user gets `customer` again), and the `damp-portal` / `damp-ops`
+  SPA clients. A dev `kcdata` volume keeps its first import, so the live realm
+  had no login theme, had registration switched off and had no default
+  `customer` role.
+
+### Changed — the staff sign-in is distinct from the customer sign-in
+
+- The `damp` login theme detects `client.clientId == "damp-ops"`. That variant
+  shows "Staff sign-in" with staff brand copy and no "Create account" link.
+  The portal's sign-in drops "and DAMP staff" from its lede.
+
 ## 2026-11-26 — stack.sh: recycled pids are never mistaken for ours
 
 ### Fixed — `scripts/stack.sh` trusted any live process holding a recorded pid

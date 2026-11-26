@@ -415,6 +415,40 @@ grant_both() {
 	grant_service_account_role "$target" "$client" "$role"
 }
 
+# sync_realm_front_door — the user-facing half of damp-realm.json: realm login
+# settings (theme, self-registration, remember-me, reset), the default-role
+# composites that give a self-registered user `customer`, and the two public
+# SPA clients (damp-portal, damp-ops). A dev volume keeps whatever its first
+# import had, so without this the running realm drifts from the file.
+# Values are read from the realm file, never restated here.
+sync_realm_front_door() {
+	local realm_file="$REPO_ROOT/infra/keycloak/realms/damp-realm.json" settings role uuid body
+	settings=$(jq -c '{displayName, displayNameHtml, loginTheme, accountTheme, registrationAllowed,
+		registrationEmailAsUsername, rememberMe, resetPasswordAllowed, verifyEmail,
+		loginWithEmailAllowed, duplicateEmailsAllowed, editUsernameAllowed}
+		| with_entries(select(.value != null))' "$realm_file")
+	kcadm update "realms/$REALM" -b "$settings" >/dev/null
+	echo "keycloak-sync: realm login settings"
+
+	for role in $(jq -r '.roles.realm[] | select(.name == "default-roles-damp") | .composites.realm[]' "$realm_file"); do
+		kcadm add-roles -r "$REALM" --rname default-roles-damp --rolename "$role" >/dev/null 2>&1 || true
+	done
+	echo "keycloak-sync: default roles"
+
+	for client in damp-portal damp-ops; do
+		body=$(jq -c --arg c "$client" '.clients[] | select(.clientId == $c) | del(.protocolMappers)' "$realm_file")
+		uuid=$(client_uuid "$client")
+		if [ -n "$uuid" ]; then
+			kcadm update "clients/$uuid" -r "$REALM" -b "$body" >/dev/null
+			echo "keycloak-sync: updated client $client"
+		else
+			# A fresh create carries the mappers (audience, org_id) too.
+			kcadm create clients -r "$REALM" -b "$(jq -c --arg c "$client" '.clients[] | select(.clientId == $c)' "$realm_file")" >/dev/null
+			echo "keycloak-sync: created client $client"
+		fi
+	done
+}
+
 # upsert_all — the whole desired state, in dependency order, all of it data.
 upsert_all() {
 	# The bearer-only resource clients everything else references.
@@ -436,6 +470,9 @@ upsert_all() {
 	# Scope mappings (on the requesting client) and the roles onto each
 	# service-account user itself. One pass over the same data.
 	each_entry "$SCOPE_GRANTS" grant_both
+
+	# The realm's login surface and the two SPA clients.
+	sync_realm_front_door
 
 	echo "keycloak-sync: done"
 }
