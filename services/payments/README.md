@@ -115,7 +115,7 @@ and logs that it has, rather than 500-ing a route the frontend already calls.
 
 ```bash
 # Deposit through the stub rail. It settles about 250ms later, via a callback.
-curl -sX POST localhost:3003/payment-intents \
+curl -sX POST localhost:13003/payment-intents \
      -H 'Content-Type: application/json' -H 'X-User-Id: party_1' \
      -H 'Idempotency-Key: demo-1' \
      -d '{"direction":"DEPOSIT","amount":"250.00","currency":"USD"}' | jq .

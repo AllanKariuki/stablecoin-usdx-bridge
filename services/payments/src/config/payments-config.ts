@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUrl, Max, Min } from 'class-validator';
 
 /**
@@ -61,7 +61,9 @@ export class PaymentsConfig {
   //
   // Chosen because it is free and self-service, which is the plan's test for
   // whether a real integration belongs in a phase at all. Unconfigured is a
-  // normal state: RailRegistry falls back to the stub and says so.
+  // normal state: RailRegistry simply does not register this rail, and an
+  // intent that needs it is refused with RAIL_UNAVAILABLE rather than settled
+  // against a stub.
   @IsUrl({ require_tld: false })
   MPESA_BASE_URL = 'https://sandbox.safaricom.co.ke';
 
@@ -96,9 +98,18 @@ export class PaymentsConfig {
   @IsString()
   RAIL_CALLBACK_SECRET = '';
 
-  @Type(() => Boolean)
+  // The stub rail settles an intent with no real money moving — it books
+  // ledger credit for fiat that never arrived. Off unless a deployment opts in
+  // explicitly (services/payments/.env turns it on for local development).
+  // envalid-style boolean parsing is done here by hand because class-
+  // transformer's implicit Boolean() conversion would read the string "false"
+  // as true.
+  @Transform(({ obj, key }) => {
+    const raw = (obj as Record<string, unknown>)[key];
+    return raw === true || String(raw).toLowerCase() === 'true';
+  })
   @IsBoolean()
-  STUB_RAIL_ENABLED = true;
+  STUB_RAIL_ENABLED = false;
 
   // services/audit-trail's base URL. The audit relay drains audit_outbox to
   // its POST /internal/events; empty means events wait, durably, until set.

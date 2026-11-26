@@ -6,13 +6,13 @@ package outbox_test
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/outbox"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/testdb"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -41,10 +41,7 @@ var (
 
 func testDB(t *testing.T) (*gorm.DB, *outbox.Store, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("LEDGER_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set LEDGER_TEST_DATABASE_URL to run outbox integration tests")
-	}
+	dsn := testdb.DSN(t, "LEDGER_TEST_DATABASE_URL")
 
 	once.Do(func() {
 		// NewRepository is what runs the migrations, so the table under test

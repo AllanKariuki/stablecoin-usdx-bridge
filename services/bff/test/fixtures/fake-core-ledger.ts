@@ -14,6 +14,8 @@ export class FakeCoreLedger {
   private sagas = new Map<string, Record<string, unknown>>();
   /** The X-User-Id core-ledger last saw on a write — what its actor() would stamp as initiated_by. */
   lastActor = '';
+  /** Every write core-ledger was asked to post, for asserting a rejected request never reached it. */
+  writes: Array<{ path: string; actor: string }> = [];
   private transactions: Array<{ id: string; user_id: string; created_at: string; amount: string }> = [];
   private nextId = 1;
 
@@ -110,7 +112,12 @@ export class FakeCoreLedger {
       });
     }
 
-    if (method === 'POST' && (url.pathname === '/deposits' || url.pathname === '/transfers')) {
+    if (
+      method === 'POST' &&
+      (url.pathname === '/deposits' || url.pathname === '/withdrawals' || url.pathname === '/transfers')
+    ) {
+      this.lastActor = String(req.headers['x-user-id'] ?? '');
+      this.writes.push({ path: url.pathname, actor: this.lastActor });
       const walletId = String(body.wallet_id ?? body.from_wallet_id);
       const wallet = this.wallets.get(walletId);
       if (!wallet) return this.json(res, 404, { error: 'no such wallet', code: 'UNKNOWN_WALLET' });
@@ -122,6 +129,39 @@ export class FakeCoreLedger {
       };
       this.transactions.push(tx);
       return this.json(res, 201, this.renderTransaction(tx, wallet.currency));
+    }
+
+    if (method === 'POST' && url.pathname === '/bridges') {
+      this.lastActor = String(req.headers['x-user-id'] ?? '');
+      this.writes.push({ path: url.pathname, actor: this.lastActor });
+      const from = this.wallets.get(String(body.from_wallet_id));
+      const to = this.wallets.get(String(body.to_wallet_id));
+      if (!from) return this.json(res, 404, { error: 'no such wallet', code: 'UNKNOWN_WALLET' });
+      if (!to) return this.json(res, 404, { error: 'no such wallet', code: 'UNKNOWN_WALLET' });
+      const correlationId = `corr-${req.headers['idempotency-key']}`;
+      const transfer = {
+        correlation_id: correlationId,
+        kind: 'BRIDGE',
+        user_id: from.user_id,
+        source_address: from.address,
+        target_address: to.address,
+        amount: Number(body.amount).toFixed(6),
+        source_chain: from.chain,
+        target_chain: to.chain,
+        status: 'PENDING',
+        source_tx_hash: '',
+        dest_tx_hash: '',
+        source_wallet_id: from.id,
+        target_wallet_id: to.id,
+        ledger_tx_id: '',
+        attempts: 0,
+        next_attempt_at: new Date().toISOString(),
+        last_error: '',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      this.sagas.set(correlationId, transfer);
+      return this.json(res, 202, transfer);
     }
 
     if (method === 'POST' && (url.pathname === '/issuances' || url.pathname === '/redemptions')) {

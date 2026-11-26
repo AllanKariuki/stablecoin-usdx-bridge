@@ -28,6 +28,28 @@ export function toSagaAcceptedView(raw: CoreLedgerSagaAccepted): SagaAcceptedVie
   };
 }
 
+/** What POST /bridges answers with: the saga it started.
+ *
+ * Deliberately not SagaAcceptedView. A bridge's journal entry posts when the
+ * burn confirms, so core-ledger replies with the transfer record alone
+ * (renderTransfer) — inventing a transaction field here would describe a
+ * journal entry that does not exist yet. */
+export interface BridgeAcceptedView {
+  correlationId: string;
+  kind: string;
+  sagaStatus: SagaStatus;
+  amount: Money;
+}
+
+export function toBridgeAcceptedView(raw: CoreLedgerTransfer): BridgeAcceptedView {
+  return {
+    correlationId: raw.correlation_id,
+    kind: raw.kind,
+    sagaStatus: raw.status,
+    amount: toMoney(raw.amount, 'USDX'),
+  };
+}
+
 /** camelCase translation of core-ledger's renderTransfer, plus the explorer
  * links — built here rather than in the browser so which network a hash
  * belongs to is decided by the deployment that submitted it, not guessed by

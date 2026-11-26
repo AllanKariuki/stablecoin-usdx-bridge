@@ -36,6 +36,7 @@ export type Permission =
   "transactions:read:any" |
   "transactions:read:own" |
   "transactions:reverse" |
+  "wallets:adjust:manual" |
   "wallets:read:any" |
   "wallets:read:own" |
   "wallets:status:manage" |
@@ -48,6 +49,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "wallets:read:any",
     "wallets:write:own",
     "wallets:write:any",
+    "wallets:adjust:manual",
     "wallets:status:manage",
     "transactions:read:own",
     "transactions:read:any",
@@ -131,6 +133,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "transactions:reverse",
     "ledger:read",
     "ledger:admin",
+    "wallets:adjust:manual",
     "notifications:read:own",
     "approvals:propose",
     "approvals:decide",

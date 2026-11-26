@@ -46,52 +46,52 @@ scrape_configs:
 
   - job_name: indexer
     static_configs:
-      - targets: ["host.docker.internal:8083"]
+      - targets: ["host.docker.internal:18083"]
         labels: { service: indexer }
 
   - job_name: auth-proxy
     static_configs:
-      - targets: ["host.docker.internal:8090"]
+      - targets: ["host.docker.internal:18090"]
         labels: { service: auth-proxy }
 
   - job_name: bff
     static_configs:
-      - targets: ["host.docker.internal:3002"]
+      - targets: ["host.docker.internal:13002"]
         labels: { service: bff }
 
   - job_name: identity
     static_configs:
-      - targets: ["host.docker.internal:3001"]
+      - targets: ["host.docker.internal:13001"]
         labels: { service: identity }
 
   - job_name: rms
     static_configs:
-      - targets: ["host.docker.internal:3005"]
+      - targets: ["host.docker.internal:13005"]
         labels: { service: rms }
 
   - job_name: payments
     static_configs:
-      - targets: ["host.docker.internal:3003"]
+      - targets: ["host.docker.internal:13003"]
         labels: { service: payments }
 
   - job_name: notifications
     static_configs:
-      - targets: ["host.docker.internal:3000"]
+      - targets: ["host.docker.internal:13000"]
         labels: { service: notifications }
 
   - job_name: workflow
     static_configs:
-      - targets: ["host.docker.internal:3006"]
+      - targets: ["host.docker.internal:13006"]
         labels: { service: workflow }
 
   - job_name: kyc
     static_configs:
-      - targets: ["host.docker.internal:3007"]
+      - targets: ["host.docker.internal:13007"]
         labels: { service: kyc }
 
   - job_name: compliance
     static_configs:
-      - targets: ["host.docker.internal:3004"]
+      - targets: ["host.docker.internal:13004"]
         labels: { service: compliance }
 
   # The signer is scraped over plain HTTP in local development only. With
@@ -99,15 +99,15 @@ scrape_configs:
   # infra/k8s/signer-deployment.yaml's note.
   - job_name: audit-trail
     static_configs:
-      - targets: ["host.docker.internal:8085"]
+      - targets: ["host.docker.internal:18085"]
         labels: { service: audit-trail }
 
   - job_name: reporting
     static_configs:
-      - targets: ["host.docker.internal:3008"]
+      - targets: ["host.docker.internal:13008"]
         labels: { service: reporting }
 
   - job_name: signer
     static_configs:
-      - targets: ["host.docker.internal:8084"]
+      - targets: ["host.docker.internal:18084"]
         labels: { service: signer }

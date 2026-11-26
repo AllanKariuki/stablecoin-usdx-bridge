@@ -5,11 +5,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/audit-trail/internal/store"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/testdb"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -20,10 +20,7 @@ import (
 // for a different event under a recorded id. Real Postgres in
 // audit_trail_test, because the dedupe is the unique index.
 func TestIntegrationRecordContract(t *testing.T) {
-	dsn := os.Getenv("AUDIT_TRAIL_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set AUDIT_TRAIL_TEST_DATABASE_URL to run audit-trail API integration tests")
-	}
+	dsn := testdb.DSN(t, "AUDIT_TRAIL_TEST_DATABASE_URL")
 	st, err := store.Open(dsn)
 	if err != nil {
 		t.Fatal(err)

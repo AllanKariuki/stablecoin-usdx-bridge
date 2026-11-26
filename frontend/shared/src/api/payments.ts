@@ -118,7 +118,7 @@ export const paymentsApi = {
 export async function resolvePaymentLink(token: string): Promise<PublicInvoice> {
   const base =
     (typeof window !== 'undefined' && (window.RUNTIME_CONFIG as Record<string, string | undefined> | undefined)?.VITE_PAYMENTS_PUBLIC_URL) ||
-    'http://localhost:3003';
+    'http://localhost:13003';
   const response = await fetch(`${base.replace(/\/$/, '')}/invoices/pay/${encodeURIComponent(token)}`);
   if (response.status === 404) throw new Error('This payment link is not valid, or the invoice has already been paid or voided.');
   if (!response.ok) throw new Error('We couldn’t open this payment link. Try again in a moment.');

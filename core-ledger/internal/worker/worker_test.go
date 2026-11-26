@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/retry"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/testdb"
 )
 
 // slowFinality mints successfully and reports the first n finality waits as
@@ -52,10 +52,7 @@ func (c *slowFinality) WaitForFinality(string, string) error {
 }
 
 func TestNotFinalYetDoesNotSpendTheBudget(t *testing.T) {
-	dsn := os.Getenv("LEDGER_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set LEDGER_TEST_DATABASE_URL to run worker integration tests")
-	}
+	dsn := testdb.DSN(t, "LEDGER_TEST_DATABASE_URL")
 	ctx := context.Background()
 	repo, err := ledger.NewRepository(dsn)
 	if err != nil {
