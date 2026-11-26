@@ -75,7 +75,14 @@ export function SkeletonRows({ rows = 5, className }: { rows?: number; className
 export function EmptyState({ icon, title, children, action, className }: { icon?: ReactNode; title: ReactNode; children?: ReactNode; action?: ReactNode; className?: string }) {
   return (
     <div className={cx('flex flex-col items-center gap-3 px-6 py-12 text-center', className)}>
-      {icon && <span className="grid size-14 place-items-center rounded-2xl bg-action-tint text-action">{icon}</span>}
+      {icon ? (
+        <span className="grid size-14 place-items-center rounded-2xl bg-action-tint text-action">{icon}</span>
+      ) : (
+        <svg width="56" height="56" viewBox="0 0 48 48" aria-hidden className="animate-float">
+          <path d="M19 13L30 24L19 35L8 24Z" fill="none" stroke="#0E2463" strokeWidth="3" strokeLinejoin="round" />
+          <path d="M29 13L40 24L29 35L18 24Z" fill="none" stroke="#1463D6" strokeWidth="3" strokeLinejoin="round" />
+        </svg>
+      )}
       <h3 className="text-base font-bold text-navy">{title}</h3>
       {children && <p className="max-w-sm text-sm leading-relaxed text-muted">{children}</p>}
       {action && <div className="mt-1">{action}</div>}

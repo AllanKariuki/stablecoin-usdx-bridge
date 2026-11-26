@@ -33,7 +33,7 @@ export default function StaffEntry() {
   return (
     <div className="flex min-h-dvh flex-wrap gap-3.5 bg-shell p-3.5 text-ink">
       <section aria-labelledby="sys-h" className="relative flex min-w-0 flex-1 basis-[460px] flex-col gap-6 overflow-hidden rounded-[32px] bg-navy p-6 text-white sm:p-10">
-        <svg aria-hidden width="640" height="640" viewBox="0 0 200 200" className="pointer-events-none absolute -bottom-[260px] -right-[260px] opacity-10 motion-safe:animate-[spin_90s_linear_infinite]">
+        <svg aria-hidden width="640" height="640" viewBox="0 0 200 200" className="pointer-events-none absolute -bottom-[260px] -right-[260px] opacity-10 animate-spin-slow">
           <rect x="45" y="45" width="80" height="80" rx="10" transform="rotate(45 85 85)" fill="none" stroke="#1FD3E6" strokeWidth="2.5" />
           <rect x="75" y="75" width="80" height="80" rx="10" transform="rotate(45 115 115)" fill="none" stroke="#FFFFFF" strokeWidth="2.5" />
         </svg>
@@ -52,7 +52,7 @@ export default function StaffEntry() {
           </p>
         </div>
 
-        <ul className="animate-rise relative m-0 flex list-none flex-col gap-3 p-0">
+        <ul className="animate-rise stagger-2 relative m-0 flex list-none flex-col gap-3 p-0">
           {HOW_IT_WORKS.map((item) => (
             <li key={item.text} className="flex items-start gap-3 rounded-[14px] border border-white/10 bg-white/6 px-3.5 py-3">
               <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-cyan/15 text-cyan">
@@ -83,19 +83,19 @@ export default function StaffEntry() {
         <button
           type="button"
           onClick={() => void login({ returnTo: '/' })}
-          className="animate-rise flex min-h-14 w-full cursor-pointer items-center justify-center gap-3 rounded-2xl bg-navy text-base font-bold text-white"
+          className="nudge animate-rise stagger-1 flex min-h-14 w-full cursor-pointer items-center justify-center gap-3 rounded-2xl bg-navy text-base font-bold text-white"
         >
           <ShieldCheck className="size-5" aria-hidden />
           Continue with company sign-in
         </button>
 
-        <div className="animate-rise flex flex-col gap-3">
+        <div className="animate-rise stagger-2 flex flex-col gap-3">
           <span className="text-[13px] font-bold text-navy">Where you will land</span>
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             {STAFF_ROLES.map((w) => {
               const meta = WORKSPACE_META[w];
               return (
-                <article key={w} className="flex flex-col gap-2.5 rounded-[18px] border border-line bg-canvas p-4">
+                <article key={w} className="lift flex flex-col gap-2.5 rounded-[18px] border border-line bg-canvas p-4">
                   <span className="flex items-center justify-between">
                     <span className={cx('grid size-10 place-items-center rounded-xl', WORKSPACE_TONE[w])}>
                       <meta.icon className="size-[19px]" aria-hidden />
@@ -110,7 +110,7 @@ export default function StaffEntry() {
           </div>
         </div>
 
-        <ul className="animate-rise m-0 mt-auto flex list-none flex-col gap-2.5 border-t border-line pt-4 text-[13px] text-neutral-ink">
+        <ul className="animate-rise stagger-3 m-0 mt-auto flex list-none flex-col gap-2.5 border-t border-line pt-4 text-[13px] text-neutral-ink">
           {NOTICES.map((n) => (
             <li key={n} className="flex items-start gap-2.5">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#B4530A" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="mt-0.5 shrink-0">

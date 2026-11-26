@@ -46,7 +46,7 @@
         <svg class="damp-brand-orbit-sm damp-spin-back" width="360" height="360" viewBox="0 0 200 200" aria-hidden="true"><rect x="45" y="45" width="80" height="80" rx="6" transform="rotate(45 85 85)" fill="none" stroke="#FFFFFF" stroke-width="4"/></svg>
 
         <div class="damp-wordmark">
-            <svg width="40" height="40" viewBox="0 0 48 48" aria-hidden="true"><rect width="48" height="48" rx="14" fill="#FFFFFF"/><rect x="10" y="14" width="16" height="16" rx="3.5" transform="rotate(45 18 22)" fill="none" stroke="#1FD3E6" stroke-width="3"/><rect x="22" y="18" width="16" height="16" rx="3.5" transform="rotate(45 30 26)" fill="none" stroke="#0E2463" stroke-width="3"/></svg>
+            <svg width="40" height="40" viewBox="0 0 48 48" aria-hidden="true"><rect width="48" height="48" rx="14" fill="#FFFFFF"/><path d="M19 13L30 24L19 35L8 24Z" fill="none" stroke="#1FD3E6" stroke-width="3" stroke-linejoin="round"/><path d="M29 13L40 24L29 35L18 24Z" fill="none" stroke="#0E2463" stroke-width="3" stroke-linejoin="round"/><path d="M24 18.5L29.5 24L24 29.5L18.5 24Z" fill="#1FD3E6"/></svg>
             <span>${kcSanitize(msg("loginTitleHtml",(realm.displayNameHtml!'DAMP')))?no_esc}</span>
         </div>
 
@@ -84,7 +84,7 @@
         <div class="${properties.kcFormCardClass!}">
             <header class="${properties.kcFormHeaderClass!}">
                 <div class="damp-mobile-mark" aria-hidden="true">
-                    <svg width="36" height="36" viewBox="0 0 48 48"><rect width="48" height="48" rx="14" fill="#0E2463"/><rect x="10" y="14" width="16" height="16" rx="3.5" transform="rotate(45 18 22)" fill="none" stroke="#1FD3E6" stroke-width="3"/><rect x="22" y="18" width="16" height="16" rx="3.5" transform="rotate(45 30 26)" fill="none" stroke="#FFFFFF" stroke-width="3"/></svg>
+                    <svg width="36" height="36" viewBox="0 0 48 48"><rect width="48" height="48" rx="14" fill="#0E2463"/><path d="M19 13L30 24L19 35L8 24Z" fill="none" stroke="#1FD3E6" stroke-width="3" stroke-linejoin="round"/><path d="M29 13L40 24L29 35L18 24Z" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linejoin="round"/><path d="M24 18.5L29.5 24L24 29.5L18.5 24Z" fill="#1FD3E6"/></svg>
                     <strong>DAMP</strong>
                 </div>
 

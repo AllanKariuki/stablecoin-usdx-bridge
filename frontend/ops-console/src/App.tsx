@@ -4,8 +4,8 @@ import { AuthCallback, RequireAuth, RequirePermission, RequireRole, useAuth, typ
 import { AppRoot, AppShell } from '@damp/web-shared/layout';
 import { NotFoundPage } from '@damp/web-shared/pages';
 import { FullPageLoader, SkeletonRows } from '@damp/web-shared/ui';
-import StaffEntry from './pages/StaffEntry';
 import { GlobalSearch } from './components/GlobalSearch';
+import StaffEntry, { PORTAL_URL } from './pages/StaffEntry';
 import { STAFF_ROLES, WORKSPACE_META, WORKSPACE_NAV } from './workspace-config';
 import { useWorkspace } from './workspace-context';
 import { WorkspaceProvider, WorkspaceSwitcher } from './workspaces';
@@ -31,9 +31,30 @@ const Audit = lazy(() => import('./pages/auditor/Audit'));
 const Reports = lazy(() => import('./pages/auditor/Reports'));
 const Directory = lazy(() => import('./pages/admin/Directory'));
 
-const PORTAL_URL = 'http://localhost:5173';
-
 const gated = (anyOf: Permission[], page: ReactNode) => <RequirePermission anyOf={anyOf}>{page}</RequirePermission>;
+
+/**
+ * The console's front door: an anonymous staff entry at `/`, the loading
+ * spinner while the session is checked, and the gated shell everywhere else.
+ * Deep links keep RequireAuth's auto-redirect to Keycloak.
+ */
+function ConsoleEntry() {
+  const { status } = useAuth();
+  const location = useLocation();
+  if (location.pathname === '/') {
+    if (status === 'loading') return <FullPageLoader label="Checking your session" />;
+    if (status === 'anonymous') return <StaffEntry />;
+  }
+  return (
+    <RequireAuth>
+      <RequireRole roles={STAFF_ROLES} elsewhere={{ label: 'Go to the DAMP portal', href: PORTAL_URL }}>
+        <WorkspaceProvider>
+          <ConsoleShell />
+        </WorkspaceProvider>
+      </RequireRole>
+    </RequireAuth>
+  );
+}
 
 function ConsoleShell() {
   const { workspace } = useWorkspace();
@@ -73,28 +94,6 @@ function ConsoleShell() {
         </Routes>
       </Suspense>
     </AppShell>
-  );
-}
-
-/**
- * Signed-out visitors to the root get the staff entry page and choose when to
- * sign in; deep links still go straight to Keycloak and come back to them.
- */
-function ConsoleEntry() {
-  const { status } = useAuth();
-  const location = useLocation();
-  if (location.pathname === '/') {
-    if (status === 'loading') return <FullPageLoader label="Checking your session" />;
-    if (status === 'anonymous') return <StaffEntry />;
-  }
-  return (
-    <RequireAuth>
-      <RequireRole roles={STAFF_ROLES} elsewhere={{ label: 'Go to the DAMP portal', href: PORTAL_URL }}>
-        <WorkspaceProvider>
-          <ConsoleShell />
-        </WorkspaceProvider>
-      </RequireRole>
-    </RequireAuth>
   );
 }
 

@@ -1,8 +1,8 @@
-import { Check, ExternalLink, Loader2, X } from 'lucide-react';
+import { Check, ExternalLink, X } from 'lucide-react';
 import type { SagaTransfer } from '@damp/web-shared/api';
 import { STATUS_TONE, sagaLabel, sagaSteps } from '../lib/saga';
 import { cx, formatDateTime } from '@damp/web-shared/lib';
-import { Badge, Callout, MonoRef } from '@damp/web-shared/ui';
+import { Badge, Callout, MonoRef, PulseDot } from '@damp/web-shared/ui';
 
 /**
  * Async bridge status — a progress stepper, not a spinner: issuance and
@@ -13,6 +13,10 @@ export default function SagaTimeline({ transfer }: { transfer: SagaTransfer }) {
   const hash = redeem ? transfer.sourceTxHash : transfer.destTxHash;
   const url = redeem ? transfer.sourceTxUrl : transfer.destTxUrl;
   const steps = sagaSteps(transfer);
+  const doneCount = steps.filter((s) => s.state === 'done').length;
+  const hasActive = steps.some((s) => s.state === 'active');
+  const failed = steps.some((s) => s.state === 'failed');
+  const fillPct = Math.round((doneCount / Math.max(steps.length, 1)) * 100);
 
   return (
     <div className="flex flex-col gap-5 rounded-card border border-line bg-canvas p-5" data-testid="saga-progress">
@@ -24,24 +28,39 @@ export default function SagaTimeline({ transfer }: { transfer: SagaTransfer }) {
         <Badge tone={STATUS_TONE[transfer.status]}>{sagaLabel(transfer)}</Badge>
       </div>
 
-      <ol className="m-0 flex list-none flex-col gap-0 p-0">
+      <div aria-hidden className="relative mb-5 h-1 rounded-full bg-line">
+        <div className={cx('absolute inset-y-0 left-0 rounded-full transition-[width] duration-500', failed ? 'bg-danger' : 'bg-action')} style={{ width: `${fillPct}%` }} />
+        {hasActive && <span className="absolute -top-[5px] size-3.5 animate-travel rounded-full bg-cyan shadow-[0_0_0_5px_rgba(31,211,230,0.22)]" style={{ marginLeft: '-7px' }} />}
+      </div>
+
+      <ol className="m-0 flex list-none flex-col gap-3 p-0 sm:flex-row">
         {steps.map((s, i) => (
-          <li key={s.label} className="flex gap-3">
-            <div className="flex flex-col items-center">
+          <li
+            key={s.label}
+            aria-current={s.state === 'active' ? 'step' : undefined}
+            className={cx(
+              'flex flex-1 flex-col gap-2 rounded-[16px] border p-3.5 transition-colors',
+              s.state === 'done' && 'border-cyan/40 bg-cyan-tint',
+              s.state === 'active' && 'border-action bg-action-tint',
+              s.state === 'failed' && 'border-danger-line bg-danger-tint',
+              s.state === 'todo' && 'border-line bg-surface',
+            )}
+          >
+            <span className="flex items-center justify-between">
               <span
                 className={cx(
-                  'grid size-7 shrink-0 place-items-center rounded-full border-2',
-                  s.state === 'done' && 'border-action bg-action text-white',
-                  s.state === 'active' && 'border-action bg-surface text-action',
-                  s.state === 'failed' && 'border-danger bg-danger-tint text-danger',
-                  s.state === 'todo' && 'border-line-strong bg-surface text-subtle',
+                  'grid size-8 shrink-0 place-items-center rounded-full',
+                  s.state === 'done' && 'bg-cyan-tint text-cyan-ink ring-1 ring-cyan/40',
+                  s.state === 'active' && 'bg-surface text-action ring-2 ring-action',
+                  s.state === 'failed' && 'bg-danger-tint text-danger ring-2 ring-danger',
+                  s.state === 'todo' && 'bg-neutral-tint text-neutral-ink',
                 )}
               >
-                {s.state === 'done' ? <Check className="size-3.5" strokeWidth={3} aria-hidden /> : s.state === 'active' ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : s.state === 'failed' ? <X className="size-3.5" strokeWidth={3} aria-hidden /> : <span className="text-[11px] font-bold">{i + 1}</span>}
+                {s.state === 'done' ? <Check className="size-3.5" strokeWidth={3} aria-hidden /> : s.state === 'active' ? <PulseDot tone="cyan" /> : s.state === 'failed' ? <X className="size-3.5" strokeWidth={3} aria-hidden /> : <span className="text-[11px] font-bold">{i + 1}</span>}
               </span>
-              {i < steps.length - 1 && <span className={cx('w-0.5 flex-1 min-h-5', s.state === 'done' ? 'bg-action' : 'bg-line-strong')} aria-hidden />}
-            </div>
-            <p className={cx('pb-4 pt-1 text-sm', s.state === 'todo' ? 'text-subtle' : 'font-semibold text-ink')}>
+              <span className="font-mono text-[11px] text-subtle">{String(i + 1).padStart(2, '0')}</span>
+            </span>
+            <p className={cx('text-[13px] leading-snug', s.state === 'todo' ? 'text-subtle' : 'font-semibold text-ink')}>
               {s.label}
               <span className="sr-only"> — {s.state === 'done' ? 'done' : s.state === 'active' ? 'in progress' : s.state === 'failed' ? 'failed' : 'not started'}</span>
             </p>

@@ -86,14 +86,14 @@ export default function KycCase() {
                 ]}
               />
             </Card>
-            <Card>
+            <Card className="reveal">
               <CardHeader title="Screening result" description="The provider’s raw response. Never shown to the applicant." />
               {c ? <JsonBlock value={c.providerResult} /> : <Skeleton className="h-24 w-full" />}
             </Card>
           </>
         }
         side={
-          <Card>
+          <Card className="reveal">
             <CardHeader title="Case" />
             {!c ? (
               <Skeleton className="h-28 w-full" />

@@ -143,8 +143,24 @@ function EventDrawer({ event, onClose }: { event: AuditEvent; onClose: () => voi
             { label: 'Service', value: event.service },
             { label: 'Outcome', value: <StatusBadge status={event.outcome} /> },
             { label: 'Request', value: <MonoRef value={event.request_id} /> },
-            { label: 'Hash', value: <MonoRef value={event.hash} /> },
-            { label: 'Previous hash', value: <MonoRef value={event.prev_hash} /> },
+            {
+              label: 'Hash chain',
+              value: event.prev_hash ? (
+                <span className="inline-flex flex-wrap items-center gap-1.5">
+                  <span className="inline-flex items-center gap-1">
+                    <span className="sr-only">previous</span>
+                    <MonoRef value={event.prev_hash} />
+                  </span>
+                  <Link2 className="size-3.5 shrink-0 text-subtle" aria-hidden />
+                  <span className="inline-flex items-center gap-1">
+                    <span className="sr-only">current</span>
+                    <MonoRef value={event.hash} />
+                  </span>
+                </span>
+              ) : (
+                <MonoRef value={event.hash} />
+              ),
+            },
           ]}
         />
         <JsonBlock label="Before" value={event.before_state} />
@@ -190,7 +206,7 @@ function EventDrawer({ event, onClose }: { event: AuditEvent; onClose: () => voi
 function AnchorsTab() {
   const anchors = useAsync(() => auditApi.anchors(100), []);
   return (
-    <Card>
+    <Card className="reveal">
       <CardHeader title="Anchors" description="Each anchor commits a contiguous range of events to one Merkle root, published externally." />
       <DataTable
         caption="Audit anchors"

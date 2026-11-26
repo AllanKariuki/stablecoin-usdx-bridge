@@ -8,7 +8,7 @@ import { reportsApi } from '@damp/web-shared/api/reports';
 import { reservesApi } from '@damp/web-shared/api/reserves';
 import { useAuth, type Permission } from '@damp/web-shared/auth';
 import { humanize, timeAgo, useAsync } from '@damp/web-shared/lib';
-import { Card, CardHeader, PageHeader, StatTile, StatusBadge } from '@damp/web-shared/ui';
+import { Card, CardHeader, CountUp, PageHeader, PulseDot, StatTile, StatusBadge } from '@damp/web-shared/ui';
 import { SeverityBadge } from '../components/Severity';
 import { WORKSPACE_META, type Workspace } from '../workspace-config';
 import { useWorkspace } from '../workspace-context';
@@ -33,7 +33,12 @@ export default function Overview() {
   return (
     <>
       <PageHeader
-        eyebrow={`${meta.label} workspace`}
+        hero
+        eyebrow={
+          <span className="inline-flex items-center gap-2">
+            <PulseDot /> {meta.label} workspace
+          </span>
+        }
         title={`${greeting()}${user?.name ? `, ${user.name.split(' ')[0]}` : ''}`}
         description={workspace === 'treasury' ? 'Is every USD-X backed, and do the books, the chains and the bank agree?' : `What needs attention in ${meta.label.toLowerCase()} today.`}
       />
@@ -43,7 +48,7 @@ export default function Overview() {
 }
 
 /** A count tile that fetches only if the user may, and shows "—" rather than failing the page. */
-function CountTile({ label, anyOf, load, icon, to, note, warnAbove = 0 }: { label: string; anyOf: Permission[]; load: () => Promise<unknown[]>; icon: ReactNode; to: string; note: string; warnAbove?: number }) {
+function CountTile({ label, anyOf, load, icon, to, note, warnAbove = 0, delay }: { label: string; anyOf: Permission[]; load: () => Promise<unknown[]>; icon: ReactNode; to: string; note: string; warnAbove?: number; delay?: 1 | 2 | 3 | 4 | 5 | 6 }) {
   const { can } = useAuth();
   const allowed = can(...anyOf);
   const data = useAsync(() => (allowed ? load() : Promise.resolve(null)), [allowed]);
@@ -56,15 +61,17 @@ function CountTile({ label, anyOf, load, icon, to, note, warnAbove = 0 }: { labe
         icon={icon}
         loading={data.loading}
         tone={n !== undefined && n > warnAbove ? 'warn' : 'default'}
-        value={data.error ? '—' : (n ?? '—')}
+        value={data.error || n === undefined ? '—' : <CountUp value={n} />}
         note={data.error ? 'Couldn’t load' : note}
+        reveal
+        delay={delay}
       />
     </Link>
   );
 }
 
-function PendingApprovalsTile() {
-  return <CountTile label="Pending approvals" anyOf={['approvals:decide', 'approvals:propose']} load={() => approvalsApi.list()} icon={<ListChecks className="size-4" aria-hidden />} to="/approvals" note="Waiting for a second person" />;
+function PendingApprovalsTile({ delay }: { delay?: 1 | 2 | 3 | 4 | 5 | 6 }) {
+  return <CountTile label="Pending approvals" anyOf={['approvals:decide', 'approvals:propose']} load={() => approvalsApi.list()} icon={<ListChecks className="size-4" aria-hidden />} to="/approvals" note="Waiting for a second person" delay={delay} />;
 }
 
 function ComplianceOverview() {
@@ -73,13 +80,13 @@ function ComplianceOverview() {
   return (
     <div className="flex flex-col gap-5">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <CountTile label="KYC to review" anyOf={['kyc:review']} load={() => kycApi.queue()} icon={<UserCheck className="size-4" aria-hidden />} to="/kyc" note="Applicants waiting on a decision" />
-        <CountTile label="Open alerts" anyOf={['compliance:cases:manage']} load={() => complianceApi.alerts('OPEN')} icon={<Siren className="size-4" aria-hidden />} to="/alerts" note="Rule hits not yet triaged" />
-        <CountTile label="Open cases" anyOf={['compliance:cases:manage']} load={() => complianceApi.cases('OPEN')} icon={<FolderSearch className="size-4" aria-hidden />} to="/cases" note="Unassigned investigations" warnAbove={Number.MAX_SAFE_INTEGER} />
-        <PendingApprovalsTile />
+        <CountTile label="KYC to review" anyOf={['kyc:review']} load={() => kycApi.queue()} icon={<UserCheck className="size-4" aria-hidden />} to="/kyc" note="Applicants waiting on a decision" delay={1} />
+        <CountTile label="Open alerts" anyOf={['compliance:cases:manage']} load={() => complianceApi.alerts('OPEN')} icon={<Siren className="size-4" aria-hidden />} to="/alerts" note="Rule hits not yet triaged" delay={2} />
+        <CountTile label="Open cases" anyOf={['compliance:cases:manage']} load={() => complianceApi.cases('OPEN')} icon={<FolderSearch className="size-4" aria-hidden />} to="/cases" note="Unassigned investigations" warnAbove={Number.MAX_SAFE_INTEGER} delay={3} />
+        <PendingApprovalsTile delay={4} />
       </div>
       <div className="grid gap-5 lg:grid-cols-2">
-        <Card>
+        <Card className="reveal">
           <CardHeader title="Newest alerts" actions={<SeeAll to="/alerts" />} />
           <ShortList
             loading={alerts.loading}
@@ -93,7 +100,7 @@ function ComplianceOverview() {
             }))}
           />
         </Card>
-        <Card>
+        <Card className="reveal">
           <CardHeader title="KYC queue" actions={<SeeAll to="/kyc" />} />
           <ShortList
             loading={queue.loading}
@@ -117,9 +124,9 @@ function AdminOverview() {
   return (
     <div className="flex flex-col gap-5">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <PendingApprovalsTile />
-        <CountTile label="Open reconciliation breaks" anyOf={['reserves:read']} load={() => reservesApi.openBreaks()} icon={<Siren className="size-4" aria-hidden />} to="/reconciliation?tab=breaks" note="Treasury owns these" />
-        <CountTile label="Recent report runs" anyOf={['reports:read']} load={() => reportsApi.runs(20)} icon={<FileBarChart className="size-4" aria-hidden />} to="/reports" note="Last 20" warnAbove={Number.MAX_SAFE_INTEGER} />
+        <PendingApprovalsTile delay={1} />
+        <CountTile label="Open reconciliation breaks" anyOf={['reserves:read']} load={() => reservesApi.openBreaks()} icon={<Siren className="size-4" aria-hidden />} to="/reconciliation?tab=breaks" note="Treasury owns these" delay={2} />
+        <CountTile label="Recent report runs" anyOf={['reports:read']} load={() => reportsApi.runs(20)} icon={<FileBarChart className="size-4" aria-hidden />} to="/reports" note="Last 20" warnAbove={Number.MAX_SAFE_INTEGER} delay={3} />
       </div>
       {can('audit:read') && <ChainBanner />}
       {can('reserves:read') && <LatestRunCard />}
@@ -136,7 +143,7 @@ function AuditorOverview() {
       <div className="grid gap-5 lg:grid-cols-2">
         {can('reserves:read') && <LatestRunCard />}
         {can('audit:read') && (
-          <Card>
+          <Card className="reveal">
             <CardHeader title="Latest anchors" actions={<SeeAll to="/audit?tab=anchors" />} />
             <ShortList
               loading={anchors.loading}
@@ -159,7 +166,7 @@ function AuditorOverview() {
 function LatestRunCard() {
   const runs = useAsync(() => reservesApi.runs(5), []);
   return (
-    <Card>
+    <Card className="reveal">
       <CardHeader title="Reconciliation" description="Latest runs, by leg" actions={<SeeAll to="/reconciliation" />} />
       <ShortList
         loading={runs.loading}

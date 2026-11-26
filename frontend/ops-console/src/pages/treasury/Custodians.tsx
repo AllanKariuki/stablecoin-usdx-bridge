@@ -16,7 +16,7 @@ export default function Custodians() {
     <>
       <PageHeader eyebrow="Treasury" title="Custodians & targets" description="Where the fiat backing sits, and the coverage the platform is mandated to hold." />
       <div className="flex flex-col gap-5">
-        <Card>
+        <Card className="reveal">
           <CardHeader title="Custodians" description="Select one for its statements." />
           <DataTable
             caption="Custodians"
@@ -37,7 +37,7 @@ export default function Custodians() {
           />
         </Card>
 
-        <Card>
+        <Card className="reveal">
           <CardHeader
             title="Reserve targets"
             description="Minimum coverage ratio and buffer per currency. rms flags coverage below these as outside mandate."

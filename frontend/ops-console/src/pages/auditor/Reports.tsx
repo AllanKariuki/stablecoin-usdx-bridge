@@ -41,7 +41,7 @@ export default function Reports() {
           : defs.error
             ? <Card className="sm:col-span-2 xl:col-span-3"><ErrorState message={apiErrorMessage(defs.error)} onRetry={defs.reload} /></Card>
             : defs.data?.map((d) => (
-                <Card key={d.id} className="flex flex-col gap-3">
+                <Card key={d.id} interactive className="flex flex-col gap-3">
                   <div className="flex items-start justify-between gap-2">
                     <span className="grid size-10 place-items-center rounded-[12px] bg-action-tint text-action">
                       <FileBarChart className="size-5" aria-hidden />

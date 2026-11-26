@@ -24,7 +24,7 @@ export default function SettingsPage() {
             ]}
           />
         </Card>
-        <Card>
+        <Card className="reveal">
           <CardHeader title="Security" description="Password, two-step sign-in and active sessions are managed on your DAMP account page." />
           <div className="flex flex-col gap-3">
             <Callout tone="info">We never ask for your password inside the app. If a page here does, it isn’t us.</Callout>
@@ -48,7 +48,7 @@ function Webhooks() {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   return (
-    <Card className="lg:col-span-2">
+    <Card className="lg:col-span-2 reveal">
       <CardHeader
         title="Webhooks"
         description="Have DAMP call your server when events happen. Requests are signed with X-DAMP-Signature."

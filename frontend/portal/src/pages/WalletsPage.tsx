@@ -50,8 +50,8 @@ export default function WalletsPage() {
         </Card>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {wallets.data.map((w) => (
-            <Link key={w.id} to={`/wallets/${w.id}`} className="group flex flex-col gap-4 rounded-card border border-line bg-surface p-6 text-ink no-underline shadow-card transition-shadow hover:shadow-pop">
+          {wallets.data.map((w, i) => (
+            <Link key={w.id} to={`/wallets/${w.id}`} className={`lift animate-rise stagger-${Math.min(i + 1, 6)} group flex flex-col gap-4 rounded-card border border-line bg-surface p-6 text-ink no-underline shadow-card`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <span className="grid size-11 place-items-center rounded-[14px] bg-navy text-[13px] font-extrabold text-cyan">{w.currency.slice(0, 4)}</span>

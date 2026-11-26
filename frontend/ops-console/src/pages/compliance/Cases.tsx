@@ -33,7 +33,7 @@ export default function Cases() {
           />
         }
       />
-      <Card>
+      <Card className="reveal">
         <DataTable
           caption="Compliance cases"
           rows={cases.data}

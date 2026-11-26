@@ -59,8 +59,8 @@ export default function NotificationsPage() {
             </EmptyState>
           ) : (
             <ul className="m-0 flex list-none flex-col p-0">
-              {list.data.notifications.map((n) => (
-                <li key={n.id} className={cx('flex gap-3 border-b border-line py-3.5 last:border-0', !n.read && 'bg-action-tint/30 -mx-3 rounded-[12px] px-3')}>
+              {list.data.notifications.map((n, i) => (
+                <li key={n.id} className={cx('animate-rise flex gap-3 border-b border-line py-3.5 last:border-0', `stagger-${Math.min(i + 1, 6)}`, !n.read && 'bg-action-tint/30 -mx-3 rounded-[12px] px-3')}>
                   <span className={cx('mt-1.5 size-2.5 shrink-0 rounded-full', n.read ? 'bg-line-strong' : n.severity === 'warning' || n.severity === 'critical' ? 'bg-warn' : 'bg-action')} aria-hidden />
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-ink">{n.title}</p>
@@ -106,7 +106,7 @@ function Preferences() {
   };
 
   return (
-    <Card>
+    <Card className="reveal">
       <CardHeader title="Preferences" description="Choose how you hear about each event." />
       {prefs.loading ? (
         <SkeletonRows rows={4} />

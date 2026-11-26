@@ -34,7 +34,7 @@ export default function Alerts() {
           />
         }
       />
-      <Card>
+      <Card className="reveal">
         <DataTable
           caption="Compliance alerts"
           rows={alerts.data}
