@@ -69,6 +69,12 @@
           "clientRole": true
         },
         {
+          "name": "ledger.pricing",
+          "description": "services/pricing: POST /fx/quotes (issue the rates conversions and FX payments consume)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
           "name": "ledger.reserves.custodian",
           "description": "services/rms: POST /reserves/custodian-snapshots, GET /reserves/status",
           "composite": false,
@@ -150,6 +156,32 @@
         {
           "name": "rms.user-proxy",
           "description": "services/bff: every user-facing rms route",
+          "composite": false,
+          "clientRole": true
+        }
+      ],
+      "pricing": [
+        {
+          "name": "pricing.user-proxy",
+          "description": "services/bff: the only caller allowed to assert end-user identity headers on pricing routes (X-User-Id for pair-change audits)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "pricing.quote",
+          "description": "services/bff + services/payments: POST /quotes (mint an amount- and party-pinned FX quote)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "pricing.read",
+          "description": "services/bff + services/payments: GET /rates and GET /pairs (indicative mids and pair policy)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
+          "name": "pricing.admin",
+          "description": "services/bff (ops console): PATCH /pairs/:base/:quote (spread, TTL, enabled, max notional)",
           "composite": false,
           "clientRole": true
         }
@@ -453,6 +485,18 @@
       "serviceAccountsEnabled": false
     },
     {
+      "clientId": "pricing",
+      "name": "pricing API (resource)",
+      "description": "Bearer-only resource client for services/pricing: holds pricing.user-proxy, pricing.quote, pricing.read and pricing.admin.",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
       "clientId": "notifications",
       "name": "notifications API (resource)",
       "description": "Bearer-only resource client for services/notifications: holds notifications.user-proxy and notifications.ingest.",
@@ -593,6 +637,17 @@
           }
         },
         {
+          "name": "aud-mapper-pricing",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "pricing",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        },
+        {
           "name": "aud-mapper-notifications",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
@@ -664,6 +719,18 @@
             "id.token.claim": "false",
             "access.token.claim": "true"
           }
+        },
+        {
+          "name": "aud-mapper-pricing",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "pricing",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "FX quotes: payments asks pricing for a pinned quote before settling a pay-with-conversion."
         },
         {
           "name": "aud-mapper-audit-trail",
@@ -790,6 +857,45 @@
       "serviceAccountsEnabled": true,
       "fullScopeAllowed": false,
       "secret": "dev-svc-rms-secret",
+      "_comment_secret": "Dev-only value, deterministic so scripts/keycloak-sync.sh and the services' .env files agree. A real environment injects secrets via a secrets manager — never commit a real one.",
+      "protocolMappers": [
+        {
+          "name": "aud-mapper-core-ledger",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "core-ledger",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "core-ledger verifies aud=core-ledger; without this mapper the service's tokens carry aud: [\"account\"] and every call 401s."
+        },
+        {
+          "name": "aud-mapper-audit-trail",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "audit-trail",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "svc-pricing",
+      "name": "services/pricing (confidential)",
+      "description": "Service account for services/pricing: client-credentials only, carrying ledger.pricing (core-ledger POST /fx/quotes — the only holder of the role) and audit-trail.ingest (H3).",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": false,
+      "secret": "dev-svc-pricing-secret",
       "_comment_secret": "Dev-only value, deterministic so scripts/keycloak-sync.sh and the services' .env files agree. A real environment injects secrets via a secrets manager — never commit a real one.",
       "protocolMappers": [
         {
@@ -1116,6 +1222,12 @@
         ]
       },
       {
+        "client": "svc-pricing",
+        "roles": [
+          "ledger.pricing"
+        ]
+      },
+      {
         "client": "svc-reporting",
         "roles": [
           "ledger.reports.read"
@@ -1202,6 +1314,24 @@
         ]
       }
     ],
+    "pricing": [
+      {
+        "client": "svc-bff",
+        "roles": [
+          "pricing.user-proxy",
+          "pricing.quote",
+          "pricing.read",
+          "pricing.admin"
+        ]
+      },
+      {
+        "client": "svc-payments",
+        "roles": [
+          "pricing.quote",
+          "pricing.read"
+        ]
+      }
+    ],
     "notifications": [
       {
         "client": "svc-bff",
@@ -1276,6 +1406,12 @@
       },
       {
         "client": "svc-rms",
+        "roles": [
+          "audit-trail.ingest"
+        ]
+      },
+      {
+        "client": "svc-pricing",
         "roles": [
           "audit-trail.ingest"
         ]
@@ -1362,6 +1498,12 @@
         "rms": [
           "rms.user-proxy"
         ],
+        "pricing": [
+          "pricing.user-proxy",
+          "pricing.quote",
+          "pricing.read",
+          "pricing.admin"
+        ],
         "notifications": [
           "notifications.user-proxy"
         ],
@@ -1386,6 +1528,10 @@
         ],
         "notifications": [
           "notifications.ingest"
+        ],
+        "pricing": [
+          "pricing.quote",
+          "pricing.read"
         ],
         "audit-trail": [
           "audit-trail.ingest"
@@ -1432,6 +1578,19 @@
       "clientRoles": {
         "core-ledger": [
           "ledger.reserves.custodian"
+        ],
+        "audit-trail": [
+          "audit-trail.ingest"
+        ]
+      }
+    },
+    {
+      "username": "service-account-svc-pricing",
+      "enabled": true,
+      "serviceAccountClientId": "svc-pricing",
+      "clientRoles": {
+        "core-ledger": [
+          "ledger.pricing"
         ],
         "audit-trail": [
           "audit-trail.ingest"

@@ -174,7 +174,7 @@ func TestAuthEachRoleAuthorizesExactlyItsRoutes(t *testing.T) {
 
 	roles := []string{
 		roleUserProxy, roleSettlement, roleWalletProvision, roleWalletStatus,
-		roleReservesCustodian, roleReservesChainSupply, roleReportsRead, roleEnforcement,
+		roleReservesCustodian, roleReservesChainSupply, roleReportsRead, roleEnforcement, rolePricing,
 	}
 
 	for _, role := range roles {
@@ -209,6 +209,27 @@ func TestAuthEachRoleAuthorizesExactlyItsRoutes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Quote creation is the pricing service's alone: the user-facing role is
+// refused even though it can call every other fx route — a rate minted by
+// the wrong caller is a conversion nobody should have been able to price.
+func TestAuthQuoteCreationRequiresPricingRole(t *testing.T) {
+	app, issuer := newAuthTestApp(t)
+
+	userProxy := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-bff",
+		ClientRoles: map[string][]string{authClient: {roleUserProxy}},
+	})
+	resp := do(app, http.MethodPost, "/fx/quotes", userProxy)
+	expectStatus(t, resp, fiber.StatusForbidden)
+
+	pricing := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-pricing",
+		ClientRoles: map[string][]string{authClient: {rolePricing}},
+	})
+	resp = do(app, http.MethodPost, "/fx/quotes", pricing)
+	expectStatus(t, resp, fiber.StatusOK)
 }
 
 func TestAuthProbesAndMetricsAreExempt(t *testing.T) {
