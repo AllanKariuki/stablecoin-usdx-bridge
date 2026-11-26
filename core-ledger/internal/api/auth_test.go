@@ -174,7 +174,8 @@ func TestAuthEachRoleAuthorizesExactlyItsRoutes(t *testing.T) {
 
 	roles := []string{
 		roleUserProxy, roleSettlement, roleWalletProvision, roleWalletStatus,
-		roleReservesCustodian, roleReservesChainSupply, roleReportsRead, roleEnforcement,
+		roleReservesCustodian, roleReservesChainSupply, roleReportsRead, roleEnforcement, rolePricing,
+		roleTreasury,
 	}
 
 	for _, role := range roles {
@@ -209,6 +210,58 @@ func TestAuthEachRoleAuthorizesExactlyItsRoutes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Quote creation is the pricing service's alone: the user-facing role is
+// refused even though it can call every other fx route — a rate minted by
+// the wrong caller is a conversion nobody should have been able to price.
+func TestAuthQuoteCreationRequiresPricingRole(t *testing.T) {
+	app, issuer := newAuthTestApp(t)
+
+	userProxy := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-bff",
+		ClientRoles: map[string][]string{authClient: {roleUserProxy}},
+	})
+	resp := do(app, http.MethodPost, "/fx/quotes", userProxy)
+	expectStatus(t, resp, fiber.StatusForbidden)
+
+	pricing := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-pricing",
+		ClientRoles: map[string][]string{authClient: {rolePricing}},
+	})
+	resp = do(app, http.MethodPost, "/fx/quotes", pricing)
+	expectStatus(t, resp, fiber.StatusOK)
+}
+
+// Rebalance postings are the treasury desk's alone — the same writer
+// isolation as quote creation: a rebalance moves the house's own position,
+// and a user-facing role producing one would be a trade nobody authorized.
+func TestAuthTreasuryRebalanceRequiresTreasuryRole(t *testing.T) {
+	app, issuer := newAuthTestApp(t)
+
+	userProxy := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-bff",
+		ClientRoles: map[string][]string{authClient: {roleUserProxy}},
+	})
+	resp := do(app, http.MethodPost, "/treasury/rebalances", userProxy)
+	expectStatus(t, resp, fiber.StatusForbidden)
+
+	// The positions read, by contrast, is part of the read surface: the ops
+	// console and reporting see the exposure even though they cannot post.
+	resp = do(app, http.MethodGet, "/treasury/positions", userProxy)
+	expectStatus(t, resp, fiber.StatusOK)
+
+	treasury := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-rms",
+		ClientRoles: map[string][]string{authClient: {roleTreasury}},
+	})
+	resp = do(app, http.MethodPost, "/treasury/rebalances", treasury)
+	expectStatus(t, resp, fiber.StatusOK)
+
+	// The rebalance role opens nothing else: the writer role is for the one
+	// route it exists for.
+	resp = do(app, http.MethodPost, "/deposits", treasury)
+	expectStatus(t, resp, fiber.StatusForbidden)
 }
 
 func TestAuthProbesAndMetricsAreExempt(t *testing.T) {

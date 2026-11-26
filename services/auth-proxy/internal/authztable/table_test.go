@@ -93,6 +93,58 @@ func TestManualAdjustments_RequireAdjustPermission(t *testing.T) {
 	}
 }
 
+func TestExposureAndPricing_ReadVsManage(t *testing.T) {
+	// Reads are gated on reserves:read; the writes on reserves:manage. The
+	// same split as reserves/attestations — the treasury role holds both,
+	// admin holds reserves:read only, so the writes must not be reachable
+	// with reserves:read alone.
+	read := []struct{ method, path string }{
+		{"GET", "/exposure"},
+		{"GET", "/exposure/limits/BTC"},
+		{"GET", "/treasury/rebalances"},
+		{"GET", "/pricing/pairs"},
+		{"GET", "/pricing/rates"},
+	}
+	for _, r := range read {
+		rule, found := authztable.Default.Match(r.method, r.path)
+		if !found {
+			t.Fatalf("setup: expected a rule for %s %s", r.method, r.path)
+		}
+		if !rule.Allows([]authz.Permission{authz.PermissionReservesRead}) {
+			t.Errorf("expected reserves:read to authorize %s %s", r.method, r.path)
+		}
+		if !rule.Allows(authz.RolePermissions[authz.RoleTreasury]) {
+			t.Errorf("expected the treasury role to authorize %s %s", r.method, r.path)
+		}
+	}
+
+	manage := []struct{ method, path string }{
+		{"PUT", "/exposure/limits/BTC"},
+		{"POST", "/treasury/rebalances"},
+		{"PATCH", "/pricing/pairs/BTC/USD"},
+	}
+	for _, r := range manage {
+		rule, found := authztable.Default.Match(r.method, r.path)
+		if !found {
+			t.Fatalf("setup: expected a rule for %s %s", r.method, r.path)
+		}
+		if rule.Allows([]authz.Permission{authz.PermissionReservesRead}) {
+			t.Errorf("reserves:read alone must not authorize %s %s", r.method, r.path)
+		}
+		if !rule.Allows([]authz.Permission{authz.PermissionReservesManage}) {
+			t.Errorf("expected reserves:manage to authorize %s %s", r.method, r.path)
+		}
+		// admin holds reserves:read but not reserves:manage (segregation of
+		// duties), so a write must not be reachable with the admin role.
+		if rule.Allows(authz.RolePermissions[authz.RoleAdmin]) {
+			t.Errorf("the admin role must not be able to %s %s", r.method, r.path)
+		}
+		if !rule.Allows(authz.RolePermissions[authz.RoleTreasury]) {
+			t.Errorf("expected the treasury role to authorize %s %s", r.method, r.path)
+		}
+	}
+}
+
 func TestTransfers_RemainAvailableToCustomers(t *testing.T) {
 	rule, found := authztable.Default.Match("POST", "/transfers")
 	if !found {

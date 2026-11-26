@@ -32,6 +32,11 @@ const (
 	// roleSettlement is services/payments' role: the routes a payment intent
 	// settles through.
 	roleSettlement = "ledger.settlement"
+	// rolePricing is services/pricing's role: issue FX quotes. Quote creation
+	// is locked to this single role so no other caller — including the
+	// user-facing surface — can mint a rate; a conversion is only as honest
+	// as the quote it consumes.
+	rolePricing = "ledger.pricing"
 	// roleWalletProvision is services/identity's role: create a party's
 	// default wallet.
 	roleWalletProvision = "ledger.wallet-provision"
@@ -52,6 +57,11 @@ const (
 	// roleReportsRead is services/reporting's role: the read surface a
 	// report run assembles from.
 	roleReportsRead = "ledger.reports.read"
+	// roleTreasury is services/rms' treasury desk role: post rebalance
+	// journal entries when the desk buys or sells custodial crypto at a
+	// custodian. rms alone holds it — a rebalance posting moves the house's
+	// own position, and no user-facing surface should ever produce one.
+	roleTreasury = "ledger.treasury"
 )
 
 // authClient is the resource client whose roles authorize this API — the
@@ -128,6 +138,7 @@ var routeTable = authzTable{
 	compile("POST", "/wallets", roleWalletProvision, roleSettlement, roleUserProxy),
 	compile("GET", "/users/:userId/wallets", roleWalletStatus, roleUserProxy),
 	compile("GET", "/wallets/:walletId", roleUserProxy),
+	compile("PATCH", "/wallets/:walletId", roleUserProxy),
 	compile("GET", "/wallets/:walletId/statement", roleUserProxy, roleReportsRead),
 	compile("POST", "/wallets/:walletId/status", roleWalletStatus, roleUserProxy),
 
@@ -141,8 +152,9 @@ var routeTable = authzTable{
 	compile("POST", "/deposits", roleSettlement, roleUserProxy),
 	compile("POST", "/withdrawals", roleSettlement, roleUserProxy),
 	compile("POST", "/transfers", roleSettlement, roleUserProxy),
-	compile("POST", "/fx/quotes", roleUserProxy),
+	compile("POST", "/fx/quotes", rolePricing),
 	compile("POST", "/fx/conversions", roleUserProxy),
+	compile("POST", "/fx/payments", roleSettlement),
 	compile("POST", "/issuances", roleUserProxy),
 	compile("POST", "/redemptions", roleUserProxy),
 	// confirmRedemption is operator break-glass (see handlers.go); it stays
@@ -180,6 +192,13 @@ var routeTable = authzTable{
 	compile("GET", "/reserves/reconciliation-runs", roleUserProxy, roleReportsRead),
 	compile("GET", "/reserves/reconciliation-runs/:runId", roleUserProxy, roleReportsRead),
 	compile("GET", "/reserves/reconciliation-breaks", roleUserProxy, roleReportsRead),
+
+	// Treasury & custodial-crypto exposure. The positions read serves rms'
+	// exposure checks (via ledger.reserves.custodian), the ops console and
+	// reporting; the rebalance writer is rms' treasury desk alone — the same
+	// writer-isolation reasoning as the reserves writers above.
+	compile("GET", "/treasury/positions", roleReservesCustodian, roleUserProxy, roleReportsRead),
+	compile("POST", "/treasury/rebalances", roleTreasury),
 
 	// Bridge saga state
 	compile("GET", "/transfers/:correlationId", roleUserProxy),

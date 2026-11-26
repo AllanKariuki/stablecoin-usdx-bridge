@@ -41,4 +41,19 @@ describe('StubCustodianProvider', () => {
     const result = await provider.fetchBalance(custodian({}));
     expect(result.statementRef).toMatch(/^DAMP-TRUST-001\/\d{4}-\d{2}-\d{2}$/);
   });
+
+  it('applies the drift at the crypto custodian scale, in 8-decimal BTC', async () => {
+    // The same provider serves the BTC custodian; only the baseline closure
+    // differs (custody holdings instead of cash). The drift must scale at
+    // BTC's 8 decimals, not at a fiat 2 — a sign or scale error here would
+    // make the crypto recon report a phantom break.
+    const btcCustodian = custodian({ drift: '-0.00000100' });
+    const btcProvider = new StubCustodianProvider(async () => toMoney('0.01000000', 'BTC'));
+
+    const clean = await btcProvider.fetchBalance(custodian({}));
+    expect(clean.balance.amount).toBe('0.01000000');
+
+    const drifted = await btcProvider.fetchBalance(btcCustodian);
+    expect(drifted.balance.amount).toBe('0.00999900');
+  });
 });
