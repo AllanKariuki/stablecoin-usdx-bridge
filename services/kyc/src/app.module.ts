@@ -10,11 +10,12 @@ import { CoreLedgerClient } from './core-ledger/core-ledger.client';
 import { DbModule } from './db/db.module';
 import { StubKycProvider } from './providers/kyc-provider';
 import { StorageService } from './storage/storage.service';
+import { InternalTiersController } from './tiers/internal-tiers.controller';
 import { TiersRepository } from './tiers/tiers.repository';
 import { WorkflowClient } from './workflow/workflow.client';
 
 @Module({
-  controllers: [CasesController, ApprovalsController],
+  controllers: [CasesController, ApprovalsController, InternalTiersController],
   providers: [CasesService, TiersRepository, StubKycProvider, StorageService, WorkflowClient, CoreLedgerClient, ServiceTokenClient],
 })
 export class KycModule {}

@@ -48,6 +48,9 @@ export { ErrorResponse } from './errors/error-response.interface';
 export { ErrorEnvelopeFilter } from './errors/error-envelope.filter';
 export { PlatformException } from './errors/platform.exception';
 
+// KYC gating (H5)
+export { KycGate, KycTierResponse } from './kyc/kyc-gate';
+
 // Shutdown
 export { installGracefulShutdown, runShutdownSequence, ShutdownOptions } from './shutdown/shutdown';
 

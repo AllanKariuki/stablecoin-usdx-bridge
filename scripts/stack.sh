@@ -319,6 +319,8 @@ service_env() {
 	payments)
 		echo "PORT=13003"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
+		echo "KYC_URL=http://localhost:13007"
+		echo "KYC_MIN_TIER_FIAT=TIER_1"
 		echo "NOTIFICATIONS_URL=http://localhost:13000"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
@@ -371,6 +373,7 @@ service_env() {
 		echo "NOTIFICATIONS_URL=http://localhost:13000"
 		echo "WORKFLOW_URL=http://localhost:13006"
 		echo "KYC_URL=http://localhost:13007"
+		echo "KYC_MIN_TIER_ISSUANCE=TIER_1"
 		echo "COMPLIANCE_URL=http://localhost:13004"
 		echo "REPORTING_URL=http://localhost:13008"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"

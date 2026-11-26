@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Headers, HttpCode, Param, Post } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PlatformException } from '@damp/nest-platform';
+import { KycGate, PlatformException } from '@damp/nest-platform';
 import { AuthContext, CurrentUser } from '../auth/current-user.decorator';
 import { CoreLedgerClient } from '../core-ledger/core-ledger.client';
 import { WalletOwnership } from '../wallets/wallet-ownership.service';
@@ -62,17 +62,27 @@ const USDX = 'USDX';
 @Controller()
 export class IssuanceController {
   private readonly explorers: ExplorerTemplates;
+  private readonly minTier: string;
 
   constructor(
     private readonly coreLedger: CoreLedgerClient,
     private readonly wallets: WalletsService,
     private readonly ownership: WalletOwnership,
+    private readonly kycGate: KycGate,
     config: ConfigService,
   ) {
     this.explorers = {
       ETHEREUM: config.get<string>('ETHEREUM_EXPLORER_TX_URL', { infer: true }) ?? '',
       SOLANA: config.get<string>('SOLANA_EXPLORER_TX_URL', { infer: true }) ?? '',
     };
+    this.minTier = config.get<string>('KYC_MIN_TIER_ISSUANCE', { infer: true }) ?? 'TIER_1';
+  }
+
+  /** H5: the caller's tier gates every money movement here, before any
+   * wallet lookup or core-ledger call. createUsdxWallet is exempt — opening
+   * a wallet moves no money. */
+  private requireKyc(auth: AuthContext): Promise<void> {
+    return this.kycGate.require(auth.userId, this.minTier);
   }
 
   /**
@@ -105,6 +115,7 @@ export class IssuanceController {
     @CurrentUser() auth: AuthContext,
   ): Promise<SagaAcceptedView> {
     requireIdempotencyKey(idempotencyKey);
+    await this.requireKyc(auth);
     await this.ownership.requireOwnWallets(auth, [body.fiatWalletId, body.usdxWalletId]);
     const raw = await this.coreLedger.post<CoreLedgerSagaAccepted>(
       '/issuances',
@@ -122,6 +133,7 @@ export class IssuanceController {
     @CurrentUser() auth: AuthContext,
   ): Promise<SagaAcceptedView> {
     requireIdempotencyKey(idempotencyKey);
+    await this.requireKyc(auth);
     await this.ownership.requireOwnWallets(auth, [body.usdxWalletId, body.fiatWalletId]);
     const raw = await this.coreLedger.post<CoreLedgerSagaAccepted>(
       '/redemptions',
@@ -165,6 +177,7 @@ export class IssuanceController {
     @CurrentUser() auth: AuthContext,
   ): Promise<BridgeAcceptedView> {
     requireIdempotencyKey(idempotencyKey);
+    await this.requireKyc(auth);
     await this.ownership.requireOwnWallets(auth, [body.fromWalletId, body.toWalletId]);
     if (!body.amount) {
       throw new PlatformException(400, 'INVALID_REQUEST', 'amount is required');

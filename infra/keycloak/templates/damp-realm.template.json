@@ -110,6 +110,12 @@
           "description": "services/bff: every user-facing kyc route",
           "composite": false,
           "clientRole": true
+        },
+        {
+          "name": "kyc.tier-read",
+          "description": "services/payments + services/bff: GET /internal/parties/:partyId/tier (the H5 money-path KYC gate)",
+          "composite": false,
+          "clientRole": true
         }
       ],
       "compliance": [
@@ -631,6 +637,18 @@
           "_comment": "core-ledger verifies aud=core-ledger; without this mapper the service's tokens carry aud: [\"account\"] and every call 401s."
         },
         {
+          "name": "aud-mapper-kyc",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "kyc",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          },
+          "_comment": "H5: the KYC gate calls kyc's internal tier endpoint with svc-payments' own token."
+        },
+        {
           "name": "aud-mapper-notifications",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
@@ -1136,7 +1154,14 @@
       {
         "client": "svc-bff",
         "roles": [
-          "kyc.user-proxy"
+          "kyc.user-proxy",
+          "kyc.tier-read"
+        ]
+      },
+      {
+        "client": "svc-payments",
+        "roles": [
+          "kyc.tier-read"
         ]
       }
     ],
@@ -1318,7 +1343,8 @@
           "workflow.user-proxy"
         ],
         "kyc": [
-          "kyc.user-proxy"
+          "kyc.user-proxy",
+          "kyc.tier-read"
         ],
         "compliance": [
           "compliance.user-proxy"
@@ -1347,6 +1373,9 @@
       "clientRoles": {
         "core-ledger": [
           "ledger.settlement"
+        ],
+        "kyc": [
+          "kyc.tier-read"
         ],
         "notifications": [
           "notifications.ingest"

@@ -36,33 +36,43 @@ make e2e-fast                                # same as --fast
   of pending redemptions to pick one from (the dead-letter queue is not
   gateway-reachable).
 - `--only=<step,...>` — run only the named steps, in order
-  (`wallets, deposit, p2p, invoice, withdrawal, issuance, bridge, redeem-eth,
-  redeem-sol, break-glass, negatives, reconcile`). The redeem steps look their
-  wallets and balances up from the API, so `--only=redeem-eth` runs standalone;
-  it fails with a clear message when the ETH USD-X balance is below the
-  redemption amount. `redeem-sol` is reported SKIP (not FAIL) when the bridge
-  step did not complete and the customer therefore holds no Solana USD-X.
-  `break-glass` runs standalone in full mode when the customer holds ≥ 5.00
-  USD-X on Ethereum; it self-skips otherwise.
+  (`wallets, kyc, deposit, p2p, invoice, withdrawal, issuance, bridge,
+  redeem-eth, redeem-sol, break-glass, negatives, reconcile`). The redeem
+  steps look their wallets and balances up from the API, so
+  `--only=redeem-eth` runs standalone; it fails with a clear message when
+  the ETH USD-X balance is below the redemption amount. `redeem-sol` is
+  reported SKIP (not FAIL) when the bridge step did not complete and the
+  customer therefore holds no Solana USD-X. `break-glass` runs standalone
+  in full mode when the customer holds ≥ 5.00 USD-X on Ethereum; it
+  self-skips otherwise. Every money step requires the `kyc` step to have
+  run (H5): `--only` selections that skip it will see `403 KYC_REQUIRED`.
 - `--timeout-min=<N>` — saga poll timeout in minutes (default 40).
 
 ## What it checks
 
 1. **wallets** — customer + company USD fiat wallets; customer USD-X wallets on
    Ethereum and Solana.
-2. **deposit** — 200.00 USD via a stub-rail payment intent; balance rises by the
+2. **kyc** — brings `customer@damp.local` and `company@damp.local` to TIER_1
+   through the real product path (case → documents → submit → compliance
+   approves the maker-checker request → tier granted); idempotent when a
+   previous run already granted it. Then the H5 negative: a throwaway
+   customer created via the Keycloak admin API is JIT-provisioned by identity
+   on its first gateway call and must be refused `403 KYC_REQUIRED` on a
+   deposit intent, an issuance and a customer transfer; the user is deleted
+   afterwards.
+3. **deposit** — 200.00 USD via a stub-rail payment intent; balance rises by the
    exact posting; a ledger transaction exists.
-3. **p2p** — customer → company 10.00 USD via an internal TRANSFER intent.
-4. **invoice** — company issues 7.50 USD, customer pays it, invoice reaches PAID.
-5. **withdrawal** — 5.00 USD to a verified stub-rail bank account.
-6. **issuance** *(full)* — 50.00 USD-X minted on Ethereum; on-chain supply +50.
-7. **bridge** *(full)* — 20 USD-X Ethereum → Solana; both supplies move.
-8. **redeem-eth** *(full)* — 10 USD-X redeemed on Ethereum; supply -10, fiat
+4. **p2p** — customer → company 10.00 USD via an internal TRANSFER intent.
+5. **invoice** — company issues 7.50 USD, customer pays it, invoice reaches PAID.
+6. **withdrawal** — 5.00 USD to a verified stub-rail bank account.
+7. **issuance** *(full)* — 50.00 USD-X minted on Ethereum; on-chain supply +50.
+8. **bridge** *(full)* — 20 USD-X Ethereum → Solana; both supplies move.
+9. **redeem-eth** *(full)* — 10 USD-X redeemed on Ethereum; supply -10, fiat
    +10.
-9. **redeem-sol** *(full)* — 10 USD-X redeemed on Solana; supply -10, fiat
+10. **redeem-sol** *(full)* — 10 USD-X redeemed on Solana; supply -10, fiat
    +10. Skipped with a reason when the bridge step did not complete (nothing
    to burn on Solana).
-10. **break-glass** *(full; self-skips in --fast)* — the H4 maker-checker
+11. **break-glass** *(full; self-skips in --fast)* — the H4 maker-checker
     control, on the negative path only: a fresh 5.00 redemption is proposed
     for break-glass with a random fake hash by treasury (202 PENDING_APPROVAL,
     nothing settles); treasury cannot approve its own request (403); admin
@@ -70,9 +80,9 @@ make e2e-fast                                # same as --fast
     VERIFICATION_FAILED, the saga is not settled and no fiat moved. The
     worker still settles that redemption the ordinary way afterwards (a real
     burn, which is the happy path).
-11. **negatives** — idempotent replay, overdraw refusal, cross-user/operator-only
+12. **negatives** — idempotent replay, overdraw refusal, cross-user/operator-only
     403s, 401s for missing/garbage tokens, 400 for a missing Idempotency-Key.
-12. **reconcile** — runs the reconcile job once at the start and once at the
+13. **reconcile** — runs the reconcile job once at the start and once at the
     end, then asserts Leg A's drift (on-chain supply − (issued − in transit))
     did not change across the run, so the ledger and the chains moved together.
     A pre-existing break is reported as KNOWN, not a failure; Leg B must be ok,

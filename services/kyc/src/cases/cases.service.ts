@@ -377,6 +377,7 @@ export class CasesService {
     audit?: AuditRequest,
     approvalRequestId?: string,
   ): Promise<void> {
+    let partyId = '';
     await this.db.transaction(async (client) => {
       const { rows } = await client.query(
         `UPDATE kyc_cases k SET status = 'REJECTED', rejection_reason = $2, reviewed_by = $3,
@@ -387,6 +388,7 @@ export class CasesService {
         [caseId, reason, by],
       );
       if (rows.length === 0) return;
+      partyId = rows[0].party_id;
       await enqueueAuditEvent(
         client,
         {
@@ -405,6 +407,22 @@ export class CasesService {
         audit,
       );
     });
+    if (!partyId) return;
+
+    // H5: a rejection that leaves the party below every tier freezes their
+    // wallets. A rejected *upgrade* (TIER_2 applying for TIER_3) keeps the
+    // tier they already hold and must not freeze it — so the decision is
+    // "what tier are they left with", not "was a case rejected". Idempotent:
+    // the status write is the same either way, and re-deciding a decided
+    // case (rows.length === 0 above) never reaches this. The freeze goes
+    // through core-ledger's existing POST /wallets/:id/status — no second
+    // freezing concept — and the audit trail carries kyc.case.rejected
+    // (above) plus core-ledger's own wallet-status event, exactly as the
+    // approval path pairs kyc.case.approved with setWalletsActive.
+    const tier = await this.tiers.tierFor(partyId);
+    if (tier.rank <= 0) {
+      await this.ledger.setWalletsFrozen(partyId);
+    }
   }
 
   /**

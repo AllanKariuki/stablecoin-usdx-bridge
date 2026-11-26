@@ -3,6 +3,62 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-24 — H5: KYC gates every money movement
+
+### Changed — no money moves for a party whose KYC tier is below the configured minimum (target bar: real money)
+
+- **New kyc endpoint `GET /internal/parties/:partyId/tier`**, guarded by the
+  H3 service guard with a new client role `kyc.tier-read` (granted to
+  `svc-payments` and `svc-bff`; the existing `kyc.user-proxy` does not reach
+  it). Returns `{partyId, tier: {name, rank}, status, tiers}` — a party with
+  no record is TIER_0 (rank 0), the default that can do nothing by
+  construction, and the full ordered tier list lets callers resolve the rank
+  of the minimum tier they demand without hardcoding ranks. Realm template,
+  `make keycloak-realm` output and `scripts/keycloak-sync.sh` lists all
+  updated (`svc-payments` also gains the `kyc` audience mapper).
+- **`KycGate` in `@damp/nest-platform`** — the shared money-path gate.
+  `require(partyId, minimumTier)` fetches the tier from kyc with the
+  caller's own service-account token, compares by rank, and throws
+  `403 KYC_REQUIRED` ("verification tier <X> required; current <Y>") when
+  below, `503 KYC_UNAVAILABLE` when kyc is unreachable, answers non-2xx, or
+  does not define the minimum tier — fail CLOSED, nothing is cached (a
+  revoked tier must bite on the next request). KYC_URL empty behaves as
+  unreachable; there is no disable switch.
+- **payments gates every intent creation.** All three directions move value
+  into or out of the party's wallet (DEPOSIT funds it, WITHDRAWAL drains it,
+  TRANSFER — P2P and invoice pay — moves it), so every intent is checked
+  against `KYC_MIN_TIER_FIAT` (default `TIER_1`, the first non-zero tier)
+  before any write, core-ledger call or rail call. New config `KYC_URL` +
+  `KYC_MIN_TIER_FIAT`, wired through `.env`/`.env.example`, `stack.sh` and
+  `infra/k8s/payments-deployment.yaml`.
+- **bff gates its customer money-movement routes.** `POST /issuances`,
+  `/redemptions`, `/bridges` and the customer-facing `/transfers` check the
+  caller's tier against `KYC_MIN_TIER_ISSUANCE` (default `TIER_1`) before
+  any wallet lookup or core-ledger call. The operator-only `/deposits` and
+  `/withdrawals` are deliberately NOT gated — an operator adjusts any
+  wallet by design, and their permission (`wallets:adjust:manual`) is the
+  control.
+- **kyc freezes wallets on rejection.** `CasesService.reject` now calls
+  `CoreLedgerClient.setWalletsFrozen` (previously dead code) when the
+  rejection leaves the party below every tier (rank ≤ 0) — a rejected
+  *upgrade* keeps the tier already held and is not frozen. Idempotent:
+  re-deciding a decided case never reaches it, and the status write goes
+  through core-ledger's existing `POST /wallets/:id/status` so there is
+  still exactly one freezing mechanism. Audit trail: `kyc.case.rejected`
+  plus core-ledger's own wallet-status event, the mirror of the approval
+  path's `kyc.case.approved` + `setWalletsActive`.
+- **e2e harness (`scripts/e2e/money-flows.mjs`) gains a `kyc` step** (after
+  `wallets`): brings `customer@damp.local` and `company@damp.local` to
+  TIER_1 through the real product path — open a case, request upload slots,
+  upload documents (MinIO when configured; otherwise the documented
+  unconfigured-storage stub), submit, then approve the maker-checker
+  request as `compliance@damp.local` through the gateway — idempotent (a
+  party already at/above the tier passes immediately). The `negatives` step
+  now also creates a throwaway customer via the Keycloak admin API, lets
+  identity JIT-provision its party on first gateway call, and asserts
+  `403 KYC_REQUIRED` on a deposit intent and on an issuance (plus a
+  customer transfer), then deletes the user.
+
 ## 2026-11-23 — H4: break-glass redemption needs approval and on-chain proof
 
 ### Changed — the break-glass redemption confirm can no longer release fiat on an operator's word (target bar: real money)

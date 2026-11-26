@@ -73,6 +73,17 @@ export class BffConfig {
   @IsString()
   KYC_URL = '';
 
+  // --- KYC gate (H5). The money-movement routes (POST /issuances,
+  // /redemptions, /bridges, /transfers) check the caller's tier against this
+  // before any core-ledger call; KycGate calls kyc's
+  // GET /internal/parties/:partyId/tier with KYC_URL as its base. The
+  // operator-only /deposits and /withdrawals are deliberately NOT gated:
+  // an operator adjusts any wallet by design. Empty KYC_URL fails closed
+  // (503 KYC_UNAVAILABLE) on the gated routes.
+  @IsString()
+  @IsNotEmpty()
+  KYC_MIN_TIER_ISSUANCE = 'TIER_1';
+
   @IsString()
   COMPLIANCE_URL = '';
 

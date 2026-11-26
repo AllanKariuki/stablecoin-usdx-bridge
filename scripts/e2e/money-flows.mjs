@@ -50,7 +50,7 @@ function printHelp() {
   --only=step,...    run only the named steps, in order
   --timeout-min=N    saga poll timeout in minutes (default 40)
 
-Steps: wallets, deposit, p2p, invoice, withdrawal, issuance, bridge,
+Steps: wallets, kyc, deposit, p2p, invoice, withdrawal, issuance, bridge,
        redeem-eth, redeem-sol, break-glass, negatives, reconcile`);
 }
 
@@ -99,6 +99,7 @@ const USERS = {
   company: 'company@damp.local',
   treasury: 'treasury@damp.local',
   admin: 'admin@damp.local',
+  compliance: 'compliance@damp.local',
 };
 
 // ---------------------------------------------------------------------------
@@ -391,6 +392,277 @@ async function stepWallets() {
       companyPartyId: coUsd.userId,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Step 1b — kyc (H5: every money step below needs the parties at TIER_1)
+// ---------------------------------------------------------------------------
+
+// Keycloak admin API (dev bootstrap credentials from docker-compose.yaml;
+// overridable so a differently-provisioned realm still works).
+const KC_ADMIN_BASE = process.env.E2E_KC_ADMIN_BASE || 'http://localhost:8080';
+const KC_ADMIN_USER = process.env.E2E_KC_ADMIN_USER || 'admin';
+const KC_ADMIN_PASSWORD = process.env.E2E_KC_ADMIN_PASSWORD || 'admin';
+
+async function kcAdminToken() {
+  const res = await fetch(`${KC_ADMIN_BASE}/realms/master/protocol/openid-connect/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'password',
+      client_id: 'admin-cli',
+      username: KC_ADMIN_USER,
+      password: KC_ADMIN_PASSWORD,
+    }),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.access_token) {
+    throw new StepError(`Keycloak admin login failed (${res.status})`, { status: res.status, body });
+  }
+  return body.access_token;
+}
+
+// One throwaway customer token, outside the realm-file cache: the user is
+// created at runtime and deleted before the step returns.
+async function throwawayToken(username, password) {
+  const res = await fetch(KEYCLOAK_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'password',
+      client_id: KC_CLIENT_ID,
+      username,
+      password,
+    }),
+  });
+  const body = await res.json();
+  if (!res.ok || !body.access_token) {
+    throw new StepError(`token for throwaway ${username} failed (${res.status})`, { status: res.status, body });
+  }
+  return body.access_token;
+}
+
+async function kycStatus(user) {
+  const r = await api(user, 'GET', '/kyc/status');
+  assert(r.status === 200, `GET /kyc/status as ${user} -> ${r.status}`, { status: r.status, body: r.body });
+  return r.body;
+}
+
+/**
+ * Brings one party to TIER_1 through the REAL product path: open a case,
+ * request presigned upload slots, upload each required document (MinIO when
+ * kyc has S3 credentials; the documented unconfigured-storage stub otherwise
+ * — the upload URL is null and the storage key is recorded without a file),
+ * submit, let the stub screen (CLEAR for @damp.local), then approve the
+ * maker-checker request as compliance@damp.local through the gateway and
+ * wait for workflow's callback to grant the tier. Idempotent: a party
+ * already at/above TIER_1 passes immediately, and an open case mid-flight is
+ * resumed rather than re-opened.
+ */
+async function bringToTier(user) {
+  let st = await kycStatus(user);
+  if ((st.tierRank ?? 0) >= 1) return 'already at tier';
+
+  let caseId = st.openCase?.id;
+  let caseStatus = st.openCase?.status ?? '';
+  if (!caseId) {
+    const created = await api(user, 'POST', '/kyc/cases', { tier: 'TIER_1' });
+    if (created.status === 409) {
+      const again = await kycStatus(user);
+      caseId = again.openCase?.id;
+      caseStatus = again.openCase?.status ?? '';
+    } else {
+      assert(created.status >= 200 && created.status < 300 && created.body?.id,
+        `kyc case open as ${user} -> ${created.status}`, { status: created.status, body: created.body });
+      caseId = created.body.id;
+      caseStatus = created.body.status;
+    }
+  }
+  assert(caseId, `no open KYC case for ${user}`, { body: st });
+
+  if (caseStatus === 'DRAFT') {
+    const tiersRes = await api(user, 'GET', '/kyc/tiers');
+    assert(tiersRes.status === 200, `GET /kyc/tiers as ${user} -> ${tiersRes.status}`, { status: tiersRes.status });
+    const tier1 = tiersRes.body.tiers?.find((t) => t.name === 'TIER_1');
+    assert(tier1?.requiredDocuments, 'TIER_1 not found in /kyc/tiers', { body: tiersRes.body });
+
+    for (const kind of tier1.requiredDocuments) {
+      const slot = await api(user, 'POST', `/kyc/cases/${caseId}/documents/upload-url`, {
+        kind,
+        contentType: 'application/pdf',
+      });
+      assert(slot.status === 200 && slot.body?.storageKey,
+        `upload slot for ${kind} -> ${slot.status}`, { status: slot.status, body: slot.body });
+
+      const bytes = Buffer.from('%PDF-1.4 e2e stub document\n');
+      if (slot.body.uploadUrl) {
+        const put = await fetch(slot.body.uploadUrl, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/pdf' },
+          body: bytes,
+        });
+        assert(put.ok, `document PUT to storage -> ${put.status}`);
+      }
+
+      const recorded = await api(user, 'POST', `/kyc/cases/${caseId}/documents`, {
+        kind,
+        storageKey: slot.body.storageKey,
+        contentType: 'application/pdf',
+        sizeBytes: bytes.length,
+        sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      });
+      assert(recorded.status >= 200 && recorded.status < 300,
+        `document record for ${kind} -> ${recorded.status}`, { status: recorded.status, body: recorded.body });
+    }
+
+    const submitted = await api(user, 'POST', `/kyc/cases/${caseId}/submit`, {
+      email: user,
+      fullName: `E2E ${user}`,
+      country: 'KE',
+    });
+    assert(submitted.status >= 200 && submitted.status < 300,
+      `kyc submit as ${user} -> ${submitted.status}`, { status: submitted.status, body: submitted.body });
+    caseStatus = submitted.body?.status;
+  }
+
+  // @damp.local screens CLEAR, which skips the review queue but not
+  // maker-checker: the case goes straight to PENDING_APPROVAL.
+  const awaiting = await poll(
+    () => kycStatus(user),
+    (s) => ['PENDING_APPROVAL'].includes(s.openCase?.status) || (s.tierRank ?? 0) >= 1 || !['DRAFT', 'SUBMITTED', 'SCREENING', 'PENDING_REVIEW'].includes(s.openCase?.status),
+    60_000,
+    1_000,
+    `kyc screening ${caseId}`,
+  );
+  if ((awaiting.tierRank ?? 0) >= 1) return 'approved without a queue stop';
+  assert(awaiting.openCase?.status === 'PENDING_APPROVAL',
+    `kyc case ${caseId} is ${awaiting.openCase?.status}, expected PENDING_APPROVAL`, { body: awaiting });
+
+  const list = await api(USERS.compliance, 'GET', `/approval-requests?subjectType=KYC_CASE&subjectId=${caseId}`);
+  assert(list.status === 200 && Array.isArray(list.body?.requests),
+    `approval request list -> ${list.status}`, { status: list.status, body: list.body });
+  const request0 = list.body.requests[0];
+  assert(request0?.id, `no approval request for KYC case ${caseId}`, { body: list.body });
+
+  if (request0.status === 'PENDING') {
+    const approved = await api(USERS.compliance, 'POST', `/approval-requests/${request0.id}/approve`, {
+      comment: ref('e2e KYC approval'),
+    });
+    assert(approved.status === 200, `kyc approval -> ${approved.status}`, { status: approved.status, body: approved.body });
+  }
+
+  // workflow delivers the decision to kyc asynchronously; the tier grant and
+  // the wallet thaw land together.
+  const granted = await poll(
+    () => kycStatus(user),
+    (s) => (s.tierRank ?? 0) >= 1,
+    90_000,
+    1_000,
+    `kyc tier grant ${caseId}`,
+  );
+  assert((granted.tierRank ?? 0) >= 1, `tier was never granted to ${user}`, { body: granted });
+  return `granted ${granted.tier} (rank ${granted.tierRank})`;
+}
+
+/**
+ * The H5 negative: a party nobody has screened can move no money.
+ *
+ * A throwaway user is created through the Keycloak admin API (explicitly
+ * granted the `customer` realm role rather than trusting default-role
+ * assignment), logs in via ROPC, and identity JIT-provisions its party on
+ * the first gateway call. Its tier is TIER_0 by construction — so a deposit
+ * intent (payments' gate), an issuance and a customer transfer (bff's gate)
+ * must all answer 403 KYC_REQUIRED before anything is written. The user is
+ * deleted at the end; the provisioned party row is a harmless remnant.
+ */
+async function kycNegative() {
+  const token = await kcAdminToken();
+  const username = `kyc-neg-${runId}`;
+  const email = `${username}@damp.local`;
+  const password = 'damp-dev-only';
+
+  const created = await fetch(`${KC_ADMIN_BASE}/admin/realms/damp/users`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      username,
+      email,
+      // Keycloak 26's user profile requires first/last name; without them
+      // the account is "not fully set up" and the password grant is refused.
+      firstName: 'KYC',
+      lastName: 'Negative',
+      enabled: true,
+      emailVerified: true,
+      requiredActions: [],
+      credentials: [{ type: 'password', value: password, temporary: false }],
+    }),
+  });
+  assert(created.status === 201, `Keycloak user create -> ${created.status}`, { status: created.status });
+  const location = created.headers.get('location') ?? '';
+  const userId = location.split('/').pop();
+  assert(userId, 'user create carried no Location header');
+
+  try {
+    const role = await fetch(`${KC_ADMIN_BASE}/admin/realms/damp/roles/customer`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const roleRep = await role.json();
+    const assigned = await fetch(`${KC_ADMIN_BASE}/admin/realms/damp/users/${userId}/role-mappings/realm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify([roleRep]),
+    });
+    assert(assigned.status === 204, `customer role assign -> ${assigned.status}`, { status: assigned.status });
+
+    const userToken = await throwawayToken(username, password);
+
+    // First gateway call: auth-proxy resolves the subject and identity
+    // JIT-provisions the party (and its default wallet).
+    const wallets = await api(null, 'GET', '/wallets', undefined, { auth: userToken });
+    assert(wallets.status === 200, `throwaway GET /wallets -> ${wallets.status}`, { status: wallets.status, body: wallets.body });
+
+    const deposit = await api(null, 'POST', '/payment-intents', {
+      direction: 'DEPOSIT',
+      amount: '1.00',
+      currency: 'USD',
+    }, { auth: userToken });
+    assert(deposit.status === 403 && deposit.body?.code === 'KYC_REQUIRED',
+      `unverified deposit intent -> ${deposit.status} ${deposit.body?.code}, want 403 KYC_REQUIRED`,
+      { status: deposit.status, body: deposit.body });
+
+    const issuance = await api(null, 'POST', '/issuances', {
+      fiatWalletId: 'not-mine',
+      usdxWalletId: 'not-mine',
+      amount: '1.00',
+    }, { auth: userToken });
+    assert(issuance.status === 403 && issuance.body?.code === 'KYC_REQUIRED',
+      `unverified issuance -> ${issuance.status} ${issuance.body?.code}, want 403 KYC_REQUIRED`,
+      { status: issuance.status, body: issuance.body });
+
+    const transfer = await api(null, 'POST', '/transfers', {
+      fromWalletId: 'not-mine',
+      toWalletId: 'not-theirs',
+      amount: '1.00',
+    }, { auth: userToken });
+    assert(transfer.status === 403 && transfer.body?.code === 'KYC_REQUIRED',
+      `unverified transfer -> ${transfer.status} ${transfer.body?.code}, want 403 KYC_REQUIRED`,
+      { status: transfer.status, body: transfer.body });
+  } finally {
+    await fetch(`${KC_ADMIN_BASE}/admin/realms/damp/users/${userId}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    });
+  }
+  return true;
+}
+
+async function stepKyc() {
+  const notes = [];
+  for (const user of [USERS.customer, USERS.company]) {
+    notes.push(`${user}: ${await bringToTier(user)}`);
+  }
+  await kycNegative();
+  return { note: notes.join('; ') + '; unverified party refused 403 KYC_REQUIRED (deposit intent, issuance, transfer)' };
 }
 
 // --- shared helpers ---------------------------------------------------------
@@ -1349,6 +1621,7 @@ async function stepReconcile() {
 
 const STEPS = [
   { name: 'wallets', fn: stepWallets, money: false, onchain: false },
+  { name: 'kyc', fn: stepKyc, money: false, onchain: false },
   { name: 'deposit', fn: stepDeposit, money: true, onchain: false },
   { name: 'p2p', fn: stepP2p, money: true, onchain: false },
   { name: 'invoice', fn: stepInvoice, money: true, onchain: false },
