@@ -49,11 +49,12 @@ type Decoded struct {
 }
 
 var (
-	selMint      = selector("bridgeMint(address,uint256,bytes32)")
-	selBurn      = selector("bridgeBurn(address,uint256,bytes32)")
-	selBlacklist = selector("blacklist(address)")
-	selPause     = selector("pause()")
-	selUnpause   = selector("unpause()")
+	selMint        = selector("bridgeMint(address,uint256,bytes32)")
+	selBurn        = selector("bridgeBurn(address,uint256,bytes32)")
+	selBlacklist   = selector("blacklist(address)")
+	selUnblacklist = selector("unblacklist(address)")
+	selPause       = selector("pause()")
+	selUnpause     = selector("unpause()")
 )
 
 func selector(sig string) [4]byte {
@@ -131,6 +132,15 @@ func Ethereum(rawTx, digest []byte, dep Deployment) (*Decoded, error) {
 			return nil, err
 		}
 		d.Method, d.Destination = "blacklist", addr
+	case selUnblacklist:
+		if len(args) != 32 {
+			return nil, fmt.Errorf("unblacklist has %d argument bytes, want 32", len(args))
+		}
+		addr, err := word2Address(args[0:32])
+		if err != nil {
+			return nil, err
+		}
+		d.Method, d.Destination = "unblacklist", addr
 	case selPause:
 		if len(args) != 0 {
 			return nil, errors.New("pause takes no arguments")

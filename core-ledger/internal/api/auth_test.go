@@ -174,7 +174,7 @@ func TestAuthEachRoleAuthorizesExactlyItsRoutes(t *testing.T) {
 
 	roles := []string{
 		roleUserProxy, roleSettlement, roleWalletProvision, roleWalletStatus,
-		roleReservesCustodian, roleReservesChainSupply, roleReportsRead,
+		roleReservesCustodian, roleReservesChainSupply, roleReportsRead, roleEnforcement,
 	}
 
 	for _, role := range roles {

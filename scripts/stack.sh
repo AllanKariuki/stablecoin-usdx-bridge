@@ -340,6 +340,7 @@ service_env() {
 		;;
 	compliance)
 		echo "PORT=13004"
+		echo "NATS_URL=nats://localhost:54222"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
 		echo "WORKFLOW_URL=http://localhost:13006"
 		echo "SELF_URL=http://localhost:13004"

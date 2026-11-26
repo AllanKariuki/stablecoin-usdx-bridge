@@ -39,6 +39,8 @@ spec:
     - from:
         - podSelector: { matchLabels: { app: core-ledger-worker } }
         - podSelector: { matchLabels: { app: notifications } }
+        # compliance consumes chain-enforcement finality events (H6).
+        - podSelector: { matchLabels: { app: compliance } }
       ports:
         - { protocol: TCP, port: 4222 }
     # Cluster routes between NATS's own replicas (JetStream needs three for

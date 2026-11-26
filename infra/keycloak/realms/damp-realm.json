@@ -104,6 +104,12 @@
           "clientRole": true
         },
         {
+          "name": "ledger.enforcement",
+          "description": "services/compliance only: POST /chain/enforcement (H6 — on-chain blacklist/unblacklist/pause/unpause after maker-checker)",
+          "composite": false,
+          "clientRole": true
+        },
+        {
           "name": "ledger.reserves.custodian",
           "description": "services/rms: POST /reserves/custodian-snapshots, GET /reserves/status",
           "composite": false,
@@ -749,7 +755,7 @@
     {
       "clientId": "svc-compliance",
       "name": "services/compliance (confidential)",
-      "description": "Service account for services/compliance: client-credentials only, carrying ledger.wallet-status (core-ledger) and workflow.propose + audit-trail.ingest (H3).",
+      "description": "Service account for services/compliance: client-credentials only, carrying ledger.wallet-status + ledger.enforcement (core-ledger, H6) and workflow.propose + audit-trail.ingest (H3).",
       "enabled": true,
       "publicClient": false,
       "protocol": "openid-connect",
@@ -1109,7 +1115,8 @@
       {
         "client": "svc-compliance",
         "roles": [
-          "ledger.wallet-status"
+          "ledger.wallet-status",
+          "ledger.enforcement"
         ]
       },
       {
@@ -1415,7 +1422,8 @@
       "serviceAccountClientId": "svc-compliance",
       "clientRoles": {
         "core-ledger": [
-          "ledger.wallet-status"
+          "ledger.wallet-status",
+          "ledger.enforcement"
         ],
         "workflow": [
           "workflow.propose"

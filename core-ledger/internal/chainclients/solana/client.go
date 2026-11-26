@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -261,6 +262,122 @@ func (c *Client) BridgeBurn(from string, amount *big.Int, correlationID string) 
 	return c.sendInstructions(ctx,
 		signingContext{method: "bridgeBurn", correlationID: correlationID, amount: amount, to: from},
 		bridgeBurn)
+}
+
+// Pause halts bridge_mint/bridge_burn by setting the BridgeConfig's paused
+// flag (set_paused(true), AdminOnly). The API refuses a PAUSE whose signer is
+// not the config admin before it ever builds the transaction — see
+// IsPauseAuthority.
+func (c *Client) Pause(reference string) (string, error) {
+	return c.setPaused(context.Background(), true, "pause", reference)
+}
+
+// Unpause resumes the bridge (set_paused(false), AdminOnly).
+func (c *Client) Unpause(reference string) (string, error) {
+	return c.setPaused(context.Background(), false, "unpause", reference)
+}
+
+// Blacklist and Unblacklist exist only to satisfy bridge.EnforcementClient:
+// the Solana program has no blacklist, and the API validates that combination
+// away before it ever reaches a client. Reaching one is a programming error,
+// and a clear one is better than a silent no-op.
+func (c *Client) Blacklist(_, _ string) (string, error) {
+	return "", errors.New("SOLANA: the usdx_bridge program has no blacklist; blacklisting is Ethereum-only")
+}
+
+func (c *Client) Unblacklist(_, _ string) (string, error) {
+	return "", errors.New("SOLANA: the usdx_bridge program has no blacklist; blacklisting is Ethereum-only")
+}
+
+// setPaused builds and submits the program's set_paused instruction. The
+// signing context's method is pause/unpause — the policy vocabulary a remote
+// signer has rules for — and the reference is carried as the correlation id.
+func (c *Client) setPaused(ctx context.Context, paused bool, method, reference string) (string, error) {
+	configPDA, err := c.configPDA()
+	if err != nil {
+		return "", fmt.Errorf("deriving BridgeConfig PDA: %w", err)
+	}
+	return c.sendInstructions(ctx,
+		signingContext{method: method, correlationID: reference},
+		c.setPausedInstruction(configPDA, paused))
+}
+
+// setPausedInstruction builds the set_paused instruction: config first, the
+// admin signer second — config.rs's AdminOnly account order — and the Borsh
+// bool after Anchor's global discriminator. Split out so the layout is
+// testable without a cluster.
+func (c *Client) setPausedInstruction(configPDA solanago.PublicKey, paused bool) solanago.Instruction {
+	accounts := solanago.AccountMetaSlice{
+		solanago.Meta(configPDA).WRITE(),
+		solanago.Meta(c.signer.PublicKey()).SIGNER(),
+	}
+	data := anchorDiscriminator("set_paused")
+	if paused {
+		data = append(data, 1)
+	} else {
+		data = append(data, 0)
+	}
+	return solanago.NewInstruction(c.programID, accounts, data)
+}
+
+// IsPauseAuthority reports whether this client's signer is the BridgeConfig
+// admin — the only account set_paused accepts. The program reads the admin
+// from the config account's first field after the Anchor discriminator, so
+// this reads that account (finalized, so the answer is stable) and compares.
+//
+// A false answer is not "try anyway": the transaction would revert on the
+// InvalidAdmin constraint, and the API refuses the request with a clear 422
+// instead of letting compliance mark an executed action failed.
+func (c *Client) IsPauseAuthority(ctx context.Context) (bool, error) {
+	configPDA, err := c.configPDA()
+	if err != nil {
+		return false, fmt.Errorf("deriving BridgeConfig PDA: %w", err)
+	}
+
+	info, err := c.rpc.GetAccountInfoWithOpts(ctx, configPDA,
+		&rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentFinalized})
+	if err != nil {
+		return false, fmt.Errorf("reading BridgeConfig %s: %w", configPDA, err)
+	}
+	if info == nil || info.Value == nil {
+		return false, fmt.Errorf("BridgeConfig %s does not exist", configPDA)
+	}
+	data := info.Value.Data.GetBinary()
+	// Anchor account layout: 8-byte discriminator, then admin (32 bytes) —
+	// the first field of state.rs's BridgeConfig.
+	if len(data) < 40 {
+		return false, fmt.Errorf("BridgeConfig %s holds %d bytes, want at least 40", configPDA, len(data))
+	}
+	var admin solanago.PublicKey
+	copy(admin[:], data[8:40])
+	return admin.Equals(c.signer.PublicKey()), nil
+}
+
+// FinalityStatus is the non-blocking half of WaitForFinality, for the
+// enforcement sweep: one GetSignatureStatuses call, no polling, finalized as
+// the target depth. final=false and nil error means "not there yet"; a
+// landed-and-failed signature wraps ErrTxFailedOnChain so the sweep can mark
+// the row FAILED without guessing from error text.
+func (c *Client) FinalityStatus(txHash string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sig, err := solanago.SignatureFromBase58(txHash)
+	if err != nil {
+		return false, fmt.Errorf("parsing signature %q: %w", txHash, err)
+	}
+	statuses, err := c.rpc.GetSignatureStatuses(ctx, true, sig)
+	if err != nil {
+		return false, fmt.Errorf("checking signature %s: %w", txHash, err)
+	}
+	if len(statuses.Value) == 0 || statuses.Value[0] == nil {
+		return false, nil
+	}
+	status := statuses.Value[0]
+	if status.Err != nil {
+		return false, fmt.Errorf("tx %s failed: %v: %w", txHash, status.Err, bridge.ErrTxFailedOnChain)
+	}
+	return reachedCommitment(status.ConfirmationStatus, rpc.ConfirmationStatusFinalized), nil
 }
 
 // WaitForFinality matches bridge.ChainClient's signature (the same string

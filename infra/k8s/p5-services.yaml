@@ -260,6 +260,10 @@ spec:
               value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
             - name: AUTH_AUDIENCE
               value: "compliance"
+            # H6: enforcement finality arrives on JetStream (durable
+            # compliance-enforcement, filtered to the enforcement subject).
+            - name: NATS_URL
+              value: "nats://nats.default.svc.cluster.local:4222"
             - name: WORKFLOW_URL
               value: "http://workflow.default.svc.cluster.local:3006"
             - name: SELF_URL

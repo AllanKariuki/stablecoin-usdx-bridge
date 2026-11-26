@@ -38,6 +38,11 @@ const (
 	// roleWalletStatus is services/kyc's and services/compliance's role:
 	// list a party's wallets and freeze/thaw them.
 	roleWalletStatus = "ledger.wallet-status"
+	// roleEnforcement is services/compliance's H6 role: submit a maker-checked
+	// enforcement action (BLACKLIST/UNBLACKLIST/PAUSE/UNPAUSE) on chain.
+	// Nobody else holds it — the route submits transactions with the relayer's
+	// keys, and the only caller it exists for is an approved compliance action.
+	roleEnforcement = "ledger.enforcement"
 	// roleReservesCustodian is services/rms' role: post custodian snapshots
 	// and read the reserve status it reports against.
 	roleReservesCustodian = "ledger.reserves.custodian"
@@ -125,6 +130,12 @@ var routeTable = authzTable{
 	compile("GET", "/wallets/:walletId", roleUserProxy),
 	compile("GET", "/wallets/:walletId/statement", roleUserProxy, roleReportsRead),
 	compile("POST", "/wallets/:walletId/status", roleWalletStatus, roleUserProxy),
+
+	// Chain enforcement (H6): the only routes that submit with compliance
+	// authority, and the only ones that role exists for. The GET is the
+	// stored-state poll for a submitted reference.
+	compile("POST", "/chain/enforcement", roleEnforcement),
+	compile("GET", "/chain/enforcement/:reference", roleEnforcement),
 
 	// Money movement. Every write goes through h.idempotent.
 	compile("POST", "/deposits", roleSettlement, roleUserProxy),
