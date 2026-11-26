@@ -2,7 +2,7 @@ import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { PlatformException } from '@damp/nest-platform';
 import { CoreLedgerClient, LedgerQuote } from '../core-ledger/core-ledger.client';
 import { EXPOSURE_GUARD, ExposureGuard } from '../exposure/exposure-guard';
-import { convertAmount, decimalsFor, formatRate, fromScaled, isQuotable, toScaled } from '../money/rate';
+import { convertAmount, decimalsFor, formatRate, fromScaled, isQuotable, minimalFromAmount, toScaled } from '../money/rate';
 import { PairsRepository } from '../pairs/pairs.repository';
 import { Aggregator, PricingRateError, RateResult } from '../rates/aggregator';
 
@@ -11,12 +11,22 @@ export interface QuoteRequest {
   to: string;
   amount: string;
   partyId: string;
+  /**
+   * Which side of the conversion `amount` fixes. FROM (the default): the
+   * payer sends `amount` of `from`. TO: the payee must net `amount` of `to`
+   * — an invoice amount, say — and pricing solves for the `from` amount the
+   * quote is pinned to.
+   */
+  amountSide?: 'FROM' | 'TO';
 }
 
 export interface QuoteResponse {
   quote_id: string;
   from: string;
   to: string;
+  /** Which side was requested, echoed so a TO-side caller knows `amount`
+   * was solved for rather than taken from the request. */
+  amount_side: 'FROM' | 'TO';
   amount: string;
   rate: string;
   spread_bps: number;
@@ -30,6 +40,14 @@ export interface QuoteResponse {
 /**
  * The quote flow, end to end: validate, price, bound the exposure, mint
  * the quote in core-ledger, record it here.
+ *
+ * `amount` fixes one side of the conversion. FROM quotes (the default) take
+ * it as the payer's `from` amount outright; TO quotes take it as the net the
+ * payee must receive in `to` and solve for the smallest `from` amount that
+ * nets at least that — which is what an invoice payment needs, since the
+ * invoice is fixed in the payee's currency. The solved amount then flows
+ * through the pipeline exactly as a FROM-side amount would: it is the
+ * notional the exposure guard sees and the amount the ledger pins.
  *
  * The order is reserve-first. The exposure guard writes a RESERVED row —
  * counted against the party's outstanding cap — before the ledger is
@@ -51,6 +69,14 @@ export class QuotesService {
   async create(input: QuoteRequest): Promise<QuoteResponse> {
     const from = input.from.toUpperCase();
     const to = input.to.toUpperCase();
+    const amountSide = (input.amountSide ?? 'FROM').toUpperCase() as 'FROM' | 'TO';
+    if (amountSide !== 'FROM' && amountSide !== 'TO') {
+      throw new PlatformException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        'INVALID_AMOUNT_SIDE',
+        `amount_side must be FROM or TO, not ${input.amountSide}`,
+      );
+    }
 
     // USD-X must never be quoted — it is issued 1:1 against USD, the ledger
     // rejects any USD-X pair with USDX_USES_ISSUANCE, and pricing refuses
@@ -70,20 +96,24 @@ export class QuotesService {
     }
 
     const fromDecimals = decimalsFor(from);
+    const toDecimals = decimalsFor(to);
+    // The side the request amount is denominated in: FROM quotes price what
+    // the payer sends, TO quotes net what the payee must receive.
+    const amountDecimals = amountSide === 'FROM' ? fromDecimals : toDecimals;
+    const amountCurrency = amountSide === 'FROM' ? from : to;
     let amountScaled: bigint;
     try {
-      amountScaled = toScaled(input.amount, fromDecimals);
+      amountScaled = toScaled(input.amount, amountDecimals);
     } catch (err) {
       throw new PlatformException(
         HttpStatus.UNPROCESSABLE_ENTITY,
         'INVALID_AMOUNT',
-        `${input.amount} is not a ${from} amount: ${err instanceof Error ? err.message : 'invalid decimal'}`,
+        `${input.amount} is not a ${amountCurrency} amount: ${err instanceof Error ? err.message : 'invalid decimal'}`,
       );
     }
     if (amountScaled <= 0n) {
       throw new PlatformException(HttpStatus.UNPROCESSABLE_ENTITY, 'INVALID_AMOUNT', 'amount must be greater than zero');
     }
-    const amount = fromScaled(amountScaled, fromDecimals);
 
     // A party pin is what makes the exposure guard's per-party cap real;
     // an unpinned quote could be consumed by anyone inside its TTL.
@@ -101,6 +131,15 @@ export class QuotesService {
     }
 
     const { rate, sources } = this.rate(from, to);
+
+    if (amountSide === 'TO') {
+      // Solve for the smallest from_amount whose conversion nets at least the
+      // requested target. Everything downstream — the notional, the exposure
+      // reservation, the ledger pin — keys off the solved amount, exactly as
+      // it would for a FROM-side quote of that size.
+      amountScaled = minimalFromAmount(amountScaled, rate, fromDecimals, toDecimals, pair.spreadBps);
+    }
+    const amount = fromScaled(amountScaled, fromDecimals);
 
     const notionalUsd = this.notionalUsdOf(from, amountScaled, fromDecimals);
     // Reserve-first: the guard counts this quote against the party's
@@ -143,13 +182,13 @@ export class QuotesService {
     // The numbers the caller sees are the exact numbers the ledger will
     // book: the same Convert() arithmetic, so a preview can never disagree
     // with the journal by a rounding residue.
-    const toDecimals = decimalsFor(to);
     const conversion = convertAmount(amountScaled, rate, fromDecimals, toDecimals, pair.spreadBps);
 
     return {
       quote_id: quote.id,
       from,
       to,
+      amount_side: amountSide,
       amount,
       rate: formatRate(rate),
       spread_bps: pair.spreadBps,

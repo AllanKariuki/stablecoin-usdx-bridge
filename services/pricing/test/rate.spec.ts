@@ -4,6 +4,7 @@ import {
   formatRate,
   fromScaled,
   inverseRate,
+  minimalFromAmount,
   mulRate,
   parseRate,
   RATE_SCALE,
@@ -130,5 +131,69 @@ describe('convertAmount — core-ledger Convert() parity (fx_test.go)', () => {
     const conv = convertAmount(100n, parseRate('2'), 2, 2, -10);
     expect(conv.fee).toBe(0n);
     expect(conv.net).toBe(conv.gross);
+  });
+});
+
+describe('minimalFromAmount — TO-side quoting', () => {
+  /**
+   * The invariants every case asserts: the solved amount nets at least the
+   * target (the payee is never short), one unit less does not (so it is
+   * minimal — convertAmount is monotone in the amount, the fee floor's
+   * increment never exceeding the gross floor's), and the answer is positive.
+   */
+  function assertMinimal(args: {
+    target: bigint;
+    rate: string;
+    fromDecimals: number;
+    toDecimals: number;
+    spreadBps: number;
+    expect?: bigint;
+  }): void {
+    const rate = parseRate(args.rate);
+    const found = minimalFromAmount(args.target, rate, args.fromDecimals, args.toDecimals, args.spreadBps);
+    expect(found).toBeGreaterThan(0n);
+    expect(convertAmount(found, rate, args.fromDecimals, args.toDecimals, args.spreadBps).net).toBeGreaterThanOrEqual(
+      args.target,
+    );
+    expect(convertAmount(found - 1n, rate, args.fromDecimals, args.toDecimals, args.spreadBps).net).toBeLessThan(
+      args.target,
+    );
+    if (args.expect !== undefined) expect(found).toBe(args.expect);
+  }
+
+  it('solves BTC 8dp against USD 2dp', () => {
+    // 1 BTC = 100000 USD at 100 bps, target 990.00 USD. The gross truncation
+    // makes a flat region: every satoshi from 999990 up nets the same 990.00,
+    // so the minimum sits inside it, a full 10 sats below the exact bound.
+    assertMinimal({ target: 99000n, rate: '100000', fromDecimals: 8, toDecimals: 2, spreadBps: 100, expect: 999990n });
+  });
+
+  it('solves KES 2dp against USD 2dp (the ledger fx_test rate)', () => {
+    // 13000000.00 KES at 0.007692307692307692, 50 bps nets 995.00 USD. The
+    // minimum that still nets 995.00 sits below the estimate inside the
+    // gross truncation's flat region.
+    assertMinimal({ target: 99500n, rate: '0.007692307692307692', fromDecimals: 2, toDecimals: 2, spreadBps: 50 });
+  });
+
+  it('solves ETH 18dp against USD 2dp', () => {
+    // 1 ETH = 3500 USD at 25 bps, target the fx_test net of one whole ETH.
+    assertMinimal({ target: 349125n, rate: '3500', fromDecimals: 18, toDecimals: 2, spreadBps: 25 });
+  });
+
+  it('solves USD 2dp against KES 2dp', () => {
+    // 129.50 KES per USD at 100 bps, target 1000.00 KES net: 7.80 USD is the
+    // smallest amount that covers it (7.79 nets 998.72).
+    assertMinimal({ target: 100000n, rate: '129.5', fromDecimals: 2, toDecimals: 2, spreadBps: 100, expect: 780n });
+  });
+
+  it('solves across a tiny rate without inventing a fractional unit', () => {
+    // 1 USD = 0.00001 BTC (100 satoshi) at 10 bps, target 1000 satoshi: the
+    // solution must stay in satoshi and net at least the target.
+    assertMinimal({ target: 1000n, rate: '0.00001', fromDecimals: 2, toDecimals: 8, spreadBps: 10 });
+  });
+
+  it('treats a non-positive spread as no spread when solving', () => {
+    // 2 KES per USD, no fee: target 3.00 KES is met exactly by 1.50 USD.
+    assertMinimal({ target: 300n, rate: '2', fromDecimals: 2, toDecimals: 2, spreadBps: 0, expect: 150n });
   });
 });

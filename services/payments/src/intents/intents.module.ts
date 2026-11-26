@@ -1,6 +1,7 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import { KycGate } from '@damp/nest-platform';
 import { StubRail } from '../rails/stub.rail';
+import { ConversionPoller } from './conversion.poller';
 import { IntentsController } from './intents.controller';
 import { IntentsRepository } from './intents.repository';
 import { IntentsService } from './intents.service';
@@ -8,7 +9,7 @@ import { SettlementService } from './settlement.service';
 
 @Module({
   controllers: [IntentsController],
-  providers: [IntentsRepository, IntentsService, SettlementService, KycGate],
+  providers: [IntentsRepository, IntentsService, SettlementService, ConversionPoller, KycGate],
   exports: [IntentsRepository, IntentsService, SettlementService],
 })
 export class IntentsModule implements OnModuleInit {

@@ -137,7 +137,10 @@ var routeTable = authzTable{
 	// Wallets
 	compile("POST", "/wallets", roleWalletProvision, roleSettlement, roleUserProxy),
 	compile("GET", "/users/:userId/wallets", roleWalletStatus, roleUserProxy),
-	compile("GET", "/wallets/:walletId", roleUserProxy),
+	// Settlement reads a single wallet to verify the source wallet a payment
+	// will debit (its owner is the payer, its currency the source currency,
+	// its status ACTIVE) before any movement is asked for (slice 4a).
+	compile("GET", "/wallets/:walletId", roleSettlement, roleUserProxy),
 	compile("PATCH", "/wallets/:walletId", roleUserProxy),
 	compile("GET", "/wallets/:walletId/statement", roleUserProxy, roleReportsRead),
 	compile("POST", "/wallets/:walletId/status", roleWalletStatus, roleUserProxy),
@@ -156,7 +159,10 @@ var routeTable = authzTable{
 	compile("POST", "/fx/conversions", roleUserProxy),
 	compile("POST", "/fx/payments", roleSettlement),
 	compile("POST", "/issuances", roleUserProxy),
-	compile("POST", "/redemptions", roleUserProxy),
+	// Settlement starts redemptions too: a payment funded from a USD-X wallet
+	// is a two-step (redeem into the payer's USD wallet, then settle the fiat
+	// leg), and payments drives the first step itself.
+	compile("POST", "/redemptions", roleSettlement, roleUserProxy),
 	// confirmRedemption is operator break-glass (see handlers.go); it stays
 	// behind user-proxy, i.e. bff + auth-proxy's ledger:admin.
 	compile("POST", "/redemptions/:transactionId/confirm", roleUserProxy),
@@ -200,8 +206,9 @@ var routeTable = authzTable{
 	compile("GET", "/treasury/positions", roleReservesCustodian, roleUserProxy, roleReportsRead),
 	compile("POST", "/treasury/rebalances", roleTreasury),
 
-	// Bridge saga state
-	compile("GET", "/transfers/:correlationId", roleUserProxy),
+	// Bridge saga state. Settlement polls the redemption saga a payment
+	// depends on — the USD fiat leg posts only once the burn is final.
+	compile("GET", "/transfers/:correlationId", roleSettlement, roleUserProxy),
 	// Dead letters: operator surface via bff only.
 	compile("GET", "/sagas/dead-letters", roleUserProxy),
 	compile("POST", "/sagas/dead-letters/:correlationId/resolve", roleUserProxy),

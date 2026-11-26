@@ -167,3 +167,51 @@ export function convertAmount(
   const fee = spreadBps > 0 ? (gross * BigInt(spreadBps)) / 10000n : 0n;
   return { gross, fee, net: gross - fee };
 }
+
+/**
+ * minimalFromAmount solves TO-side quoting: given the net the payee must
+ * receive (`target`, in `to`'s smallest units), the smallest `from` amount
+ * (in `from`'s smallest units) whose conversion nets at least that.
+ *
+ * The estimate starts at the exact real-valued bound — a ceil division on
+ * net's linear coefficient — and steps up while it still nets below the
+ * target (the two truncations inside convertAmount cost at most one `to`
+ * unit, so this is a step or two at most). The minimum then lies somewhere
+ * in [1, estimate]: net is monotone nondecreasing in the amount — the fee
+ * floor's increment never exceeds the gross floor's — so a binary search
+ * finds it in logarithmic steps. A linear walk would not do: for a
+ * wide-scale pair (ETH 18dp to USD 2dp) the gross truncation is flat over
+ * ~10^12 wei at a time.
+ */
+export function minimalFromAmount(
+  target: bigint,
+  rate: bigint,
+  fromDecimals: number,
+  toDecimals: number,
+  spreadBps: number,
+): bigint {
+  // net = amount * rate * (10000 - bps) * 10^toDecimals / (10^RATE_SCALE *
+  // 10^fromDecimals * 10000), truncating twice; the estimate is the exact
+  // bound of that expression, so a non-positive spread means no fee at all.
+  const effectiveBps = spreadBps > 0 ? BigInt(10000 - spreadBps) : 10000n;
+  const numerator = target * 10n ** BigInt(RATE_SCALE) * 10n ** BigInt(fromDecimals) * 10000n;
+  const denominator = rate * effectiveBps * 10n ** BigInt(toDecimals);
+  let hi = (numerator + denominator - 1n) / denominator;
+
+  // Correct for the truncation residue: at most a couple of steps up.
+  while (convertAmount(hi, rate, fromDecimals, toDecimals, spreadBps).net < target) {
+    hi += 1n;
+  }
+  // Binary search the smallest amount in [1, hi] that still covers the
+  // target, on net's monotonicity.
+  let lo = 1n;
+  while (lo < hi) {
+    const mid = (lo + hi) / 2n;
+    if (convertAmount(mid, rate, fromDecimals, toDecimals, spreadBps).net >= target) {
+      hi = mid;
+    } else {
+      lo = mid + 1n;
+    }
+  }
+  return lo;
+}

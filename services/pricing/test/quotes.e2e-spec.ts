@@ -204,6 +204,7 @@ describe('pricing quotes endpoint (e2e, FakeIssuer, overridden ledger/guard/db)'
         quote_id: 'q-1',
         from: 'BTC',
         to: 'USD',
+        amount_side: 'FROM',
         // Normalized to the currency's own scale — the same padding the
         // ledger echoes back from FormatDecimal.
         amount: '0.01000000',
@@ -235,6 +236,63 @@ describe('pricing quotes endpoint (e2e, FakeIssuer, overridden ledger/guard/db)'
       // ...and the reservation was flipped to ISSUED with the ledger's id
       // and expiry, so the outstanding cap counts it going forward.
       expect(issueCalls).toEqual([{ quoteId: 'q-1', expiresAt: expect.any(String) }]);
+    });
+
+    it('solves a TO-side quote: the payee nets the requested amount and the minted pin is the solved from amount', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/quotes')
+        .set('Authorization', `Bearer ${await token(['pricing.quote'], 'svc-payments')}`)
+        .send({ from: 'USD', to: 'KES', amount: '1000.00', amount_side: 'TO', party_id: 'party_1' })
+        .expect(201);
+
+      // 129.50 KES/USD at 100 bps: 7.80 USD is the smallest amount that nets
+      // 1000.00 KES (7.79 nets 998.72) — the response's amount is the solved
+      // from amount, and net is at least the requested target.
+      expect(res.body).toMatchObject({
+        quote_id: 'q-1',
+        from: 'USD',
+        to: 'KES',
+        amount_side: 'TO',
+        amount: '7.80',
+        gross: '1010.10',
+        fee: '10.10',
+        net: '1000.00',
+      });
+
+      // The ledger pin and the exposure guard both saw the solved amount, not
+      // the requested target — the quote is pinned to what the payer sends.
+      expect(ledgerCalls[0]).toEqual({
+        baseCcy: 'USD',
+        quoteCcy: 'KES',
+        rate: '129.5',
+        spreadBps: 100,
+        source: 'pricing:stub',
+        ttlSeconds: 30,
+        fromAmount: '7.80',
+        partyId: 'party_1',
+      });
+      expect(guardChecks).toEqual([{ notionalUsd: '7.80', partyId: 'party_1' }]);
+      expect(issueCalls).toEqual([{ quoteId: 'q-1', expiresAt: expect.any(String) }]);
+    });
+
+    it('refuses a TO-side amount with more precision than the target currency has', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/quotes')
+        .set('Authorization', `Bearer ${await token(['pricing.quote'])}`)
+        .send({ from: 'USD', to: 'KES', amount: '1000.001', amount_side: 'TO', party_id: 'party_1' }) // KES has 2dp
+        .expect(422);
+      expect(res.body.code).toBe('INVALID_AMOUNT');
+      expect(ledgerCalls).toHaveLength(0);
+    });
+
+    it('refuses an amount_side that is neither FROM nor TO', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/quotes')
+        .set('Authorization', `Bearer ${await token(['pricing.quote'])}`)
+        .send({ from: 'USD', to: 'KES', amount: '1000.00', amount_side: 'BOTH', party_id: 'party_1' })
+        .expect(422);
+      expect(res.body.code).toBe('INVALID_AMOUNT_SIDE');
+      expect(ledgerCalls).toHaveLength(0);
     });
 
     it('refuses USD-X with USDX_USES_ISSUANCE before touching the ledger', async () => {

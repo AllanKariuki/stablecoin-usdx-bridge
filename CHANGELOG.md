@@ -3,6 +3,83 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-26 — Pay from any wallet: cross-asset payments (slice 4a)
+
+### Added — TO-side quotes (services/pricing)
+
+- `POST /quotes` accepts optional `amount_side: "FROM" | "TO"` (default
+  FROM). A TO-side quote fixes the **net the payee must receive** — the
+  shape an invoice payment needs, since the invoice is fixed in the payee's
+  currency — and pricing solves for the smallest `from` amount whose
+  conversion nets at least that: a ceil-division estimate on net's exact
+  linear bound, stepped up over `convertAmount`'s two truncations and then
+  minimized by binary search (a linear walk would not terminate practically
+  on a wide-scale pair — the ETH→USD gross truncation is flat over ~10^12
+  wei at a time). The minted quote is pinned to the solved amount exactly as
+  a FROM-side quote is, and the exposure guard sees the same solved notional.
+  The response gains `amount_side` and returns both `amount` (the solved
+  `from` amount) and `net`. Minimality and net-≥-target are unit-tested
+  across BTC 8dp, ETH 18dp and KES 2dp.
+
+### Added — payments from any wallet (services/payments)
+
+- New migration `004_cross_asset_intents.sql`: `payment_intents` gains
+  `source_wallet_id`, `source_currency`, `quote_id`, `source_amount`,
+  `conversion_ref` (the redemption saga's correlation id) and
+  `conversion_next_poll_at` (the poller's lease); the status vocabulary gains
+  `CONVERTING`. `currency`/`amount` keep their meaning — what the payee
+  receives for a TRANSFER, what moves on the rail otherwise.
+- `POST /payment-intents` (and `POST /invoices/:id/pay`, which passes the
+  same fields through) accepts optional `sourceWalletId`, `sourceAmount` and
+  `quoteId`. The wallet is fetched from core-ledger (`GET /wallets/:id`) and
+  must belong to the payer and be ACTIVE; a same-currency wallet simply
+  substitutes for the ensured one (so a payer can pick which USD-X wallet,
+  ETH or Solana, to pay from). Cross-currency is a TRANSFER to an in-platform
+  WALLET beneficiary only — DEPOSIT/WITHDRAWAL rails stay single-currency
+  (422 `CROSS_CURRENCY_RAIL_UNSUPPORTED`) — and requires the quote and its
+  pinned `source_amount` (422 `QUOTE_REQUIRED` / `SOURCE_AMOUNT_REQUIRED`).
+  Settlement books it through core-ledger's `POST /fx/payments` under the
+  intent-derived idempotency key; terminal quote refusals
+  (`QUOTE_EXPIRED`, `QUOTE_ALREADY_USED`, `QUOTE_AMOUNT_MISMATCH`,
+  `QUOTE_PARTY_MISMATCH`, `INSUFFICIENT_FUNDS`) fail the intent with the
+  ledger's code.
+- **USD-X source is a two-step.** USD-X never converts through FX, so the
+  intent is created `CONVERTING` and a redemption posts at creation
+  (`POST /redemptions`, idempotency key `payments:<intent>:redeem`) into the
+  payer's USD wallet; a `ConversionPoller` (outbox-relay claim shape:
+  `FOR UPDATE SKIP LOCKED` lease, every replica can run one) polls
+  `GET /transfers/:correlationId` and, once the saga is `COMPLETED`, settles
+  the fiat leg — a plain transfer for a USD target (the redemption is 1:1 at
+  the default zero redemption fee), an FX payment against the stored USD
+  quote otherwise. If the saga fails, the intent fails with the saga's
+  reason; the ledger reverses the redemption itself while it is PENDING
+  (the USD-X in suspense returns to the payer's wallet). A crash between the
+  intent and the redemption is recovered by the poller re-posting under the
+  same idempotency key, which resumes the same saga.
+- **Known limitation — quotes can expire during the burn.** On-chain
+  finality is slower than a quote TTL: if the USD→target quote expires while
+  the burn confirms, the intent fails with `QUOTE_EXPIRED_DURING_CONVERSION`
+  and the redeemed USD remains in the payer's USD wallet (it is their money;
+  it is never spent against an unpinnable rate).
+- Invoice pay cross-currency checks the booked net after settlement: the net
+  is read from the FX payment's transaction metadata (`metadata.net`, in the
+  target currency's smallest units, now rendered by core-ledger's
+  `renderTransaction`) and compared to the invoice amount; a shortfall — or a
+  response without a well-formed net — is a bug, and it fails loudly — the
+  intent stays un-settled for an operator rather than marking an underpaid
+  invoice PAID.
+- The core-ledger client gains `getWallet`, `payConverted`, `redeem` and
+  `getTransfer` (service-token auth, idempotency headers, `LedgerError`
+  mapping, 404→null on reads), and `LedgerError` now surfaces the envelope's
+  error `code`.
+
+### Changed — core-ledger auth (no flow changes)
+
+- `ledger.settlement` (svc-payments) now also holds `GET /wallets/:walletId`
+  (to verify a source wallet's owner/currency/status), `POST /redemptions`
+  (to start the USD-X leg) and `GET /transfers/:correlationId` (to poll the
+  burn saga). Everything else the role can and cannot touch is unchanged.
+
 ## 2026-11-26 — Ops Console: crypto exposure, rebalances and pricing (slice 3b)
 
 ### Added — the treasury/exposure and pricing surfaces reach the Ops Console

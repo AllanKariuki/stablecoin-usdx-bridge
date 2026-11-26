@@ -212,6 +212,32 @@ func TestAuthEachRoleAuthorizesExactlyItsRoutes(t *testing.T) {
 	}
 }
 
+// Payments' settlement role gained the three routes its cross-asset payment
+// flow (slice 4a) drives: the source-wallet read it verifies a payment
+// against, the redemption a USD-X-funded payment starts, and the saga poll
+// that waits for the burn. Everything else stays out of reach — the role
+// cannot mint a quote or post an issuance, even though those are the
+// redemption's sibling flows.
+func TestAuthSettlementRoleOpensSourceWalletAndRedemptionSurface(t *testing.T) {
+	app, issuer := newAuthTestApp(t)
+
+	settlement := issuer.SignToken(t, testAuthAudience, oidctest.Claims{
+		Azp:         "svc-payments",
+		ClientRoles: map[string][]string{authClient: {roleSettlement}},
+	})
+	for _, path := range []string{"/wallets/wal_1", "/transfers/corr_1"} {
+		resp := do(app, http.MethodGet, path, settlement)
+		expectStatus(t, resp, fiber.StatusOK)
+	}
+	resp := do(app, http.MethodPost, "/redemptions", settlement)
+	expectStatus(t, resp, fiber.StatusOK)
+
+	resp = do(app, http.MethodPost, "/fx/quotes", settlement)
+	expectStatus(t, resp, fiber.StatusForbidden)
+	resp = do(app, http.MethodPost, "/issuances", settlement)
+	expectStatus(t, resp, fiber.StatusForbidden)
+}
+
 // Quote creation is the pricing service's alone: the user-facing role is
 // refused even though it can call every other fx route — a rate minted by
 // the wrong caller is a conversion nobody should have been able to price.

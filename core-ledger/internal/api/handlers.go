@@ -1349,6 +1349,12 @@ func (h *Handlers) renderWallet(c *fiber.Ctx, w *ledger.Wallet) fiber.Map {
 	return out
 }
 
+// renderTransaction renders a posted transaction. `metadata` is passed through
+// as stored: it is the transaction's own record of the numbers behind the
+// postings — an FX payment's gross/fee/net in the target currency's smallest
+// units, a redemption's correlation id — and a caller that needs to read one
+// back (services/payments checking a converted invoice was covered) has no
+// other way to see it.
 func (h *Handlers) renderTransaction(c *fiber.Ctx, tx *ledger.Transaction) fiber.Map {
 	decimals := map[string]int32{}
 	lines := make([]fiber.Map, 0, len(tx.Entries))
@@ -1370,6 +1376,12 @@ func (h *Handlers) renderTransaction(c *fiber.Ctx, tx *ledger.Transaction) fiber
 			"description":     e.Description,
 		})
 	}
+	// A nil metadata column renders as {} rather than null, so a client can
+	// treat the field as an object unconditionally.
+	metadata := tx.Metadata
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
 	return fiber.Map{
 		"id":           tx.ID,
 		"type":         tx.Type,
@@ -1379,6 +1391,7 @@ func (h *Handlers) renderTransaction(c *fiber.Ctx, tx *ledger.Transaction) fiber
 		"description":  tx.Description,
 		"external_ref": tx.ExternalRef,
 		"created_at":   tx.CreatedAt.UTC().Format(time.RFC3339),
+		"metadata":     metadata,
 		"entries":      lines,
 	}
 }
