@@ -90,6 +90,26 @@ func UsableQuote(q *FxQuote, from, to string, at time.Time) error {
 	return nil
 }
 
+// UsableForRequest enforces the two pinning constraints a quote may carry, on
+// top of UsableQuote's pair/expiry checks. The pricing service mints a quote
+// for a specific amount and/or a specific party so its exposure is bounded to
+// exactly one conversion; the ledger refuses to consume the quote on anything
+// else, which is what makes that bound real rather than a convention both
+// callers have to remember.
+func (q *FxQuote) UsableForRequest(amount *big.Int, fromOwner string, from Currency) error {
+	if q.FromAmount != nil && amount.Cmp(q.FromAmount) != 0 {
+		return postErr("QUOTE_AMOUNT_MISMATCH",
+			"quote %s is for %s %s, not %s %s",
+			q.ID, FormatDecimal(q.FromAmount, from.Decimals), from.Code,
+			FormatDecimal(amount, from.Decimals), from.Code)
+	}
+	if q.PartyID != nil && *q.PartyID != "" && fromOwner != *q.PartyID {
+		return postErr("QUOTE_PARTY_MISMATCH",
+			"quote %s was minted for party %s, not %s", q.ID, *q.PartyID, fromOwner)
+	}
+	return nil
+}
+
 // PegQuote is the implicit USD <-> USD-X rate. USD-X is issued 1:1 against USD
 // by definition, so issuance and redemption don't consult a rate provider —
 // but they still go through Convert, because the two currencies have different
