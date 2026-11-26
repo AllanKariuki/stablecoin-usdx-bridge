@@ -65,6 +65,7 @@ func main() {
 		SignerCAPath:             cfg.SignerCAPath,
 		SignerEthKeyID:           cfg.SignerEthKeyID,
 		SignerSolKeyID:           cfg.SignerSolKeyID,
+		FinalityLevel:            cfg.ChainFinality,
 	})
 	if err != nil {
 		logger.Error("connecting to chains", slog.Any("error", err))

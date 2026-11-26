@@ -137,6 +137,9 @@ var routeTable = authzTable{
 	// confirmRedemption is operator break-glass (see handlers.go); it stays
 	// behind user-proxy, i.e. bff + auth-proxy's ledger:admin.
 	compile("POST", "/redemptions/:transactionId/confirm", roleUserProxy),
+	// The break-glass proposal's status, polled by the ops console and the
+	// e2e harness (H4).
+	compile("GET", "/redemptions/:transactionId/break-glass", roleUserProxy),
 	compile("POST", "/bridges", roleUserProxy),
 
 	// Journal / ledger
@@ -183,6 +186,21 @@ var exemptPaths = map[string]bool{
 	"/metrics": true,
 }
 
+// hmacPaths are exempt from the JWT check for the opposite reason from
+// exemptPaths: they are still authenticated, but by a workflow HMAC instead
+// of a service token. It is an explicit set — one entry per path, added when
+// a handler exists to enforce the HMAC — never a blanket exemption, because
+// a path that slips through both checks would be an anonymous route into a
+// service that holds the money.
+//
+// This is core-ledger's counterpart of H3's @HmacAuthenticated on the Node
+// services: services/workflow signs its decision callbacks with
+// WORKFLOW_CALLBACK_SECRET, and the handler refuses an unsigned or
+// mis-signed call with 401.
+var hmacPaths = map[string]bool{
+	"/internal/approvals/callback": true,
+}
+
 // AuthMiddleware verifies the bearer token, checks the route table, and
 // stores the verified azp for actor(). Register it before the handlers
 // (and before the audit middleware, so a rejected call never reaches a
@@ -193,6 +211,11 @@ var exemptPaths = map[string]bool{
 func AuthMiddleware(verifier *oidcverify.Verifier) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if exemptPaths[c.Path()] {
+			return c.Next()
+		}
+		// HMAC-authenticated routes skip the JWT check here; the handler
+		// itself enforces the HMAC (see hmacPaths).
+		if hmacPaths[c.Path()] {
 			return c.Next()
 		}
 

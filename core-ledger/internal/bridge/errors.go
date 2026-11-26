@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/chainclients/signerclient"
@@ -65,6 +66,37 @@ const (
 // Retrying would only burn the attempt budget, so it is terminal. Both chain
 // clients wrap it so the decision does not depend on a chain's error wording.
 var ErrTxFailedOnChain = errors.New("transaction failed on chain")
+
+// The typed outcomes of a break-glass burn verification (H4). A maker-checker
+// approval now has to be backed by proof on chain before fiat is released, and
+// these are what let the callback handler record *why* an approved burn could
+// not be settled — a distinct answer for every way the proof can fail, rather
+// than one opaque "verification failed".
+var (
+	// ErrBurnNotFound means the chain has no such transaction — or, on
+	// Ethereum, a transaction with no BridgeBurned event from the USDX proxy.
+	ErrBurnNotFound = errors.New("burn not found on chain")
+
+	// ErrBurnReverted means the transaction landed and failed, so the burn it
+	// claims can never have happened.
+	ErrBurnReverted = errors.New("the burn transaction reverted on chain")
+
+	// ErrBurnNotFinal means the transaction is on chain and included, and has
+	// simply not reached the configured finality depth yet.
+	ErrBurnNotFinal = errors.New("the burn transaction is not final yet")
+)
+
+// ErrBurnMismatch means a burn was found on the right contract or program, and
+// it is not the burn that was approved. Field names which of the verified
+// values disagreed: "contract"/"program", "from", "amount", "correlation_id"
+// or "count".
+type ErrBurnMismatch struct {
+	Field string
+}
+
+func (e *ErrBurnMismatch) Error() string {
+	return fmt.Sprintf("burn mismatch: %s", e.Field)
+}
 
 // Classify inspects a chain client error.
 //

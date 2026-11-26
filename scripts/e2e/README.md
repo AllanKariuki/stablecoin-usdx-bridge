@@ -30,14 +30,20 @@ make e2e-fast                                # same as --fast
 ## Flags
 
 - `--fast` — skip the on-chain steps (`issuance`, `bridge`, `redeem-eth`,
-  `redeem-sol`) and the chain-supply reads.
+  `redeem-sol`) and the chain-supply reads. The `break-glass` step runs in
+  both modes but self-skips in `--fast`: it needs a redemption whose saga is
+  in flight, creating one is on-chain money, and the gateway exposes no list
+  of pending redemptions to pick one from (the dead-letter queue is not
+  gateway-reachable).
 - `--only=<step,...>` — run only the named steps, in order
   (`wallets, deposit, p2p, invoice, withdrawal, issuance, bridge, redeem-eth,
-  redeem-sol, negatives, reconcile`). The redeem steps look their wallets and
-  balances up from the API, so `--only=redeem-eth` runs standalone; it fails
-  with a clear message when the ETH USD-X balance is below the redemption
-  amount. `redeem-sol` is reported SKIP (not FAIL) when the bridge step did not
-  complete and the customer therefore holds no Solana USD-X.
+  redeem-sol, break-glass, negatives, reconcile`). The redeem steps look their
+  wallets and balances up from the API, so `--only=redeem-eth` runs standalone;
+  it fails with a clear message when the ETH USD-X balance is below the
+  redemption amount. `redeem-sol` is reported SKIP (not FAIL) when the bridge
+  step did not complete and the customer therefore holds no Solana USD-X.
+  `break-glass` runs standalone in full mode when the customer holds ≥ 5.00
+  USD-X on Ethereum; it self-skips otherwise.
 - `--timeout-min=<N>` — saga poll timeout in minutes (default 40).
 
 ## What it checks
@@ -56,9 +62,17 @@ make e2e-fast                                # same as --fast
 9. **redeem-sol** *(full)* — 10 USD-X redeemed on Solana; supply -10, fiat
    +10. Skipped with a reason when the bridge step did not complete (nothing
    to burn on Solana).
-10. **negatives** — idempotent replay, overdraw refusal, cross-user/operator-only
+10. **break-glass** *(full; self-skips in --fast)* — the H4 maker-checker
+    control, on the negative path only: a fresh 5.00 redemption is proposed
+    for break-glass with a random fake hash by treasury (202 PENDING_APPROVAL,
+    nothing settles); treasury cannot approve its own request (403); admin
+    approves; the burn cannot verify, the status row reaches
+    VERIFICATION_FAILED, the saga is not settled and no fiat moved. The
+    worker still settles that redemption the ordinary way afterwards (a real
+    burn, which is the happy path).
+11. **negatives** — idempotent replay, overdraw refusal, cross-user/operator-only
     403s, 401s for missing/garbage tokens, 400 for a missing Idempotency-Key.
-11. **reconcile** — runs the reconcile job once at the start and once at the
+12. **reconcile** — runs the reconcile job once at the start and once at the
     end, then asserts Leg A's drift (on-chain supply − (issued − in transit))
     did not change across the run, so the ledger and the chains moved together.
     A pre-existing break is reported as KNOWN, not a failure; Leg B must be ok,

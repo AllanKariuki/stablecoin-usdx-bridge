@@ -85,7 +85,7 @@ func newHarness(t *testing.T) *harness {
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true, ErrorHandler: platform.ErrorHandler})
 	app.Use(AuthMiddleware(verifier))
-	NewHandlers(apiRepo, svc, slog.New(slog.NewTextHandler(io.Discard, nil)), nil).Register(app)
+	NewHandlers(apiRepo, svc, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil, nil, "").Register(app)
 
 	h := &harness{app: app, repo: apiRepo, svc: svc, ctx: ctx,
 		issuer: issuer,

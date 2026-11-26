@@ -3,6 +3,95 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-23 — H4: break-glass redemption needs approval and on-chain proof
+
+### Changed — the break-glass redemption confirm can no longer release fiat on an operator's word (target bar: real money)
+
+- **`POST /redemptions/:id/confirm` no longer settles anything.** It
+  validates the claim (the redemption exists, is a redemption, its saga is
+  not already settled, the hash has the source chain's shape), proposes a
+  maker-checker approval in services/workflow (action
+  `redemption.break_glass`, the policy seeded since P5: one approver,
+  `treasury` or `admin`, initiator excluded), records the proposal in a new
+  `break_glass_requests` table (one PENDING row per redemption, enforced by
+  a partial unique index) and returns `202 {status: PENDING_APPROVAL,
+  approval_request_id}`. workflow unreachable → 502 `WORKFLOW_UNAVAILABLE`,
+  never a wave-through.
+- **The decision callback settles nothing by itself either.**
+  `POST /internal/approvals/callback` is HMAC-authenticated with
+  `WORKFLOW_CALLBACK_SECRET` (the same scheme kyc/compliance verify; the
+  route is a JWT-exempt `hmacPaths` entry in core-ledger's auth boundary,
+  the Go twin of H3's `@HmacAuthenticated`). It binds the callback to the
+  request id the proposal recorded, re-derives the payload digest from the
+  saga as it stands (a Go port of workflow's canonical digest encoding,
+  pinned against the Node side by cross-language test vectors), and only
+  then — on APPROVED — proves the burn on chain before calling the old
+  settlement path. Rejection marks the row REJECTED; a failed proof marks
+  VERIFICATION_FAILED with the typed reason and moves no money. Redelivered
+  callbacks are idempotent.
+- **On-chain burn verification (`VerifyBurn`) on both chain clients.**
+  Ethereum: receipt must exist, have succeeded, be for the USDX proxy, have
+  reached the configured finality depth (the same CHAIN_FINALITY vocabulary
+  the saga's wait uses — checked, not waited for), and carry exactly one
+  `BridgeBurned` with the right source, amount and correlation id. Solana:
+  the transaction read at `finalized` commitment must have succeeded and
+  contain the `bridge_burn` instruction for the configured program, with
+  the amount (u64 LE) and correlation id ([u8;32]) decoded from the same
+  layout `encodeBridgeArgs` writes, and the source token account (index 2
+  of the instruction's accounts) equal to the ATA derived from the source
+  wallet and mint. Typed outcomes in `internal/bridge`: `ErrBurnNotFound`,
+  `ErrBurnReverted`, `ErrBurnNotFinal`, and `ErrBurnMismatch{Field}`
+  ("contract", "from", "amount", "correlation_id", "count"). Both clients
+  also expose `ValidTxHash` so a malformed hash is refused before it is
+  asked to be believed.
+- **`GET /redemptions/:id/break-glass`** returns the proposal's lifecycle
+  row (status, requester, workflow request id, failure reason) for the ops
+  console / e2e harness to poll. Proxied by bff, gated on `ledger:read` at
+  auth-proxy (treasury and admin hold it; customers do not), typed in
+  `@damp/web-shared`'s `ledgerAdminApi` (`breakGlass()`, and
+  `confirmRedemption` now returns the 202 proposal shape).
+- **core-ledger's API server is now an authenticated caller.** New Keycloak
+  client `svc-core-ledger` (client-credentials, `workflow.propose` on the
+  workflow resource client; the worker keeps its separate
+  `svc-core-ledger-worker`), new config `WORKFLOW_URL`,
+  `WORKFLOW_CALLBACK_SECRET`, `CORE_LEDGER_SELF_URL`; the server builds its
+  `internal/serviceauth` client at boot (fatal when unconfigured) and a new
+  `internal/workflowclient` proposes approvals with it. Realm template,
+  `make keycloak-realm` output and `scripts/keycloak-sync.sh` lists all
+  carry the new client; `core-ledger/.env` now names the server's client
+  (stack.sh keeps overriding the worker's two SERVICE_* lines); the k8s
+  server deployment reads its secret from `core-ledger-secrets` key
+  `server-service-client-secret` (the worker keeps `service-client-secret`)
+  and the callback secret from the shared `workflow-callback` secret.
+- **Tests.** Go: VerifyBurn suites for both clients against recorded
+  RPC-shaped fixtures (good / wrong amount / wrong from / wrong correlation
+  / reverted / not final / not found / wrong contract or program); workflow
+  client digest + HMAC vectors pinned against services/workflow's TS suite;
+  handler suite (real Postgres, faked workflow + router) covering propose-
+  and-don't-settle, settled-saga refusal, bad-hash refusal, workflow-down
+  refusal, double-proposal 409, bad HMAC 401, approved+verified settles
+  exactly once, approved+mismatch → VERIFICATION_FAILED with the ledger
+  untouched, rejected, digest-mismatch refusal, unknown-request refusal, and
+  the status route. Node: workflow seed pin for the `redemption.break_glass`
+  policy, bff operations-proxy coverage for the new GET.
+- **e2e harness** (`scripts/e2e/money-flows.mjs`, new `break-glass` step —
+  self-skips in `--fast`, documented in `scripts/e2e/README.md`): full mode
+  creates a fresh 5.00 redemption, treasury proposes break-glass with a
+  random fake hash (202, nothing settles), treasury cannot approve its own
+  request (403), admin approves, the row reaches VERIFICATION_FAILED, the
+  saga stays in flight and the fiat wallet does not move; the worker still
+  settles that redemption the ordinary way afterwards.
+
+### Fixed
+- **core-ledger migrations run under a Postgres advisory lock** (goose
+  provider with a session locker). The server and the saga worker both
+  migrate at boot. The first new migration since they started running side
+  by side (`00008`) had them race the same `CREATE TABLE`, and the worker
+  failed to start. Multiple k8s replicas would have raced the same way.
+- **e2e harness:** a saga poll keeps polling through a transient
+  gateway 502/503/504 instead of treating it as the saga's answer. The
+  break-glass step reads the redemption id from `transaction.id`.
+
 ## 2026-11-23 — H3: internal hops authenticated
 
 ### Added — service-account auth on every internal HTTP hop (target bar: real money)
