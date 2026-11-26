@@ -3,6 +3,47 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-26 — services/pricing: the only issuer of FX quotes
+
+### Added — a pricing service that owns every rate the platform quotes
+
+- `services/pricing` (NestJS, modeled on services/rms): prices
+  USD/EUR/GBP/KES/BTC/ETH/SOL from Coinbase + Kraken tickers and an
+  er-api-shaped fiat feed (or a fixed-rate stub for local/e2e), all in
+  BigInt fixed-point arithmetic at the ledger's 18-decimal rate scale.
+- Aggregation policy: crypto symbols need two fresh sources (median), fiat
+  one; a deviation circuit breaker trips a symbol when any two sources
+  disagree by more than 150bps and refuses to quote until they agree again;
+  cross rates are computed through USD, with inverted legs truncating
+  toward the house.
+- `POST /quotes` mints single-use quotes pinned to one amount and one party
+  in core-ledger via `POST /fx/quotes` under `ledger.pricing`, after an
+  exposure guard enforces the pair's `max_notional_usd` and a per-party cap
+  on *outstanding* (unexpired) quoted notional, so abandoned re-quotes don't
+  use up a user's allowance. The guard reserves first: a per-party advisory
+  lock, the cap check and a `RESERVED` row commit together before the ledger
+  call, and the row then becomes `ISSUED`, or is deleted if the ledger fails.
+  Concurrent requests therefore can't overshoot the cap. Daily and tier spend
+  limits stay with bff and KYC tiers. USD-X is refused with `422 USDX_USES_ISSUANCE`. The
+  response's gross/fee/net use core-ledger's exact `Convert()` arithmetic
+  (unit-tested for parity with `fx_test.go`).
+- `GET /rates`, `GET /pairs`, `PATCH /pairs/:base/:quote` (audited),
+  behind the new `pricing` resource client's roles (`pricing.quote`,
+  `pricing.read`, `pricing.admin`). Own database (`pricing` /
+  `pricing_test`), own migrations, audit outbox relay.
+
+### Changed — wiring
+
+- Keycloak realm template: the `pricing` bearer-only resource client with
+  its roles; the confidential `svc-pricing` service account holding
+  `ledger.pricing` (the role's only holder); svc-bff and svc-payments get
+  pricing.quote/pricing.read, and svc-bff also gets pricing.admin and the
+  user-proxy role for audited pair changes.
+- `scripts/stack.sh` starts pricing on host port 13009 with the stub feed;
+  `infra/postgres/init/07-pricing-database.sql` and CI's database step
+  create its databases; `infra/k8s/pricing-deployment.yaml` deploys it on
+  port 3006 with live feeds.
+
 ## 2026-11-26 — Multi-asset ledger (slice 1 of multi-asset wallets)
 
 ### Added — custodial BTC/ETH/SOL, crypto FX and pay-with-conversion in core-ledger
