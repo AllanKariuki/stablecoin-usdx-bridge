@@ -14,11 +14,15 @@
 #   scripts/stack.sh down --infra   ...and stop the containers too (volumes kept)
 #   scripts/stack.sh status         show what is running, where, and on which port
 #
-# Logs and pid files live in .logs/stack/ (gitignored). Host ports are
-# deliberately remapped out of the 3000-8090 range, which other local stacks
-# commonly hold: core-ledger and the worker listen on 18081/18181, and every
-# host service listens on its SERVICE_TABLE port (13xxx for the Node services,
-# 18xxx for the Go ones).
+# Logs and pid files live in .logs/stack/ (gitignored). A pid file records the
+# pid plus the time that process started, so a pid number the OS later recycles
+# to an unrelated process is never mistaken for ours: `status` does not report
+# it as running, `up` does not skip the service, and `down` never signals it.
+#
+# Host ports are deliberately remapped out of the 3000-8090 range, which other
+# local stacks commonly hold: core-ledger and the worker listen on 18081/18181,
+# and every host service listens on its SERVICE_TABLE port (13xxx for the Node
+# services, 18xxx for the Go ones).
 #
 # `status` and `up` distinguish our processes from foreign listeners by
 # walking the pid recorded for each service down to the process that actually
@@ -76,9 +80,11 @@ compose() {
 }
 
 read_pid() {
-	# Prints the pid in $1 (a pid file), or nothing if absent/not numeric.
+	# Prints the pid on line 1 of $1 (a pid file), or nothing if absent/not
+	# numeric. Line 2, when present, is the process start time — never part of
+	# the pid, so only the first line is read.
 	local pid
-	pid=$(cat "$1" 2>/dev/null || true)
+	pid=$(head -n 1 "$1" 2>/dev/null || true)
 	case $pid in
 	# 0 is rejected too: `kill -- -0` would signal this script's own group.
 	'' | 0 | *[!0-9]*) printf '' ;;
@@ -93,17 +99,81 @@ process_alive() {
 	kill -0 "$1" 2>/dev/null
 }
 
-port_listens() {
-	lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+process_start_time() {
+	# Prints when $1 started ("Fri Nov 21 09:43:07 2026"), or nothing when the
+	# process no longer exists. This is the identity check behind every pid
+	# file: `kill -0` only proves *some* process owns the pid number, and the
+	# OS recycles those (after a reboot, bff.pid's pid was a Chrome renderer).
+	# LC_ALL=C pins the format, so a value written under one locale still
+	# compares equal when read under another.
+	local started
+	started=$(LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null || true)
+	[ -n "$started" ] || return 0
+	# BSD ps pads the column; trim so we store and compare the same text.
+	printf '%s\n' "$started" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+process_cwd() {
+	# Prints $1's working directory, or nothing when lsof cannot read it (the
+	# process is gone, or it belongs to another user). Used only to vet legacy
+	# one-line pid files: every service is launched with `cd '<dir>' … exec`,
+	# so a genuine one has a cwd inside the repo.
+	lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true
+}
+
+write_pidfile() {
+	# write_pidfile PIDFILE PID — records the pid and when it started, so a
+	# later check can tell this process apart from an unrelated one that the
+	# OS has since given the same pid number.
+	local pidfile=$1 pid=$2
+	printf '%s\n' "$pid" >"$pidfile"
+	printf '%s\n' "$(process_start_time "$pid")" >>"$pidfile"
+}
+
+owned_pid() {
+	# Prints the pid in $RUNTIME_DIR/$1.pid only while it is still *this
+	# stack's* live process, or nothing. Anything else — dead pid, recycled
+	# pid, unreadable file — is stale, so the pid file is removed on the way
+	# out and the caller treats the service as not running.
+	#
+	# A one-line file predates the start time (written by an older version of
+	# this script). There is no start time to compare, so fall back to the
+	# working directory, and upgrade the file in place when it passes.
+	local pidfile="$RUNTIME_DIR/$1.pid" pid started actual cwd
+	[ -f "$pidfile" ] || return 1
+	pid=$(read_pid "$pidfile")
+	if [ -z "$pid" ] || ! process_alive "$pid"; then
+		rm -f "$pidfile"
+		return 1
+	fi
+	started=$(sed -n '2p' "$pidfile" 2>/dev/null || true)
+	if [ -n "$started" ]; then
+		actual=$(process_start_time "$pid")
+		if [ "$actual" != "$started" ]; then
+			rm -f "$pidfile"
+			return 1
+		fi
+	else
+		cwd=$(process_cwd "$pid")
+		case $cwd in
+		"$REPO_ROOT" | "$REPO_ROOT"/*) write_pidfile "$pidfile" "$pid" ;;
+		*)
+			rm -f "$pidfile"
+			return 1
+			;;
+		esac
+	fi
+	printf '%s' "$pid"
 }
 
 recorded_pid() {
-	# Prints NAME's recorded pid when it is still alive, or nothing.
-	local pid
-	pid=$(read_pid "$RUNTIME_DIR/$1.pid")
-	if [ -n "$pid" ] && process_alive "$pid"; then
-		printf '%s' "$pid"
-	fi
+	# Prints NAME's recorded pid when that pid is still our process, or
+	# nothing. Kept as a name because it has many callers.
+	owned_pid "$1" || true
+}
+
+port_listens() {
+	lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
 }
 
 pid_under() {
@@ -450,8 +520,10 @@ start_process() {
 	local pidfile="$RUNTIME_DIR/$name.pid"
 	local pid pair inner
 
-	pid=$(read_pid "$pidfile")
-	if [ -n "$pid" ] && process_alive "$pid"; then
+	# owned_pid removes a stale file (dead or recycled pid) as a side effect,
+	# so only a genuinely live process of ours short-circuits the start.
+	pid=$(owned_pid "$name") || true
+	if [ -n "$pid" ]; then
 		echo "$name: already running (pid $pid)"
 		return 0
 	fi
@@ -473,7 +545,7 @@ exec $cmd"
 	: >"$log"
 	nohup bash -c "$inner" >"$log" 2>&1 </dev/null &
 	pid=$!
-	echo "$pid" >"$pidfile"
+	write_pidfile "$pidfile" "$pid"
 	echo "$name: started (pid $pid, log $log)"
 }
 
@@ -641,10 +713,19 @@ group_alive() {
 stop_process() {
 	local name=$1
 	local pidfile="$RUNTIME_DIR/$name.pid"
-	local pid i
-	pid=$(read_pid "$pidfile")
+	local pid i existed=0
+	if [ -f "$pidfile" ]; then
+		existed=1
+	fi
+	# Only signal a pid that owned_pid still accepts as ours. A recycled pid
+	# must never be TERM/KILLed — after a reboot, bff.pid's pid belonged to a
+	# Chrome renderer, and the group kill below would have taken Chrome with it.
+	pid=$(owned_pid "$name") || true
 	if [ -z "$pid" ]; then
 		rm -f "$pidfile"
+		if [ "$existed" -eq 1 ]; then
+			echo "$name: not running (stale pid file removed)"
+		fi
 		return 0
 	fi
 

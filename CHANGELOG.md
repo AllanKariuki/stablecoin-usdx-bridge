@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-26 — stack.sh: recycled pids are never mistaken for ours
+
+### Fixed — `scripts/stack.sh` trusted any live process holding a recorded pid
+
+- **Pid files now record the pid plus that process's start time**
+  (`LC_ALL=C ps -o lstart=`), and every ownership check (`status`, `up`,
+  `down`) goes through a new `owned_pid` that requires the start time to
+  match. Before, `kill -0` was the only check, so after a reboot a pid the OS
+  had recycled to an unrelated process was treated as the service: `up`
+  printed "already running" and skipped bff (its old pid was a Chrome
+  renderer), and `down` would have sent TERM/KILL to that process or its
+  group.
+- A stale pid file (dead or recycled pid) is removed, the service is treated
+  as not running, and `down` reports "not running (stale pid file removed)"
+  without signalling anything.
+- Legacy one-line pid files written by the previous version are accepted
+  only when the process's working directory is inside the repo (every
+  service is launched via `cd '<dir>' … exec`), and are upgraded in place —
+  a stack started before this change is not orphaned.
+
 ## 2026-11-24 — H7: NATS credentials and per-correlation re-sign allowance
 
 ### Changed — NATS authenticates one user per service with per-subject permissions (target bar: real money)
