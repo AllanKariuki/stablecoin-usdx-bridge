@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
-import { AuditContext, AuditRequest, PlatformException } from '@damp/nest-platform';
+import { AuditContext, AuditRequest, PlatformException, RequireServiceRole } from '@damp/nest-platform';
 import { Actor, CurrentActor } from '../auth/current-user.decorator';
 import { payloadDigest } from './digest';
 import { ApprovalRequest, RequestsService } from './requests.service';
@@ -43,6 +43,7 @@ export class RequestsController {
   }
 
   @Post('approval-requests')
+  @RequireServiceRole('workflow.propose', 'workflow.user-proxy')
   async propose(
     @CurrentActor() actor: Actor,
     @AuditContext() audit: AuditRequest,
@@ -128,6 +129,7 @@ export class RequestsController {
    * means every approval starts failing verification at once.
    */
   @Post('approval-requests/digest')
+  @RequireServiceRole('workflow.propose', 'workflow.user-proxy')
   @HttpCode(200)
   digest(@Body() body: { payload: unknown }) {
     return { digest: payloadDigest(body?.payload) };

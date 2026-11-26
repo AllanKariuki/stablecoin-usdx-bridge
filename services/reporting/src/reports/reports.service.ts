@@ -325,7 +325,7 @@ export class ReportsService {
       if (params[key]) query.set(key, String(params[key]));
     }
 
-    const body = await this.getJson(`${this.auditTrailUrl}/audit/events?${query}`);
+    const body = await this.getJson(`${this.auditTrailUrl}/audit/events?${query}`, { serviceAuth: true });
     const rows = ((body.events as Array<Record<string, any>>) ?? []).map((e) => ({
       occurred_at: e.occurred_at,
       actor: e.actor,
@@ -346,9 +346,11 @@ export class ReportsService {
 
   private async getJson(url: string, opts: { serviceAuth?: boolean } = {}): Promise<Record<string, any>> {
     // H2: calls to core-ledger carry reporting's own service-account bearer
-    // (ledger.reports.read). Calls to audit-trail are a different boundary
-    // with its own token rules, so serviceAuth is per-call rather than
-    // applied to every URL this helper fetches.
+    // (ledger.reports.read). H3: so do its audit-trail reads (the aud token
+    // also carries audit-trail.user-proxy, which the /audit/* routes
+    // require). serviceAuth is per-call rather than applied to every URL
+    // this helper fetches, because Superset is a different boundary with its
+    // own credentials.
     const headers: Record<string, string> = { 'X-User-Id': 'reporting' };
     if (opts.serviceAuth) {
       headers.Authorization = `Bearer ${await this.serviceTokens.accessToken()}`;

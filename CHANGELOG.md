@@ -3,6 +3,97 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-23 — H3: internal hops authenticated
+
+### Added — service-account auth on every internal HTTP hop (target bar: real money)
+
+- **Every internal HTTP hop now carries a Keycloak service-account JWT.**
+  H2 authenticated core-ledger; H3 does the same for every other receiver:
+  payments, workflow, kyc, compliance, reporting, rms, notifications,
+  identity, audit-trail, and indexer. Each gets a bearer-only resource
+  client with client roles; each caller mints one token carrying every
+  audience it talks to. There is no disable switch.
+- **`ServiceAuthGuard`** in `shared/node/nest-platform`, installed as a
+  global `APP_GUARD` by each Node receiver: verifies the bearer via OIDC
+  discovery + auto-rotating JWKS (`jose`), checks `AUTH_ISSUER_URL` +
+  `AUTH_AUDIENCE` (= the service's resource client), then the route's
+  declared roles. Missing/invalid → 401 `UNAUTHENTICATED`; wrong role →
+  403 `FORBIDDEN`. Decorators: `@RequireServiceRole(...roles)` (default for
+  an unmarked route: `<svc>.user-proxy`), `@Public()` (payments' rail
+  callback — the `RAIL_CALLBACK_SECRET` check stays), and
+  `@HmacAuthenticated()` (workflow's decision callbacks — the HMAC check
+  stays). `/healthz`, `/readyz`, `/version` and `/metrics` are exempt.
+- **Identity headers are no longer trusted on the network alone.**
+  `serviceIdentityFrom` (nest-platform) releases X-User-Id/X-Org-Id/X-Roles/
+  X-Permissions only when the verified token's `resource_access` holds
+  `<svc>.user-proxy` — granted to svc-bff and nothing else. The per-service
+  decorators (payments/kyc/compliance/notifications/reporting `CurrentUser`,
+  workflow `CurrentActor`, rms `Actor`, reporting `Permissions`) delegate to
+  it, keeping their existing shapes. workflow's one deliberate exception:
+  a `workflow.propose` caller's X-User-Id is read as audit-only identity
+  (recorded as `requested_by`, never checked against a policy).
+- **Keycloak surface** (realm template + `make keycloak-realm` +
+  `scripts/keycloak-sync.sh`, now fully data-driven — adding a receiver or
+  caller is a list entry, not a helper): 9 new resource clients
+  (`payments`, `workflow`, `kyc`, `compliance`, `reporting`, `rms`,
+  `notifications`, `identity`, `audit-trail`, plus `indexer` for the saga's
+  finality check) and 4 new confidential clients (`svc-core-ledger-worker`,
+  `svc-auth-proxy`, `svc-workflow`, `svc-notifications`). Roles:
+  `<svc>.user-proxy` (svc-bff) everywhere; `notifications.ingest`
+  (svc-payments, svc-core-ledger-worker); `compliance.ingest`
+  (svc-core-ledger-worker); `identity.resolve` (svc-auth-proxy,
+  svc-notifications); `workflow.propose` (svc-kyc, svc-compliance);
+  `audit-trail.ingest` (every producer's client); `audit-trail.user-proxy`
+  (svc-bff, svc-reporting); `indexer.finality` (svc-core-ledger-worker).
+- **Callers attach tokens:** bff's `UpstreamProxy` adds its own bearer to
+  every forward (one token, nine audiences); payments' outbox relay
+  (notifications.ingest); kyc/compliance workflow clients
+  (workflow.propose); reporting's audit extract (audit-trail.user-proxy);
+  core-ledger's worker (new `internal/serviceauth`; `golang.org/x/oauth2/
+  clientcredentials`) for the outbox relay and the indexer finality check —
+  `SERVICE_CLIENT_ID/SECRET` are optional in core-ledger's config and
+  required only by the worker binary; auth-proxy's identity resolver
+  (identity.resolve).
+- **audit-trail** accepts either the existing `INGEST_TOKEN` or a service
+  JWT with `audit-trail.ingest` for recording; reads now require
+  `audit-trail.user-proxy`. Producers still send `INGEST_TOKEN` this slice
+  (migration is the follow-up); signer's relay stays on `INGEST_TOKEN`
+  (its other calls are already mTLS).
+- **indexer** verifies its read surface against the `indexer` resource
+  client: `GET /finality` requires `indexer.finality`; `/events` and
+  `/cursors` have no caller and fail closed.
+- **notifications' WebSocket auth** has no unverified mode left: the portal
+  already sends its Keycloak access token as a query parameter (unchanged),
+  and `ws.auth.ts` verifies it (realm `damp`, aud `damp-portal`) and resolves
+  the party via identity with notifications' own service token. The old
+  partyId/dev-user fallback survives only behind
+  `ENV=local` + `NOTIFICATIONS_WS_DEV_AUTH=true`, both required.
+- **Tests:** `FakeIssuer` in nest-platform (in-process OIDC discovery +
+  JWKS + token minting, exported for service suites); guard spec (12 cases);
+  audit-trail JWT-door specs; indexer auth-boundary spec.
+- **e2e negatives:** direct payments GET with forged X-User-Id and no token
+  → 401; direct notifications `/internal/events` with no token → 401; direct
+  payments call with svc-payments' own token (wrong audience) → 401.
+- **k8s:** every receiver manifest sets `AUTH_ISSUER_URL`/`AUTH_AUDIENCE`;
+  notifications, core-ledger worker and auth-proxy add `SERVICE_CLIENT_ID` +
+  `service-client-secret` secret refs (`notifications-secrets`,
+  `core-ledger-secrets`, `auth-proxy-secrets`). An operator must create
+  those secret keys before deploying.
+
+### Fixed
+- Two boot failures that only showed on a real start, not in unit suites:
+  payments' outbox relay could not resolve `ServiceTokenClient`
+  (`CoreLedgerModule` now exports it), and notifications rejected
+  `NOTIFICATIONS_WS_DEV_AUTH=false` from its `.env` because nothing converted
+  the string to a boolean.
+- **notifications' outbox-consumer e2e suite no longer fails on live dev
+  events.** Each test's durables now start at the shared DAMP stream's
+  current position (`OUTBOX_CONSUMER_START_SEQUENCE`, a test-only option), so
+  real events a developer's stack left in the stream (e.g. reconciliation
+  breaks from live e2e runs) are not replayed into assertions that count
+  deliveries. Replicas are also stopped between tests instead of all at the
+  end, so no test's consumer drains history into the next one.
+
 ## 2026-11-23 — H2: core-ledger authenticates every call
 
 ### Added — service-account auth on core-ledger (target bar: real money)

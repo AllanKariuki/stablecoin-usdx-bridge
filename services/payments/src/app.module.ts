@@ -1,5 +1,6 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { APP_GUARD } from '@nestjs/core';
+import { PlatformConfigModule, PlatformModule, ServiceAuthGuard } from '@damp/nest-platform';
 import { AuditRelayService } from './audit/audit-relay.service';
 import { BanksModule } from './banks/banks.module';
 import { PaymentsConfig } from './config/payments-config';
@@ -32,7 +33,13 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       IntentsModule,
     ],
     // In the root module, beside workflow's, kyc's and compliance's.
-    providers: [AuditRelayService],
+    providers: [
+      AuditRelayService,
+      // H3: every route carries a Keycloak service-account JWT whose audience
+      // is the `payments` resource client. Default role per route is
+      // payments.user-proxy (svc-bff); the rail callback is @Public.
+      { provide: APP_GUARD, useClass: ServiceAuthGuard },
+    ],
   };
 }
 

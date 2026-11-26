@@ -5,6 +5,8 @@ import { CoreLedgerClient } from './core-ledger.client';
 @Global()
 @Module({
   providers: [CoreLedgerClient, ServiceTokenClient],
-  exports: [CoreLedgerClient],
+  // ServiceTokenClient is exported too: the outbox relay authenticates to
+  // notifications with the same svc-payments token cache.
+  exports: [CoreLedgerClient, ServiceTokenClient],
 })
 export class CoreLedgerModule {}

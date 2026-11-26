@@ -24,6 +24,10 @@ const settings: Record<string, string> = {
   DATABASE_URL: TEST_DATABASE_URL,
   CORE_LEDGER_URL: 'http://core-ledger.invalid',
   AUDIT_TRAIL_URL: 'http://audit-trail.invalid',
+  KEYCLOAK_BASE_URL: 'http://keycloak.invalid',
+  KEYCLOAK_REALM: 'damp',
+  SERVICE_CLIENT_ID: 'svc-reporting',
+  SERVICE_CLIENT_SECRET: 'test-secret',
 };
 const config = { get: (k: string) => settings[k] } as unknown as ConfigService;
 
@@ -37,19 +41,26 @@ describe('reporting audit producer (real Postgres)', () => {
   beforeAll(async () => {
     db = new DbService(config);
     await db.onModuleInit();
-    // The suite's fetch spy stands in for both upstreams, so the token
-    // client never actually mints — a real instance, never a mock of
-    // ReportsService's constructor contract.
+    // The suite's fetch spy stands in for both upstreams AND the token
+    // endpoint (H3: the audit extract now carries the service bearer), so
+    // the token client never talks to a real Keycloak — a real instance,
+    // never a mock of ReportsService's constructor contract.
     reports = new ReportsService(db, config, new ServiceTokenClient(config));
     superset = { guestToken: jest.fn() };
     controller = new ReportsController(reports, superset as unknown as SupersetService, db);
   });
 
   beforeEach(() => {
-    // The audit extract's one upstream call.
-    fetchSpy = jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValue(new Response(JSON.stringify({ events: [{ actor: 'a', action: 'x' }] }), { status: 200 }));
+    // The token endpoint and the audit extract's one upstream call. A fresh
+    // Response per call: a Response body can only be read once, and the
+    // token client reads its own.
+    fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('protocol/openid-connect/token')) {
+        return new Response(JSON.stringify({ access_token: 'tok', expires_in: 300 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ events: [{ actor: 'a', action: 'x' }] }), { status: 200 });
+    });
   });
 
   afterEach(() => fetchSpy.mockRestore());

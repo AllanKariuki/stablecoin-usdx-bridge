@@ -19,6 +19,7 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/config"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/outbox"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/serviceauth"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/worker"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/audit"
@@ -94,13 +95,26 @@ func main() {
 	ledgerSvc := ledger.NewService(repo, cfg.Fees())
 	saga := bridge.NewSaga(repo, ledgerSvc, clients.Router, logger)
 	saga.Finality = cfg.ChainFinality
+
+	// H3: the worker's outbound service-to-service calls (the indexer's
+	// finality endpoint, the HTTP outbox relay) all carry a
+	// client-credentials token minted for svc-core-ledger-worker. The API
+	// server and reconcile never make these calls, so only the worker
+	// requires the credentials — internal/serviceauth builds the client that
+	// attaches the bearer on every request.
+	authClient, err := serviceauth.Client(cfg.ServiceClientID, cfg.ServiceClientSecret, cfg.KeycloakBaseURL, cfg.KeycloakRealm)
+	if err != nil {
+		logger.Error("service-to-service auth is not configured (H3)", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	if cfg.IndexerURL != "" {
 		// The indexer is already watching both chains, so the saga asks it
 		// rather than parking a goroutine on an RPC poll — and gets an answer
 		// that distinguishes "not seen yet" from "seen and then orphaned",
 		// which a receipt poll cannot. The chain poll stays as the fallback
 		// for anything the indexer can't answer.
-		saga.UseIndexerFinality(cfg.IndexerURL)
+		saga.UseIndexerFinality(cfg.IndexerURL, authClient)
 		logger.Info("saga finality resolved through services/indexer",
 			slog.String("indexer_url", cfg.IndexerURL))
 	}
@@ -121,7 +135,7 @@ func main() {
 	// the Publisher seam built in P2 from an HTTP POST into a JetStream
 	// publish without touching a line of domain code — see outbox.Choose.
 	outboxMetrics := outbox.NewMetrics()
-	publisher, closePublisher := outbox.Choose(ctx, logger, cfg.NATSURL, cfg.NATSStream, cfg.OutboxRelayURL)
+	publisher, closePublisher := outbox.Choose(ctx, logger, cfg.NATSURL, cfg.NATSStream, cfg.OutboxRelayURL, authClient)
 	defer closePublisher()
 	if publisher != nil {
 		relay := outbox.NewRelay(repo.OutboxStore(), publisher, logger).WithMetrics(outboxMetrics)

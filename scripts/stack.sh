@@ -237,6 +237,10 @@ EOF
 # defaults carry the container/in-cluster ports, and only the host-side
 # launcher moves them (and only to get out of other stacks' way).
 service_env() {
+	# AUTH_ISSUER_URL is the same for every service; AUTH_AUDIENCE is each
+	# service's own resource client. Both are echoed per-service rather than
+	# exported once so the table stays one readable source.
+	AUTH_ISSUER_URL=${AUTH_ISSUER_URL:-http://localhost:8080/realms/damp}
 	case "$1" in
 	core-ledger)
 		echo "PORT=18081"
@@ -249,11 +253,19 @@ service_env() {
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
 		echo "NATS_URL=nats://localhost:54222"
+		# H3: the worker's outbound calls (indexer finality, HTTP relay)
+		# carry svc-core-ledger-worker's token.
+		echo "SERVICE_CLIENT_ID=svc-core-ledger-worker"
+		echo "SERVICE_CLIENT_SECRET=dev-svc-core-ledger-worker-secret"
+		echo "KEYCLOAK_BASE_URL=http://localhost:8080"
+		echo "KEYCLOAK_REALM=damp"
 		;;
 	audit-trail)
 		echo "PORT=18085"
 		echo "INGEST_TOKEN=$AUDIT_TRAIL_TOKEN"
 		echo "ANCHOR_INTERVAL=5m"
+		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
+		echo "AUTH_AUDIENCE=audit-trail"
 		;;
 	signer)
 		echo "PORT=18084"
@@ -264,23 +276,37 @@ service_env() {
 	indexer)
 		echo "PORT=18083"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
+		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
+		echo "AUTH_AUDIENCE=indexer"
 		;;
 	identity)
 		echo "PORT=13001"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
+		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
+		echo "AUTH_AUDIENCE=identity"
 		;;
 	workflow)
 		echo "PORT=13006"
 		echo "CALLBACK_SECRET=$WORKFLOW_CALLBACK_SECRET"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
+		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
+		echo "AUTH_AUDIENCE=workflow"
 		;;
 	notifications)
 		echo "PORT=13000"
 		echo "NATS_URL=nats://localhost:54222"
 		echo "IDENTITY_SERVICE_URL=http://localhost:13001"
+		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
+		echo "AUTH_AUDIENCE=notifications"
+		# H3 outbound: the WS identity lookup carries svc-notifications'
+		# token (identity.resolve).
+		echo "SERVICE_CLIENT_ID=svc-notifications"
+		echo "SERVICE_CLIENT_SECRET=dev-svc-notifications-secret"
+		echo "KEYCLOAK_BASE_URL=http://localhost:8080"
+		echo "KEYCLOAK_REALM=damp"
 		;;
 	payments)
 		echo "PORT=13003"
@@ -288,6 +314,8 @@ service_env() {
 		echo "NOTIFICATIONS_URL=http://localhost:13000"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
+		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
+		echo "AUTH_AUDIENCE=payments"
 		;;
 	kyc)
 		echo "PORT=13007"
@@ -297,6 +325,8 @@ service_env() {
 		echo "WORKFLOW_CALLBACK_SECRET=$WORKFLOW_CALLBACK_SECRET"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
+		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
+		echo "AUTH_AUDIENCE=kyc"
 		;;
 	compliance)
 		echo "PORT=13004"
@@ -307,18 +337,24 @@ service_env() {
 		echo "NOTIFICATIONS_URL=http://localhost:13000"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
+		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
+		echo "AUTH_AUDIENCE=compliance"
 		;;
 	reporting)
 		echo "PORT=13008"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
+		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
+		echo "AUTH_AUDIENCE=reporting"
 		;;
 	rms)
 		echo "PORT=13005"
 		echo "CORE_LEDGER_URL=$CORE_LEDGER_URL"
 		echo "AUDIT_TRAIL_URL=$AUDIT_TRAIL_URL"
 		echo "AUDIT_TRAIL_TOKEN=$AUDIT_TRAIL_TOKEN"
+		echo "AUTH_ISSUER_URL=$AUTH_ISSUER_URL"
+		echo "AUTH_AUDIENCE=rms"
 		;;
 	bff)
 		echo "PORT=13002"
@@ -335,6 +371,12 @@ service_env() {
 	auth-proxy)
 		echo "PORT=18090"
 		echo "IDENTITY_SERVICE_URL=http://localhost:13001"
+		# H3 outbound: the identity lookup carries svc-auth-proxy's token
+		# (identity.resolve).
+		echo "SERVICE_CLIENT_ID=svc-auth-proxy"
+		echo "SERVICE_CLIENT_SECRET=dev-svc-auth-proxy-secret"
+		echo "KEYCLOAK_BASE_URL=http://localhost:8080"
+		echo "KEYCLOAK_REALM=damp"
 		;;
 	esac
 }

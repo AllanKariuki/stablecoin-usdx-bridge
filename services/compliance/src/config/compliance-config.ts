@@ -40,6 +40,18 @@ export class ComplianceConfig {
   @IsString()
   KEYCLOAK_REALM = 'damp';
 
+  // --- Inbound service-to-service auth (H3). Every request must carry a
+  // service-account JWT whose audience is the `compliance` resource client.
+  // Both required — there is no unauthenticated mode (the approval callback
+  // is @HmacAuthenticated, not public).
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  AUTH_ISSUER_URL!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  AUTH_AUDIENCE = 'compliance';
+
   // Blacklisting and pausing go through maker-checker first. Unset means an
   // enforcement action can be proposed and never executed, which is the
   // correct failure: the alternative is a service that can freeze a

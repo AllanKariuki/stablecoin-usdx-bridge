@@ -1,9 +1,12 @@
 import { Body, Controller, Headers, HttpCode, Logger, Post, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { HmacAuthenticated } from '@damp/nest-platform';
 import { SIGNATURE_HEADER, verifyCallback } from './callback-signature';
 import { EnforcementService } from './enforcement.service';
 
-/** services/workflow's callback. Signed with WORKFLOW_CALLBACK_SECRET; see kyc's twin. */
+/** services/workflow's callback. Signed with WORKFLOW_CALLBACK_SECRET; see kyc's twin.
+ * @HmacAuthenticated tells the H3 service guard to skip its JWT check here —
+ * the HMAC is the authentication. */
 @Controller('internal/approvals')
 export class ApprovalsController {
   private readonly logger = new Logger(ApprovalsController.name);
@@ -14,6 +17,7 @@ export class ApprovalsController {
   ) {}
 
   @Post('callback')
+  @HmacAuthenticated()
   @HttpCode(200)
   async callback(
     @Headers(SIGNATURE_HEADER) signature: string | undefined,

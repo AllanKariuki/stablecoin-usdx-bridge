@@ -1,6 +1,5 @@
 import { Controller, Get, Post, Put, Req, Res } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ServiceTokenClient } from '@damp/nest-platform';
 import type { Request, Response } from 'express-serve-static-core';
 import { UpstreamProxy } from './upstream.proxy';
 
@@ -53,7 +52,8 @@ export class RmsProxyController {
  * contract to keep in step with core-ledger for no customer benefit. The
  * permission check is auth-proxy's (ledger:read / ledger:admin /
  * transactions:reverse / reserves:read); X-User-Id is forwarded so
- * core-ledger stamps the operator as the actor.
+ * core-ledger stamps the operator as the actor. UpstreamProxy attaches
+ * bff's service-account token to every forward (H2/H3), never the user's.
  */
 @Controller()
 export class CoreLedgerOperationsProxyController {
@@ -61,18 +61,9 @@ export class CoreLedgerOperationsProxyController {
 
   constructor(
     private readonly proxy: UpstreamProxy,
-    private readonly serviceTokens: ServiceTokenClient,
     config: ConfigService,
   ) {
     this.baseUrl = config.get<string>('CORE_LEDGER_URL', { infer: true }) ?? '';
-  }
-
-  /** core-ledger authenticates every call (H2); the forwarded request
-   * carries bff's own service-account token, never the user's. */
-  private async forward(req: Request, res: Response) {
-    return this.proxy.forward(this.baseUrl, req, res, undefined, {
-      authorization: `Bearer ${await this.serviceTokens.accessToken()}`,
-    });
   }
 
   @Get([
@@ -85,11 +76,11 @@ export class CoreLedgerOperationsProxyController {
     'reserves/reconciliation-breaks',
   ])
   read(@Req() req: Request, @Res() res: Response) {
-    return this.forward(req, res);
+    return this.proxy.forward(this.baseUrl, req, res);
   }
 
   @Post(['transactions/:transactionId/reversal', 'ledger/closures', 'redemptions/:transactionId/confirm'])
   write(@Req() req: Request, @Res() res: Response) {
-    return this.forward(req, res);
+    return this.proxy.forward(this.baseUrl, req, res);
   }
 }

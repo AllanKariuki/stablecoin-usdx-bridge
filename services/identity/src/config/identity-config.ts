@@ -43,6 +43,17 @@ export class IdentityConfig {
   @IsNotEmpty()
   KEYCLOAK_REALM = 'damp';
 
+  // --- Inbound service-to-service auth (H3). Every request must carry a
+  // service-account JWT whose audience is the `identity` resource client.
+  // Both required — there is no unauthenticated mode.
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  AUTH_ISSUER_URL!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  AUTH_AUDIENCE = 'identity';
+
   // The one Keycloak client identity authenticates as for both of its
   // service-to-service surfaces (H2): the Keycloak Admin API
   // (realm-management roles) and core-ledger's POST /wallets

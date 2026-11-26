@@ -36,6 +36,17 @@ spec:
               value: "damp-portal"
             - name: IDENTITY_SERVICE_URL
               value: "http://identity.default.svc.cluster.local:3001"
+            # H3: the identity lookup goes out as svc-auth-proxy
+            # (identity.resolve).
+            - name: SERVICE_CLIENT_ID
+              value: "svc-auth-proxy"
+            - name: SERVICE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: auth-proxy-secrets, key: service-client-secret }
+            - name: KEYCLOAK_BASE_URL
+              value: "http://keycloak.default.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "damp"
             - name: REDIS_URL
               value: "redis://redis.default.svc.cluster.local:6379/0"
           resources:

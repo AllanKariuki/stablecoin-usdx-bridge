@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 #
-# keycloak-sync.sh — idempotently upsert H2's service-to-service auth
-# surface into a RUNNING Keycloak.
+# keycloak-sync.sh — idempotently upsert the service-to-service auth surface
+# into a RUNNING Keycloak.
 #
 # A fresh realm gets everything from infra/keycloak/realms/damp-realm.json at
 # --import-realm time; an existing dev volume does not (Keycloak skips the
 # import when the realm already exists). This script makes the two paths
-# converge: it upserts the `core-ledger` resource client and its roles, the
-# svc-* confidential clients (secret, service account, audience mapper), the
-# identity-service client's audience mapper, the core-ledger scope mappings,
-# and each service-account user's client roles. Safe to re-run: every step
-# is a get-then-create or a full-replace with the same desired state.
+# converge: it upserts the bearer-only resource clients and their roles, the
+# svc-* confidential clients (secret, service account, audience mappers), the
+# identity-service client's audience mappers, the scope mappings that let each
+# role appear in the requesting client's tokens, and each service-account
+# user's client roles. Safe to re-run: every step is a get-then-create or a
+# full-replace with the same desired state.
+#
+# Since H3 the whole surface is DATA, not code: the five lists below
+# (RESOURCE_CLIENTS, CLIENT_ROLES, SVC_CLIENTS, AUDIENCE_MAPPERS, SCOPE_GRANTS)
+# mirror infra/keycloak/templates/damp-realm.template.json, and adding a
+# receiver or a caller is a list entry, not a new helper. Keep the lists in
+# the same order as the template so a diff between the two is readable.
 #
 # It talks to the running usdx-keycloak container through kcadm.sh with the
 # bootstrap admin credentials docker-compose.yaml starts it with (admin/admin,
@@ -36,7 +43,160 @@ KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD:-admin}
 REALM=${KEYCLOAK_REALM:-damp}
 KEYCLOAK_BASE_URL=${KEYCLOAK_BASE_URL:-http://localhost:8080}
 
-CORE_LEDGER_CLIENT="core-ledger"
+# ---------------------------------------------------------------------------
+# The desired state. Entry format is tilde-separated fields (descriptions
+# contain spaces and colons, so a printable separator beats quoting); a line
+# that is empty or starts with # is ignored. Mirrors damp-realm.template.json.
+# ---------------------------------------------------------------------------
+
+# RESOURCE_CLIENTS: "clientId~description" — bearer-only resource clients,
+# one per receiver. They hold the client roles and are the aud every calling
+# token names.
+RESOURCE_CLIENTS="
+core-ledger~core-ledger API (resource)
+payments~payments API (resource)
+workflow~workflow API (resource)
+kyc~kyc API (resource)
+compliance~compliance API (resource)
+reporting~reporting API (resource)
+rms~rms API (resource)
+notifications~notifications API (resource)
+identity~identity API (resource)
+audit-trail~audit-trail API (resource)
+indexer~indexer API (resource)
+"
+
+# CLIENT_ROLES: "resourceClient~role~description" — the client roles on each
+# resource client. One role per calling service surface.
+CLIENT_ROLES="
+core-ledger~ledger.user-proxy~services/bff: full user-facing + operator surface
+core-ledger~ledger.settlement~services/payments: POST /wallets, /deposits, /withdrawals, /transfers
+core-ledger~ledger.wallet-provision~services/identity: POST /wallets
+core-ledger~ledger.wallet-status~services/kyc + services/compliance: wallet list + status
+core-ledger~ledger.reserves.custodian~services/rms: custodian snapshots + reserve status
+core-ledger~ledger.reserves.chain-supply~services/indexer: chain supply snapshots
+core-ledger~ledger.reports.read~services/reporting: report GET surface
+payments~payments.user-proxy~services/bff: banks, payment-intents, invoices
+workflow~workflow.user-proxy~services/bff: the approval surface
+workflow~workflow.propose~services/kyc + services/compliance: POST /approval-requests
+kyc~kyc.user-proxy~services/bff: user-facing kyc routes
+compliance~compliance.user-proxy~services/bff: user-facing compliance routes
+compliance~compliance.ingest~svc-core-ledger-worker: POST /internal/outbox
+reporting~reporting.user-proxy~services/bff: user-facing reporting routes
+rms~rms.user-proxy~services/bff: user-facing rms routes
+notifications~notifications.user-proxy~services/bff: notifications + preferences + webhooks
+notifications~notifications.ingest~svc-payments + svc-core-ledger-worker: /internal/events + /internal/outbox
+identity~identity.user-proxy~services/bff: user-facing identity routes
+identity~identity.resolve~svc-auth-proxy + svc-notifications: GET /internal/parties/by-subject
+audit-trail~audit-trail.user-proxy~services/bff + services/reporting: GET /audit/*
+audit-trail~audit-trail.ingest~every producer's svc client: POST /internal/events
+indexer~indexer.finality~svc-core-ledger-worker: GET /finality/:chain/:txHash
+"
+
+# SVC_CLIENTS: "clientId~secret" — the confidential client-credentials
+# clients, one per calling service. identity-service is NOT listed here: its
+# secret is the realm import's placeholder and a real environment injects its
+# own, so the sync must never overwrite it with a dev literal.
+SVC_CLIENTS="
+svc-bff~dev-svc-bff-secret
+svc-payments~dev-svc-payments-secret
+svc-kyc~dev-svc-kyc-secret
+svc-compliance~dev-svc-compliance-secret
+svc-rms~dev-svc-rms-secret
+svc-reporting~dev-svc-reporting-secret
+svc-indexer~dev-svc-indexer-secret
+svc-core-ledger-worker~dev-svc-core-ledger-worker-secret
+svc-auth-proxy~dev-svc-auth-proxy-secret
+svc-workflow~dev-svc-workflow-secret
+svc-notifications~dev-svc-notifications-secret
+"
+
+# AUDIENCE_MAPPERS: "clientId~audience" — one aud mapper per resource client
+# the caller talks to, on every confidential caller (svc-* and
+# identity-service). Without its mapper a token carries aud: ["account"] and
+# the receiver 401s every call.
+AUDIENCE_MAPPERS="
+svc-bff~core-ledger
+svc-bff~payments
+svc-bff~workflow
+svc-bff~kyc
+svc-bff~compliance
+svc-bff~reporting
+svc-bff~rms
+svc-bff~notifications
+svc-bff~audit-trail
+svc-payments~core-ledger
+svc-payments~notifications
+svc-payments~audit-trail
+svc-kyc~core-ledger
+svc-kyc~workflow
+svc-kyc~audit-trail
+svc-compliance~core-ledger
+svc-compliance~workflow
+svc-compliance~audit-trail
+svc-rms~core-ledger
+svc-rms~audit-trail
+svc-reporting~core-ledger
+svc-reporting~audit-trail
+svc-indexer~core-ledger
+svc-core-ledger-worker~notifications
+svc-core-ledger-worker~compliance
+svc-core-ledger-worker~indexer
+svc-core-ledger-worker~audit-trail
+svc-auth-proxy~identity
+svc-workflow~audit-trail
+svc-notifications~identity
+svc-notifications~audit-trail
+identity-service~core-ledger
+identity-service~audit-trail
+"
+
+# SCOPE_GRANTS: "resourceClient~targetClient~role" — grant TARGET_CLIENT's
+# service account permission to include RESOURCE_CLIENT's ROLE in its own
+# tokens. fullScopeAllowed:false means holding the role is not enough; the
+# mapping is what makes it appear. Also implies the service-account user
+# holds the role (grant_service_account_role below).
+SCOPE_GRANTS="
+core-ledger~svc-bff~ledger.user-proxy
+core-ledger~svc-payments~ledger.settlement
+core-ledger~identity-service~ledger.wallet-provision
+core-ledger~svc-kyc~ledger.wallet-status
+core-ledger~svc-compliance~ledger.wallet-status
+core-ledger~svc-rms~ledger.reserves.custodian
+core-ledger~svc-reporting~ledger.reports.read
+core-ledger~svc-indexer~ledger.reserves.chain-supply
+payments~svc-bff~payments.user-proxy
+workflow~svc-bff~workflow.user-proxy
+workflow~svc-kyc~workflow.propose
+workflow~svc-compliance~workflow.propose
+kyc~svc-bff~kyc.user-proxy
+compliance~svc-bff~compliance.user-proxy
+compliance~svc-core-ledger-worker~compliance.ingest
+reporting~svc-bff~reporting.user-proxy
+rms~svc-bff~rms.user-proxy
+notifications~svc-bff~notifications.user-proxy
+notifications~svc-payments~notifications.ingest
+notifications~svc-core-ledger-worker~notifications.ingest
+identity~svc-bff~identity.user-proxy
+identity~svc-auth-proxy~identity.resolve
+identity~svc-notifications~identity.resolve
+audit-trail~svc-bff~audit-trail.user-proxy
+audit-trail~svc-reporting~audit-trail.user-proxy
+audit-trail~svc-reporting~audit-trail.ingest
+audit-trail~svc-payments~audit-trail.ingest
+audit-trail~svc-kyc~audit-trail.ingest
+audit-trail~svc-compliance~audit-trail.ingest
+audit-trail~svc-rms~audit-trail.ingest
+audit-trail~identity-service~audit-trail.ingest
+audit-trail~svc-core-ledger-worker~audit-trail.ingest
+audit-trail~svc-workflow~audit-trail.ingest
+audit-trail~svc-notifications~audit-trail.ingest
+indexer~svc-core-ledger-worker~indexer.finality
+"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 # kcadm() — one kcadm.sh invocation inside the Keycloak container.
 kcadm() {
@@ -99,40 +259,81 @@ upsert_client_role() {
 
 # grant_scope_mapping RESOURCE_CLIENT TARGET_CLIENT ROLE — grant TARGET_CLIENT's
 # service account permission to include RESOURCE_CLIENT's ROLE in its own
-# tokens (the clientScopeMappings block of the realm import). PUT replaces the
-# pair's whole mapping, which is exactly the desired list of one role, so a
-# re-run converges rather than duplicates.
+# tokens (the clientScopeMappings block of the realm import). POSTing a
+# mapping that already exists is a no-op, so a re-run converges.
 grant_scope_mapping() {
 	local resource=$1 target=$2 role=$3 resource_uuid target_uuid role_rep
 	resource_uuid=$(client_uuid "$resource")
 	target_uuid=$(client_uuid "$target")
 	role_rep=$(kcadm get "clients/$resource_uuid/roles/$role" -r "$REALM" --fields id,name,clientRole,containerId 2>/dev/null)
 	# The mapping lives on the client that requests the token (target) and
-	# names roles of the resource client. Keycloak only accepts POST here,
-	# and adding a mapping that already exists is a no-op.
+	# names roles of the resource client. Keycloak only accepts POST here.
 	kcadm create "clients/$target_uuid/scope-mappings/clients/$resource_uuid" -r "$REALM" -b "[$role_rep]" >/dev/null
 	echo "keycloak-sync: granted $target -> $resource:$role"
 }
 
-# grant_service_account_role CLIENT_ID ROLE — add the role to the client's
-# service-account user (users[].clientRoles in the realm import). add-roles
-# is idempotent.
+# grant_service_account_role CLIENT_ID RESOURCE_CLIENT ROLE — add the role to
+# the client's service-account user (users[].clientRoles in the realm
+# import). add-roles is idempotent.
 grant_service_account_role() {
-	local client_id=$1 role=$2
+	local client_id=$1 resource=$2 role=$3
 	kcadm add-roles -r "$REALM" \
 		--uusername "service-account-$client_id" \
-		--cclientid "$CORE_LEDGER_CLIENT" \
+		--cclientid "$resource" \
 		--rolename "$role" >/dev/null
-	echo "keycloak-sync: service-account-$client_id holds $CORE_LEDGER_CLIENT:$role"
+	echo "keycloak-sync: service-account-$client_id holds $resource:$role"
+}
+
+# mapper_json AUDIENCE — one oidc-audience-mapper ClientRepresentation
+# fragment putting AUDIENCE in the token's aud claim.
+mapper_json() {
+	cat <<EOF
+{"name": "aud-mapper-$1", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper", "consentRequired": false, "config": {"included.client.audience": "$1", "id.token.claim": "false", "access.token.claim": "true"}}
+EOF
+}
+
+# each_entry LIST_NAME FUNCTION [ARGS...] — call FUNCTION once per non-empty,
+# non-comment line of the named list. Line-by-line rather than word-by-word:
+# descriptions contain spaces, so plain `for entry in $LIST` would split them.
+each_entry() {
+	local list=$1 fn=$2 entry
+	shift 2
+	while IFS= read -r entry; do
+		case "$entry" in
+		""|\#*) continue ;;
+		esac
+		"$fn" "$entry" "$@"
+	done <<EOL
+$list
+EOL
 }
 
 # svc_client_body CLIENT_ID SECRET — the full desired ClientRepresentation
-# every svc-* client (and identity-service) shares: confidential,
-# client-credentials only, service account enabled, full scope off, dev
-# secret, and the audience mapper that puts core-ledger in the token's aud.
+# for a confidential caller: client-credentials only, service account
+# enabled, full scope off, dev secret, and one audience mapper per resource
+# client the caller talks to (AUDIENCE_MAPPERS).
 svc_client_body() {
+	local client_id=$1 secret=$2 entry client aud mappers="" first=true
+	while IFS= read -r entry; do
+		case "$entry" in
+		""|\#*) continue ;;
+		esac
+		client=${entry%%~*}
+		aud=${entry##*~}
+		if [ "$client" != "$client_id" ]; then
+			continue
+		fi
+		if [ "$first" = "true" ]; then
+			mappers="$(mapper_json "$aud")"
+			first=false
+		else
+			mappers="$mappers,$(mapper_json "$aud")"
+		fi
+	done <<EOL
+$AUDIENCE_MAPPERS
+EOL
 	cat <<EOF
-{"clientId": "$1", "name": "$1 (confidential)", "enabled": true, "publicClient": false, "standardFlowEnabled": false, "directAccessGrantsEnabled": false, "serviceAccountsEnabled": true, "fullScopeAllowed": false, "secret": "$2", "protocolMappers": [{"name": "aud-mapper-core-ledger", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper", "consentRequired": false, "config": {"included.client.audience": "core-ledger", "id.token.claim": "false", "access.token.claim": "true"}}]}
+{"clientId": "$client_id", "name": "$client_id (confidential)", "enabled": true, "publicClient": false, "standardFlowEnabled": false, "directAccessGrantsEnabled": false, "serviceAccountsEnabled": true, "fullScopeAllowed": false, "secret": "$secret", "protocolMappers": [$mappers]}
 EOF
 }
 
@@ -142,62 +343,90 @@ EOF
 # dev literal. (On a realm where the client is somehow missing entirely, the
 # create below uses the import's placeholder secret.)
 identity_service_body() {
-	cat <<'EOF'
-{"clientId": "identity-service", "name": "services/identity (confidential)", "enabled": true, "publicClient": false, "standardFlowEnabled": false, "directAccessGrantsEnabled": false, "serviceAccountsEnabled": true, "fullScopeAllowed": false, "protocolMappers": [{"name": "aud-mapper-core-ledger", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper", "consentRequired": false, "config": {"included.client.audience": "core-ledger", "id.token.claim": "false", "access.token.claim": "true"}}]}
+	local entry client aud mappers="" first=true
+	while IFS= read -r entry; do
+		case "$entry" in
+		""|\#*) continue ;;
+		esac
+		client=${entry%%~*}
+		aud=${entry##*~}
+		if [ "$client" != "identity-service" ]; then
+			continue
+		fi
+		if [ "$first" = "true" ]; then
+			mappers="$(mapper_json "$aud")"
+			first=false
+		else
+			mappers="$mappers,$(mapper_json "$aud")"
+		fi
+	done <<EOL
+$AUDIENCE_MAPPERS
+EOL
+	cat <<EOF
+{"clientId": "identity-service", "name": "services/identity (confidential)", "enabled": true, "publicClient": false, "standardFlowEnabled": false, "directAccessGrantsEnabled": false, "serviceAccountsEnabled": true, "fullScopeAllowed": false, "protocolMappers": [$mappers]}
 EOF
 }
 
-# upsert_all — the whole desired state, in dependency order.
-upsert_all() {
-	# The resource client everything else references.
-	upsert_client "$CORE_LEDGER_CLIENT" \
-		"{\"clientId\": \"core-ledger\", \"name\": \"core-ledger API (resource)\", \"enabled\": true, \"publicClient\": false, \"bearerOnly\": true, \"standardFlowEnabled\": false, \"directAccessGrantsEnabled\": false, \"serviceAccountsEnabled\": false}"
+# upsert_resource_client ENTRY — one RESOURCE_CLIENTS line.
+upsert_resource_client() {
+	local entry=$1 client desc
+	client=${entry%%~*}
+	desc=${entry##*~}
+	upsert_client "$client" \
+		"{\"clientId\": \"$client\", \"name\": \"$desc\", \"enabled\": true, \"publicClient\": false, \"bearerOnly\": true, \"standardFlowEnabled\": false, \"directAccessGrantsEnabled\": false, \"serviceAccountsEnabled\": false}"
+}
 
-	upsert_client_role "$CORE_LEDGER_CLIENT" "ledger.user-proxy" "services/bff: full user-facing + operator surface"
-	upsert_client_role "$CORE_LEDGER_CLIENT" "ledger.settlement" "services/payments: POST /wallets, /deposits, /withdrawals, /transfers"
-	upsert_client_role "$CORE_LEDGER_CLIENT" "ledger.wallet-provision" "services/identity: POST /wallets"
-	upsert_client_role "$CORE_LEDGER_CLIENT" "ledger.wallet-status" "services/kyc + services/compliance: wallet list + status"
-	upsert_client_role "$CORE_LEDGER_CLIENT" "ledger.reserves.custodian" "services/rms: custodian snapshots + reserve status"
-	upsert_client_role "$CORE_LEDGER_CLIENT" "ledger.reserves.chain-supply" "services/indexer: chain supply snapshots"
-	upsert_client_role "$CORE_LEDGER_CLIENT" "ledger.reports.read" "services/reporting: report GET surface"
+# upsert_role ENTRY — one CLIENT_ROLES line.
+upsert_role() {
+	local entry=$1 client role desc rest
+	client=${entry%%~*}
+	rest=${entry#*~}
+	role=${rest%%~*}
+	desc=${rest##*~}
+	upsert_client_role "$client" "$role" "$desc"
+}
+
+# upsert_svc_client ENTRY — one SVC_CLIENTS line.
+upsert_svc_client() {
+	local entry=$1 client secret
+	client=${entry%%~*}
+	secret=${entry##*~}
+	upsert_client "$client" "$(svc_client_body "$client" "$secret")"
+}
+
+# grant_both ENTRY — one SCOPE_GRANTS line: the scope mapping on the
+# requesting client, and the role onto its service-account user.
+grant_both() {
+	local entry=$1 client target role rest
+	client=${entry%%~*}
+	rest=${entry#*~}
+	target=${rest%%~*}
+	role=${rest##*~}
+	grant_scope_mapping "$client" "$target" "$role"
+	grant_service_account_role "$target" "$client" "$role"
+}
+
+# upsert_all — the whole desired state, in dependency order, all of it data.
+upsert_all() {
+	# The bearer-only resource clients everything else references.
+	each_entry "$RESOURCE_CLIENTS" upsert_resource_client
+
+	# Their client roles.
+	each_entry "$CLIENT_ROLES" upsert_role
 
 	# The confidential service clients. identity-service is special-cased to
 	# preserve whatever secret the environment injected.
-	upsert_client "svc-bff" "$(svc_client_body svc-bff dev-svc-bff-secret)"
-	upsert_client "svc-payments" "$(svc_client_body svc-payments dev-svc-payments-secret)"
-	upsert_client "svc-kyc" "$(svc_client_body svc-kyc dev-svc-kyc-secret)"
-	upsert_client "svc-compliance" "$(svc_client_body svc-compliance dev-svc-compliance-secret)"
-	upsert_client "svc-rms" "$(svc_client_body svc-rms dev-svc-rms-secret)"
-	upsert_client "svc-reporting" "$(svc_client_body svc-reporting dev-svc-reporting-secret)"
-	upsert_client "svc-indexer" "$(svc_client_body svc-indexer dev-svc-indexer-secret)"
+	each_entry "$SVC_CLIENTS" upsert_svc_client
 	if [ -n "$(client_uuid identity-service)" ]; then
 		upsert_client "identity-service" "$(identity_service_body)"
 	else
 		upsert_client "identity-service" \
-			"{\"clientId\": \"identity-service\", \"name\": \"services/identity (confidential)\", \"enabled\": true, \"publicClient\": false, \"standardFlowEnabled\": false, \"directAccessGrantsEnabled\": false, \"serviceAccountsEnabled\": true, \"fullScopeAllowed\": false, \"secret\": \"__CHANGE_ME_IN_A_REAL_ENVIRONMENT__\", \"protocolMappers\": [{\"name\": \"aud-mapper-core-ledger\", \"protocol\": \"openid-connect\", \"protocolMapper\": \"oidc-audience-mapper\", \"consentRequired\": false, \"config\": {\"included.client.audience\": \"core-ledger\", \"id.token.claim\": \"false\", \"access.token.claim\": \"true\"}}]}"
+			"{\"clientId\": \"identity-service\", \"name\": \"services/identity (confidential)\", \"enabled\": true, \"publicClient\": false, \"standardFlowEnabled\": false, \"directAccessGrantsEnabled\": false, \"serviceAccountsEnabled\": true, \"fullScopeAllowed\": false, \"secret\": \"__CHANGE_ME_IN_A_REAL_ENVIRONMENT__\", \"protocolMappers\": [$(mapper_json core-ledger),$(mapper_json audit-trail)]}"
 	fi
 
-	# fullScopeAllowed:false means the service account holding a role is not
-	# enough for the role to appear in its token — the client must also be
-	# granted the role on core-ledger's scope mappings.
-	grant_scope_mapping "$CORE_LEDGER_CLIENT" "svc-bff" "ledger.user-proxy"
-	grant_scope_mapping "$CORE_LEDGER_CLIENT" "svc-payments" "ledger.settlement"
-	grant_scope_mapping "$CORE_LEDGER_CLIENT" "identity-service" "ledger.wallet-provision"
-	grant_scope_mapping "$CORE_LEDGER_CLIENT" "svc-kyc" "ledger.wallet-status"
-	grant_scope_mapping "$CORE_LEDGER_CLIENT" "svc-compliance" "ledger.wallet-status"
-	grant_scope_mapping "$CORE_LEDGER_CLIENT" "svc-rms" "ledger.reserves.custodian"
-	grant_scope_mapping "$CORE_LEDGER_CLIENT" "svc-reporting" "ledger.reports.read"
-	grant_scope_mapping "$CORE_LEDGER_CLIENT" "svc-indexer" "ledger.reserves.chain-supply"
-
-	# And the roles onto each service-account user itself.
-	grant_service_account_role "svc-bff" "ledger.user-proxy"
-	grant_service_account_role "svc-payments" "ledger.settlement"
-	grant_service_account_role "identity-service" "ledger.wallet-provision"
-	grant_service_account_role "svc-kyc" "ledger.wallet-status"
-	grant_service_account_role "svc-compliance" "ledger.wallet-status"
-	grant_service_account_role "svc-rms" "ledger.reserves.custodian"
-	grant_service_account_role "svc-reporting" "ledger.reports.read"
-	grant_service_account_role "svc-indexer" "ledger.reserves.chain-supply"
+	# Scope mappings (on the requesting client) and the roles onto each
+	# service-account user itself. One pass over the same data.
+	each_entry "$SCOPE_GRANTS" grant_both
 
 	echo "keycloak-sync: done"
 }

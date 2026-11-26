@@ -1,5 +1,6 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import { PlatformConfigModule, PlatformModule } from '@damp/nest-platform';
+import { APP_GUARD } from '@nestjs/core';
+import { PlatformConfigModule, PlatformModule, ServiceAuthGuard } from '@damp/nest-platform';
 import { AttestationsModule } from './attestations/attestations.module';
 import { AuditRelayService } from './audit/audit-relay.service';
 import { RmsConfig } from './config/rms-config';
@@ -28,7 +29,13 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       AttestationsModule,
     ],
     // In the root module, beside the other producers'.
-    providers: [AuditRelayService],
+    providers: [
+      AuditRelayService,
+      // H3: every route carries a Keycloak service-account JWT whose audience
+      // is the `rms` resource client; the default role is rms.user-proxy
+      // (svc-bff).
+      { provide: APP_GUARD, useClass: ServiceAuthGuard },
+    ],
   };
 }
 

@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { bootstrapIdentityApp } from './fixtures/bootstrap';
+import { bootstrapIdentityApp, closeIdentityIssuer } from './fixtures/bootstrap';
 
 /**
  * The relay's metrics must land on the registry /metrics serves. An
@@ -17,6 +17,7 @@ describe('audit relay metrics', () => {
     } finally {
       delete process.env.AUDIT_TRAIL_URL;
       await app.close();
+      await closeIdentityIssuer();
     }
   });
 });

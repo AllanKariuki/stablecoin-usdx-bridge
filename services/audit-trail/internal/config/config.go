@@ -39,8 +39,20 @@ type Config struct {
 	// IngestToken is the bearer token producers present on
 	// POST /internal/events (their AUDIT_TRAIL_TOKEN). Empty leaves recording
 	// open to anything that can reach the port, and the service says so at
-	// boot.
+	// boot. H3 adds a second door beside it: a Keycloak service-account JWT
+	// with aud=audit-trail and the audit-trail.ingest client role.
 	IngestToken string `env:"INGEST_TOKEN" default:""`
+
+	// AuthIssuerURL is the Keycloak realm issuer for H3's JWT checks: reads
+	// (GET /audit/*) require a service token carrying audit-trail.user-proxy,
+	// and recording accepts one carrying audit-trail.ingest as an alternative
+	// to INGEST_TOKEN. Required — the read surface is an operator surface,
+	// and there is no unauthenticated mode.
+	AuthIssuerURL string `env:"AUTH_ISSUER_URL" required:"true"`
+
+	// AuthAudience is the resource client whose roles authorize this API.
+	// Defaults to audit-trail; only overridden in tests.
+	AuthAudience string `env:"AUTH_AUDIENCE" default:"audit-trail"`
 }
 
 func Load() (Config, error) {

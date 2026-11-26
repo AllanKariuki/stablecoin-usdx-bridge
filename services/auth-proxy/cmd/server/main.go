@@ -15,6 +15,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 const serviceName = "auth-proxy"
@@ -38,12 +39,21 @@ type config struct {
 	KeycloakIssuerURL string `env:"KEYCLOAK_ISSUER_URL" required:"true"`
 	OIDCAudience      string `env:"OIDC_AUDIENCE" default:"damp-portal"`
 
-	// services/identity isn't built yet (separate follow-on work — see
-	// internal/identityclient's package doc). Leaving this unset falls
-	// back to SubjectPassthroughResolver so auth-proxy is usable standalone
-	// today; set it once identity lands.
+	// services/identity resolves a verified subject to the party id. Leaving
+	// IdentityServiceURL unset falls back to SubjectPassthroughResolver so
+	// auth-proxy is usable standalone; set it once identity lands. Since H3
+	// the lookup carries auth-proxy's own service-account token
+	// (identity.resolve), minted with the SERVICE_CLIENT_* credentials —
+	// required whenever IdentityServiceURL is set.
 	IdentityServiceURL string        `env:"IDENTITY_SERVICE_URL"`
 	IdentityCacheTTL   time.Duration `env:"IDENTITY_CACHE_TTL" default:"5m"`
+
+	// H3: auth-proxy's own confidential client (svc-auth-proxy), used only
+	// for the identity lookup above.
+	ServiceClientID     string `env:"SERVICE_CLIENT_ID"`
+	ServiceClientSecret string `env:"SERVICE_CLIENT_SECRET"`
+	KeycloakBaseURL     string `env:"KEYCLOAK_BASE_URL" default:"http://localhost:8080"`
+	KeycloakRealm       string `env:"KEYCLOAK_REALM" default:"damp"`
 
 	// RedisURL is optional even with IdentityServiceURL set — an unset
 	// Redis just means every request re-resolves identity, not a boot
@@ -82,7 +92,19 @@ func main() {
 
 	var resolver identityclient.Resolver = identityclient.SubjectPassthroughResolver{}
 	if cfg.IdentityServiceURL != "" {
-		resolver = identityclient.NewIdentityHTTPResolver(cfg.IdentityServiceURL, redisClient, cfg.IdentityCacheTTL)
+		// H3: the lookup carries svc-auth-proxy's token (identity.resolve).
+		// clientcredentials.Config.Client mints and caches it per request.
+		tokenURL := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", cfg.KeycloakBaseURL, cfg.KeycloakRealm)
+		cc := clientcredentials.Config{
+			ClientID:     cfg.ServiceClientID,
+			ClientSecret: cfg.ServiceClientSecret,
+			TokenURL:     tokenURL,
+		}
+		if cfg.ServiceClientID == "" || cfg.ServiceClientSecret == "" {
+			logger.Error("SERVICE_CLIENT_ID/SERVICE_CLIENT_SECRET are required when IDENTITY_SERVICE_URL is set (H3)")
+			os.Exit(1)
+		}
+		resolver = identityclient.NewIdentityHTTPResolver(cfg.IdentityServiceURL, cc.Client(ctx), redisClient, cfg.IdentityCacheTTL)
 		logger.Info("resolving identity via services/identity", slog.String("url", cfg.IdentityServiceURL))
 	} else {
 		logger.Warn("IDENTITY_SERVICE_URL not set — falling back to the Keycloak subject as party id; set it once services/identity is deployed")

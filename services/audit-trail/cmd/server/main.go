@@ -20,6 +20,7 @@ import (
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/audit-trail/internal/config"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/services/audit-trail/internal/store"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform"
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/shared/go/platform/oidcverify"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -93,6 +94,16 @@ func main() {
 	defer cancel()
 	go anchorSvc.Run(ctx)
 
+	// H3: the read surface requires a service token carrying
+	// audit-trail.user-proxy, and recording accepts one carrying
+	// audit-trail.ingest beside INGEST_TOKEN. Discovery happens once at boot,
+	// the same way core-ledger builds its verifier.
+	verifier, err := oidcverify.New(ctx, cfg.AuthIssuerURL, cfg.AuthAudience)
+	if err != nil {
+		logger.Error("building the OIDC verifier", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	health := platform.NewHealth(serviceName, version, commit)
 	health.AddCheck("database", st.Ping)
 
@@ -107,7 +118,7 @@ func main() {
 		// otherwise, above.
 		logger.Warn("starting WITHOUT INGEST_TOKEN in ENV=local: any caller that can reach this port can record events as any actor")
 	}
-	api.New(st, logger, cfg.IngestToken).Register(app)
+	api.New(st, logger, cfg.IngestToken, verifier).Register(app)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	err = platform.Run(app, addr, health, logger, platform.ShutdownConfig{}, func(context.Context) error {

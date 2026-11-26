@@ -139,6 +139,17 @@ type Config struct {
 
 	// AuditTrailToken is the bearer token audit-trail's INGEST_TOKEN expects.
 	AuditTrailToken string `env:"AUDIT_TRAIL_TOKEN" default:""`
+
+	// --- H3: the worker's outbound service-to-service auth. The worker's
+	// relay (notifications/compliance) and its indexer finality checks all
+	// carry a client-credentials token minted for svc-core-ledger-worker
+	// (internal/serviceauth). Only the worker binary needs these — the API
+	// server and reconcile never call another service over HTTP — which is
+	// why they are optional here and required in cmd/worker.
+	ServiceClientID     string `env:"SERVICE_CLIENT_ID" default:""`
+	ServiceClientSecret string `env:"SERVICE_CLIENT_SECRET" default:""`
+	KeycloakBaseURL     string `env:"KEYCLOAK_BASE_URL" default:"http://localhost:8080"`
+	KeycloakRealm       string `env:"KEYCLOAK_REALM" default:"damp"`
 }
 
 func Load() (Config, error) {

@@ -68,11 +68,19 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
   let jsm: JetStreamManager;
   /** Whether this suite created DAMP, and so may remove it afterwards. */
   let ownsStream = false;
+  /** Where this test's durables start: one past the stream's position as it began. */
+  let startSequence: string | undefined;
   const live = { push: jest.fn((..._args: unknown[]) => 1 as number | null) };
   const email = { send: jest.fn(async (..._args: unknown[]) => 1) };
 
   const durables: string[] = [];
   const running: Array<{ consumer: OutboxConsumer; nats: NatsService }> = [];
+
+  /** One past the stream's current last sequence — where a new durable starts. */
+  async function afterStream(): Promise<string> {
+    const info = await jsm.streams.info(STREAM).catch(() => null);
+    return String((info?.state.last_seq ?? 0) + 1);
+  }
 
   async function replica(overrides: Record<string, unknown> = {}, durable?: string) {
     const name = durable ?? `notifications-outbox-test-${randomUUID().slice(0, 8)}`;
@@ -88,6 +96,13 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
       // Every test makes its own durable; `all` would hand each one every
       // earlier test's messages too. The backlog test opts back in.
       OUTBOX_CONSUMER_DELIVER_POLICY: 'new',
+      // DAMP is the developer's (and live e2e's) real stream, so a durable
+      // replaying it would see their events as well as this test's. Start
+      // just past where the stream was when the test began; only a durable
+      // created after that is affected — an existing one keeps the server's
+      // cursor. The backlog test, which publishes beforehand, passes
+      // undefined to get `deliver policy all` instead.
+      OUTBOX_CONSUMER_START_SEQUENCE: startSequence,
       ...overrides,
     };
     const nats = new NatsService(config(values));
@@ -162,17 +177,23 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
   });
 
   afterAll(async () => {
-    for (const r of running) {
-      await r.consumer.onModuleDestroy();
-      await r.nats.close();
-    }
-    for (const d of durables) await jsm.consumers.delete(STREAM, d).catch(() => undefined);
     // Leave the broker as it was found. A DAMP that was already there is
     // core-ledger's (or a developer's) and is not this suite's to remove.
     if (ownsStream) await jsm.streams.delete(STREAM).catch(() => undefined);
     await publisher.drain();
     await db.onModuleDestroy();
     await raw.end();
+  });
+
+  afterEach(async () => {
+    // A replica left running would keep consuming into the next test — the
+    // backlog test's in particular replays the stream's whole history, which
+    // would land in assertions that count globally.
+    for (const r of running.splice(0)) {
+      await r.consumer.onModuleDestroy();
+      await r.nats.close();
+    }
+    for (const d of durables.splice(0)) await jsm.consumers.delete(STREAM, d).catch(() => undefined);
   });
 
   beforeEach(async () => {
@@ -182,6 +203,7 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
     // Every test but the first needs the stream; the first is about it not
     // being there yet, and creates it itself.
     if (!expect.getState().currentTestName?.includes('waits for core-ledger')) await ensureDampStream(jsm);
+    startSequence = await afterStream();
   });
 
   it('waits for core-ledger to create the stream rather than failing', async () => {
@@ -232,7 +254,9 @@ describe('core-ledger outbox over JetStream (real NATS, real Postgres)', () => {
     const id = outboxId();
     await publish(TX_POSTED, id, txPosted('party_7', `backlog-${id}`));
 
-    const r = await replica({ OUTBOX_CONSUMER_DELIVER_POLICY: 'all' });
+    // From the stream's start, since the event above is older than this
+    // durable — the point of the test. (No start sequence: that would skip it.)
+    const r = await replica({ OUTBOX_CONSUMER_DELIVER_POLICY: 'all', OUTBOX_CONSUMER_START_SEQUENCE: undefined });
     await r.consumer.whenReady();
 
     await until(async () => (await rowsFor(id))[0]?.status === 'SENT', 20_000);

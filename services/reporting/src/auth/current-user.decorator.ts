@@ -1,34 +1,25 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
-import { PlatformException } from '@damp/nest-platform';
+import { PlatformException, ServiceAuthRequest, serviceIdentityFrom } from '@damp/nest-platform';
 import type { Request } from 'express-serve-static-core';
 
 /**
  * The party id services/auth-proxy resolved, taken from X-User-Id.
  *
- * Trusted unconditionally, for exactly the reason bff's own version of this
- * decorator documents: Traefik strips these headers from the inbound request
- * (customRequestHeaders with empty values) before ForwardAuth runs, so by the
- * time one reaches this service it can only have been set by auth-proxy.
- * Re-verifying the token here would duplicate auth-proxy's job and let the two
- * drift.
+ * Since H3 that header is no longer trusted on the strength of the network
+ * alone: the shared serviceIdentityFrom only releases it when the request's
+ * verified service token holds reporting.user-proxy — the role granted to
+ * svc-bff and nothing else — so a caller with any other role cannot assert
+ * an end-user identity. The 401 for a missing X-User-Id keeps the same
+ * MISSING_IDENTITY code handlers and tests already expect.
  *
  * This returns the bare id rather than bff's richer AuthContext because
- * payments never makes an authorization decision of its own — the gateway's
+ * reporting never makes an authorization decision of its own — the gateway's
  * route table does that — and a decorator that returned roles would invite
  * one to be made here.
  */
 export const CurrentUser = createParamDecorator((_data: unknown, ctx: ExecutionContext): string => {
-  const req = ctx.switchToHttp().getRequest<Request>();
-  const userId = req.headers['x-user-id'];
-
-  if (typeof userId !== 'string' || userId === '') {
-    throw new PlatformException(
-      401,
-      'MISSING_IDENTITY',
-      'X-User-Id header missing — is this request going through the gateway?',
-    );
-  }
-  return userId;
+  const req = ctx.switchToHttp().getRequest<ServiceAuthRequest>();
+  return serviceIdentityFrom(req).userId;
 });
 
 /**

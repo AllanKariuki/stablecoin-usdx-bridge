@@ -78,6 +78,13 @@ spec:
             - name: INGEST_TOKEN
               valueFrom:
                 secretKeyRef: { name: audit-trail-ingest, key: token }
+            # H3: reads need a service JWT with audit-trail.user-proxy;
+            # recording accepts one with audit-trail.ingest beside
+            # INGEST_TOKEN.
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "audit-trail"
             - name: ANCHOR_INTERVAL
               value: "1h"
             # "log": roots go to this service's structured log and from there
@@ -211,6 +218,12 @@ spec:
               value: "http://keycloak.default.svc.cluster.local:8080"
             - name: KEYCLOAK_REALM
               value: "damp"
+            # H3: every request must carry a service-account JWT with
+            # audience `reporting`.
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "reporting"
             - name: AUDIT_TRAIL_URL
               value: "http://audit-trail.default.svc.cluster.local:8085"
             # Guest tokens are minted here with the admin credential above,

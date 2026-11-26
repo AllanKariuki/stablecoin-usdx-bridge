@@ -48,6 +48,13 @@ spec:
               value: "http://keycloak.default.svc.cluster.local:8080"
             - name: KEYCLOAK_REALM
               value: "damp"
+            # H3: every request must carry a service-account JWT with
+            # audience `payments` (the rail callback is @Public and still
+            # checks RAIL_CALLBACK_SECRET).
+            - name: AUTH_ISSUER_URL
+              value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            - name: AUTH_AUDIENCE
+              value: "payments"
             - name: NOTIFICATIONS_URL
               value: "http://notifications.default.svc.cluster.local:3000"
             - name: OUTBOX_RELAY_SECONDS

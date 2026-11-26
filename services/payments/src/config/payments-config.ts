@@ -45,6 +45,19 @@ export class PaymentsConfig {
   @IsString()
   KEYCLOAK_REALM = 'damp';
 
+  // --- Inbound service-to-service auth (H3). Every request to payments must
+  // carry a service-account JWT whose audience is the `payments` resource
+  // client; AUTH_AUDIENCE names that client and AUTH_ISSUER_URL is where its
+  // keys come from. Both required — there is no unauthenticated mode (the
+  // rail callback is @Public but still checks RAIL_CALLBACK_SECRET).
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  AUTH_ISSUER_URL!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  AUTH_AUDIENCE = 'payments';
+
   // Where the outbox relay delivers payment events. Empty is fine: events
   // queue in the outbox and are delivered once it is set. Either way a
   // notification can never fail a settlement that already happened.

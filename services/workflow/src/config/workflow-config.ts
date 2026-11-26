@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsNotEmpty, IsString, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsNotEmpty, IsString, IsUrl, Max, Min } from 'class-validator';
 
 export class WorkflowConfig {
   @Type(() => Number)
@@ -15,6 +15,17 @@ export class WorkflowConfig {
   @IsString()
   @IsNotEmpty()
   DATABASE_URL!: string;
+
+  // --- Inbound service-to-service auth (H3). Every request must carry a
+  // service-account JWT whose audience is the `workflow` resource client.
+  // Both required — there is no unauthenticated mode.
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  AUTH_ISSUER_URL!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  AUTH_AUDIENCE = 'workflow';
 
   // How often decisions are re-delivered and lapsed requests expired. An
   // approval nobody hears about is the same as no approval, so this is a

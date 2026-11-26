@@ -43,6 +43,20 @@ spec:
             # surface for every binary.
             - name: AUTH_ISSUER_URL
               value: "http://keycloak.default.svc.cluster.local:8080/realms/damp"
+            # H3: the worker's outbound calls (indexer finality, HTTP outbox
+            # relay to notifications/compliance) carry svc-core-ledger-worker's
+            # token. Only the worker needs these.
+            - name: SERVICE_CLIENT_ID
+              value: "svc-core-ledger-worker"
+            - name: SERVICE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: core-ledger-secrets
+                  key: service-client-secret
+            - name: KEYCLOAK_BASE_URL
+              value: "http://keycloak.default.svc.cluster.local:8080"
+            - name: KEYCLOAK_REALM
+              value: "damp"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

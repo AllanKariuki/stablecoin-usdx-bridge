@@ -1,17 +1,25 @@
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
-import { PlatformException } from '@damp/nest-platform';
+import { PlatformException, ServiceAuthRequest, serviceIdentityFrom } from '@damp/nest-platform';
 import type { Request } from 'express-serve-static-core';
 
 /**
  * Who is acting, as services/auth-proxy resolved it: X-User-Id and X-Roles.
  *
- * Trusted unconditionally, for exactly the reason bff's own version of this
- * decorator documents: these are ForwardAuth's authResponseHeaders, which
- * Traefik deletes from the inbound request and replaces with auth-proxy's
- * answer, so by the time one reaches this service it can only have been set
- * by auth-proxy (and carried here unchanged by bff's UpstreamProxy).
- * Re-verifying the token here would duplicate auth-proxy's job and let the
- * two drift.
+ * Since H3 those headers are no longer trusted on the strength of the
+ * network alone. The shared serviceIdentityFrom only releases them when the
+ * request's verified service token holds workflow.user-proxy — the role
+ * granted to svc-bff and nothing else — and that is the only path whose
+ * roles ever authorize a policy check (humans approving through the
+ * gateway).
+ *
+ * The one deliberate exception is workflow.propose: kyc and compliance call
+ * POST /approval-requests with that role, forwarding as X-User-Id the
+ * gateway identity of the officer whose action they are proposing. That
+ * identity is AUDIT-ONLY — it is recorded as requested_by, never checked
+ * against a policy (a proposer never decides; see RequestsService) — so this
+ * decorator reads the header for a propose-role caller but returns no roles
+ * from it, making "audit-only" a property of the returned value rather than
+ * a comment the next edit can forget.
  *
  * Unlike payments, workflow does make an authorization decision of its own —
  * whether this person holds one of the roles a policy names — and that
@@ -25,32 +33,27 @@ export interface Actor {
 }
 
 export const CurrentActor = createParamDecorator((_data: unknown, ctx: ExecutionContext): Actor => {
-  const req = ctx.switchToHttp().getRequest<Request>();
-  const userId = req.headers['x-user-id'];
+  const req = ctx.switchToHttp().getRequest<ServiceAuthRequest>();
+  const audience = req.serviceAudience ?? 'workflow';
+  const roles = req.serviceClaims?.clientRoles[audience] ?? [];
 
-  if (typeof userId !== 'string' || userId === '') {
-    throw new PlatformException(
-      401,
-      'MISSING_IDENTITY',
-      'X-User-Id header missing — is this request going through the gateway?',
-    );
+  if (roles.includes('workflow.user-proxy')) {
+    const identity = serviceIdentityFrom(req);
+    return { userId: identity.userId, roles: identity.roles };
   }
-  return { userId, roles: gatewayRoles(req) };
-});
+  if (roles.includes('workflow.propose')) {
+    // The proposer's header is audit-only: recorded, never authorized.
+    const header = req.headers['x-user-id'];
+    const userId = Array.isArray(header) ? header[0] : header;
+    return { userId: typeof userId === 'string' && userId !== '' ? userId : `service:${req.serviceClaims?.authorizedParty ?? ''}`, roles: [] };
+  }
 
-/**
- * X-Roles as auth-proxy writes it: strings.Join(claims.Roles, ","). Trimmed
- * and de-blanked so an empty header is no roles rather than one role named
- * "" — a policy never names "", but the check should not depend on that.
- */
-function gatewayRoles(req: Request): string[] {
-  const value = req.headers['x-roles'];
-  const raw = Array.isArray(value) ? value.join(',') : (value ?? '');
-  return raw
-    .split(',')
-    .map((r) => r.trim())
-    .filter((r) => r !== '');
-}
+  throw new PlatformException(
+    401,
+    'MISSING_IDENTITY',
+    'no verified service token with workflow.user-proxy or workflow.propose on this request',
+  );
+});
 
 /**
  * The client's Idempotency-Key, required on every write that moves money.
