@@ -177,7 +177,7 @@ export function AppShell(props: AppShellProps) {
           <div className="ml-auto flex items-center gap-1.5">{actions}</div>
         </header>
 
-        <main id="main" className="mx-auto w-full max-w-[1280px] flex-1 px-4 py-6 sm:px-6 lg:px-2 lg:py-8">
+        <main id="main" className="mx-auto w-full max-w-8xl flex-1 px-4 py-6 sm:px-6 lg:px-2 lg:py-8">
           {children ?? <Outlet />}
         </main>
       </div>
