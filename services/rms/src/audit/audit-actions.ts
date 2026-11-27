@@ -16,6 +16,12 @@ export const AUDIT = {
   attestationCreated: 'rms.attestation.created',
   attestationRefused: 'rms.attestation.refused',
   attestationPublished: 'rms.attestation.published',
+  // Slice 3a: the policy and trades around the house's custodial-crypto
+  // position. A limit change moves the mandate every quote is checked
+  // against; a posted rebalance is a trade the treasury desk must be able
+  // to attribute after the fact.
+  exposureLimitSet: 'rms.exposure.limit_set',
+  treasuryRebalancePosted: 'rms.treasury.rebalance_posted',
 } as const;
 
 export const SERVICE = 'rms';

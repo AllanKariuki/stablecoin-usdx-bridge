@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CoreLedgerClient } from '../core-ledger/core-ledger.client';
-import { toMoney } from '../money/money';
+import { isCustodialCrypto, toMoney } from '../money/money';
 import { CustodianProvider, StubCustodianProvider } from './custodian-provider';
 import { Custodian, CustodianStatement, CustodiansRepository } from './custodians.repository';
 
@@ -25,7 +25,10 @@ export class CustodiansService implements OnModuleInit, OnModuleDestroy {
     private readonly ledger: CoreLedgerClient,
     private readonly config: ConfigService,
   ) {
-    const stub = new StubCustodianProvider((currency) => this.ledger.ledgerCash(currency));
+    // The stub reports the ledger's own figure for the custodian's
+    // currency — cash for fiat, custody holdings for crypto — so a
+    // zero-drift custodian reconciles for the right reason.
+    const stub = new StubCustodianProvider((currency) => this.ledger.stubBaseline(currency));
     this.providers.set(stub.name, stub);
   }
 
@@ -97,6 +100,13 @@ export class CustodiansService implements OnModuleInit, OnModuleDestroy {
    * snapshot table is keyed by (custodian, currency, as_of): a gap in it is
    * a gap in the evidence trail, even though only each custodian's latest
    * row is what Leg C compares against today.
+   *
+   * Custodial-crypto statements are the exception: they never leave rms.
+   * core-ledger's /reserves/custodian-snapshots feeds trust_bank_snapshot,
+   * which is the USD-X peg leg — a BTC balance posted there would be
+   * compared as if it were USD. The crypto reconciliation happens in rms
+   * (GET /exposure) against the ledger's custody holdings, so those
+   * statements are acknowledged in place instead of relayed.
    */
   async drain(): Promise<void> {
     let pending: CustodianStatement[];
@@ -109,6 +119,14 @@ export class CustodiansService implements OnModuleInit, OnModuleDestroy {
 
     for (const statement of pending) {
       try {
+        if (isCustodialCrypto(statement.currency)) {
+          await this.repo.markPosted(statement.id);
+          this.logger.log(
+            `recorded ${statement.custodianId} ${toMoney(statement.balance, statement.currency).display} ` +
+              `as of ${statement.asOf.toISOString()} (crypto statements stay in rms)`,
+          );
+          continue;
+        }
         await this.ledger.postCustodianSnapshot({
           custodianId: statement.custodianId,
           currency: statement.currency,

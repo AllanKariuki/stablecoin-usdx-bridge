@@ -49,6 +49,10 @@ export class CoreLedgerClient {
     return this.request<T>('POST', path, body, options);
   }
 
+  patch<T>(path: string, body: unknown, options?: RequestOptions): Promise<T> {
+    return this.request<T>('PATCH', path, body, options);
+  }
+
   private async request<T>(method: string, path: string, body: unknown, options?: RequestOptions): Promise<T> {
     const url = new URL(path, this.baseUrl);
     if (options?.query) {

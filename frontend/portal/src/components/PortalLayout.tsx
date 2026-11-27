@@ -2,6 +2,7 @@ import { Briefcase, User } from 'lucide-react';
 import { useAuth } from '@damp/web-shared/auth';
 import { AppShell } from '@damp/web-shared/layout';
 import { NotificationBell } from '@damp/web-shared/notifications';
+import { Toasts } from '@damp/web-shared/ui';
 import { PORTAL_NAV } from '../nav';
 
 /** Which account the user is acting as. Business users see their org reference. */
@@ -24,13 +25,16 @@ function AccountContext() {
 export default function PortalLayout() {
   const { can } = useAuth();
   return (
-    <AppShell
-      appName="Self-Service"
-      nav={PORTAL_NAV}
-      context={<AccountContext />}
-      settingsTo="/settings"
-      topbar={<p className="text-sm text-muted">Money you hold, on a ledger you can check.</p>}
-      actions={can('notifications:read:own') ? <NotificationBell /> : undefined}
-    />
+    <>
+      <AppShell
+        appName="Self-Service"
+        nav={PORTAL_NAV}
+        context={<AccountContext />}
+        settingsTo="/settings"
+        topbar={<p className="text-sm text-muted">Money you hold, on a ledger you can check.</p>}
+        actions={can('notifications:read:own') ? <NotificationBell /> : undefined}
+      />
+      <Toasts />
+    </>
   );
 }

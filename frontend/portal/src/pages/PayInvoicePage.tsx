@@ -1,16 +1,21 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { CheckCircle2, FileText } from 'lucide-react';
-import { apiErrorMessage, newIdempotencyKey } from '@damp/web-shared/api';
+import { apiErrorMessage, ledgerApi, newIdempotencyKey, type Wallet } from '@damp/web-shared/api';
 import { paymentsApi, resolvePaymentLink, type PaymentIntent } from '@damp/web-shared/api/payments';
 import { useAuth } from '@damp/web-shared/auth';
 import { formatDate, useAsync } from '@damp/web-shared/lib';
 import { Button, Callout, Card, ErrorState, HeroPanel, KeyValueList, LinkButton, Logo, MonoRef, MoneyText, SkeletonRows, StatusBadge } from '@damp/web-shared/ui';
+import ConvertingTracker from '../components/ConvertingTracker';
+import PayFromPicker, { type PayFromSelection } from '../components/PayFromPicker';
 
 /**
  * Where an invoice's payment link lands. Opens without an account (the token
  * is the credential, and resolves at services/payments directly); paying
  * needs one, because money moves wallet to wallet inside the platform.
+ * A signed-in payer funds the invoice from any wallet they hold, with a
+ * cross-currency source riding a TO-side quote (the issuer still nets the
+ * exact amount) and a USD-X source booking as a CONVERTING intent.
  */
 export default function PayInvoicePage() {
   const { payToken = '' } = useParams();
@@ -20,22 +25,42 @@ export default function PayInvoicePage() {
   // The pay endpoint takes the invoice id, which the public view withholds;
   // a signed-in payer finds it among the invoices addressed to them.
   const payable = useAsync(() => (signedIn && hasRole('customer', 'company') ? paymentsApi.invoices('payer') : Promise.resolve([])), [signedIn]);
+  // Wallets are only relevant to a signed-in payer, so anonymous link opens
+  // don't fire an unauthenticated wallets request.
+  const wallets = useAsync<Wallet[]>(() => (signedIn && hasRole('customer', 'company') ? ledgerApi.wallets() : Promise.resolve([])), [signedIn]);
   const match = payable.data?.find((i) => i.number === invoice.data?.number && i.status.toUpperCase() === 'OPEN');
-  const key = useMemo(() => newIdempotencyKey(), []);
-  const [busy, setBusy] = useState(false);
+
+  const targetCurrency = invoice.data?.amount.currency ?? 'USD';
+  const targetAmount = invoice.data?.amount.amount ?? null;
+
+  const [source, setSource] = useState<PayFromSelection>({});
+  const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [paid, setPaid] = useState<PaymentIntent | null>(null);
+  const [result, setResult] = useState<PaymentIntent | null>(null);
+
+  const sourceWallet = source.sourceWallet;
+  const needsQuote = Boolean(sourceWallet && sourceWallet.currency !== targetCurrency && !(sourceWallet.currency === 'USDX' && targetCurrency === 'USD'));
+  const quoteReady = !needsQuote || Boolean(source.quoteId);
 
   const pay = async () => {
     if (!match) return;
-    setBusy(true);
+    // One idempotency key per confirmed pay, reused on every retry of it.
+    const key = idempotencyKey ?? newIdempotencyKey();
+    setIdempotencyKey(key);
+    setSubmitting(true);
     setError(null);
+    setResult(null);
     try {
-      setPaid(await paymentsApi.payInvoice(match.id, key));
+      const intent = await paymentsApi.payInvoice(match.id, key, {
+        ...(source.sourceWalletId ? { sourceWalletId: source.sourceWalletId } : {}),
+        ...(source.quoteId ? { quoteId: source.quoteId, sourceAmount: source.sourceAmount } : {}),
+      });
+      setResult(intent);
     } catch (err) {
       setError(apiErrorMessage(err));
     } finally {
-      setBusy(false);
+      setSubmitting(false);
     }
   };
 
@@ -55,17 +80,21 @@ export default function PayInvoicePage() {
           ) : invoice.error ? (
             <ErrorState title="This link can’t be used" message={invoice.error instanceof Error ? invoice.error.message : 'Try again later.'} onRetry={invoice.reload} />
           ) : invoice.data ? (
-            paid ? (
-              <div className="flex flex-col items-start gap-4" role="status">
-                <span className="grid size-14 place-items-center rounded-[18px] bg-cyan-tint text-cyan-ink">
-                  <CheckCircle2 className="size-7" aria-hidden />
-                </span>
-                <h1 className="text-2xl font-extrabold tracking-tight text-navy">Payment sent</h1>
-                <KeyValueList className="w-full" items={[{ label: 'Status', value: <StatusBadge status={paid.status} /> }, { label: 'Reference', value: <MonoRef value={paid.id} /> }]} />
-                <LinkButton to="/home" variant="secondary">
-                  Go to your account
-                </LinkButton>
-              </div>
+            result ? (
+              result.status.toUpperCase() === 'CONVERTING' ? (
+                <ConvertingTracker intent={result} />
+              ) : (
+                <div className="flex flex-col items-start gap-4" role="status">
+                  <span className="grid size-14 place-items-center rounded-[18px] bg-cyan-tint text-cyan-ink">
+                    <CheckCircle2 className="size-7" aria-hidden />
+                  </span>
+                  <h1 className="text-2xl font-extrabold tracking-tight text-navy">Payment sent</h1>
+                  <KeyValueList className="w-full" items={[{ label: 'Status', value: <StatusBadge status={result.status} /> }, { label: 'Reference', value: <MonoRef value={result.id} /> }]} />
+                  <LinkButton to="/home" variant="secondary">
+                    Go to your account
+                  </LinkButton>
+                </div>
+              )
             ) : (
               <div className="flex flex-col gap-5">
                 <div className="flex items-start gap-3">
@@ -97,9 +126,16 @@ export default function PayInvoicePage() {
                 ) : payable.loading ? (
                   <SkeletonRows rows={1} />
                 ) : match ? (
-                  <Button size="lg" onClick={pay} loading={busy}>
-                    Pay {invoice.data.amount.display}
-                  </Button>
+                  <>
+                    {wallets.loading && !wallets.data ? (
+                      <SkeletonRows rows={4} />
+                    ) : (
+                      <PayFromPicker wallets={wallets.data ?? []} targetCurrency={targetCurrency} targetAmount={targetAmount} onChange={setSource} />
+                    )}
+                    <Button size="lg" onClick={pay} loading={submitting} disabled={wallets.loading || !quoteReady}>
+                      Pay {invoice.data.amount.display}
+                    </Button>
+                  </>
                 ) : (
                   <Callout tone="warn" title="This invoice isn’t addressed to your account">
                     Sign in with the account the invoice was sent to, or ask the sender to issue it to you.

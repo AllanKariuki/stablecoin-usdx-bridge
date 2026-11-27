@@ -3,6 +3,484 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-27 — Portal: convert page with history, and USD-X chain moves (slice 5b)
+
+### Added — Convert page (frontend/portal)
+
+- `/convert` is now a full two-column screen: the existing `SwapCard` stays on
+  the left (keeping its `?from=` / `?to=` deep links), with a "How conversion
+  works" explainer beside it — live multi-source pricing, ~30s quotes that
+  re-quote automatically, spread as the only fee, 1:1 USD↔USD-X, and the
+  two-step route other USD-X pairs take via dollars.
+- Below both, a "Conversion history" table lists every swap and USD-X
+  issue/redeem (from `GET /conversions`), newest first, with cursor "Load
+  more" pagination; columns show date, from → to (with currency icons),
+  amount out, amount in, rate and status. Rows open the existing
+  `TransactionDrawer`. Loading, empty and error-with-retry states are handled.
+
+### Added — Move between chains (frontend/portal)
+
+- The USD-X page gains a "Move between chains" card: pick one of the caller's
+  USD-X wallets (ETHEREUM/SOLANA), enter an amount, and the destination is the
+  other chain. When that chain has no wallet yet, an inline "Open a USD-X
+  wallet on <chain>" step (via `OpenUsdxWalletForm`, chain pre-selected and
+  locked) runs first.
+- Submitting posts `POST /bridges` with an Idempotency-Key minted once per
+  confirm, then follows the saga through `GET /transfers/:correlationId` to a
+  terminal state on the existing `SagaTimeline`. Friendly errors throughout.
+
+### Changed — Portal and bff
+
+- Conversion history shows the booked FX rate: bff maps only `metadata.rate` /
+  `metadata.spread_bps` into a `fx` field (never the rest of metadata, so
+  `payee_user_id` stays internal), and the bridge saga timeline now uses
+  bridge-specific steps naming the source and destination chains.
+
+## 2026-11-27 — Portal: pay invoices from any wallet (slice 5b)
+
+### Changed — Invoice pay (frontend/portal)
+
+- The public payment link (`/pay/:token`) and the in-app "To pay" invoice list
+  both replace the fixed-wallet pay with the shared `PayFromPicker`, so a
+  payer can fund an invoice from any wallet they hold:
+  - Same-currency source pays straight out (`sourceWalletId` only).
+  - Cross-currency source asks for a TO-side live quote minted for the fixed
+    invoice amount — the picker shows you-pay / rate / fee / recipient-gets
+    with a countdown and auto re-quote — and submits `quoteId` +
+    `sourceAmount` (= the pinned quote amount) with the pay.
+  - A USD-X source into USD rides the 1:1 redemption with no quote, notes it
+    settles after the burn confirms, and the result shows `ConvertingTracker`
+    polling the CONVERTING intent to settlement.
+  - Idempotency-Key is minted once on confirm and reused on retries; errors
+    surface through the shared friendly-code map.
+- The public link keeps its anonymous resolve-and-sign-in flow untouched;
+  wallets only load for a signed-in payer.
+
+## 2026-11-27 — Portal: send money from any wallet (slice 5b)
+
+### Added — Send wizard (frontend/portal)
+
+- New `/send` page — a four-step wizard (Recipient → Amount → Review → Result),
+  reached from a new "Send" nav item under Move money (`payments:write:own`):
+  - Recipient: on-platform payees, verified bank accounts and saved bank
+    beneficiaries, or M-Pesa beneficiaries, each on its own tab; a payee
+    deep-linked from Quick Send (`/send?payee=<id>`) skips straight to the
+    amount, and a payee can be added mid-send.
+  - Amount + "Pay from": pick any wallet. A cross-currency source asks for a
+    TO-side live quote (the recipient still nets the exact amount) and sends
+    `quoteId`/`sourceAmount` with the intent; a same-currency source sends
+    only `sourceWalletId`; a USD-X source into USD rides the 1:1 redemption
+    with no quote. A rail payout (bank/M-Pesa) can only be funded from a
+    wallet holding that currency — other wallets are greyed with a
+    "Convert first" link to `/convert?to=<CCY>`.
+  - Review shows the legs, fee and recipient amount, then `createIntent`.
+  - Result: a receipt for settled intents, or a `ConvertingTracker` that
+    polls the CONVERTING intent to SETTLED/FAILED/CANCELLED.
+- Shared pieces extracted so the invoice pay path reuses them: `useQuote`
+  (the debounced quote + countdown, moved out of SwapCard), `PayFromPicker`,
+  `ConvertingTracker` and `AddPayeeModal`.
+- Friendly error codes for the send rails added to `client.ts`
+  (`QUOTE_REQUIRED`, `SOURCE_AMOUNT_REQUIRED`,
+  `CROSS_CURRENCY_RAIL_UNSUPPORTED`, `QUOTE_ALREADY_USED`,
+  `QUOTE_AMOUNT_MISMATCH`, `QUOTE_EXPIRED_DURING_CONVERSION`).
+
+## 2026-11-27 — Portal: multi-asset dashboard and wallets (slice 5a)
+
+### Added — Home dashboard (frontend/portal)
+
+- The Home page is rebuilt as a 12-column (stacked on mobile) multi-asset
+  dashboard on the real APIs — no mock data:
+  - Header: greeting, total portfolio value in USD (every wallet's balance
+    × its USD rate; USD-X = 1:1) with a localStorage-persisted eye toggle;
+    wallets whose rate is unavailable show "—" and a "some prices
+    unavailable" note. All sums are BigInt-exact (new `addDecimal` /
+    `mulDecimal` / `divDecimal` helpers in `@damp/web-shared/api/money` —
+    money never passes through a float).
+  - "Markets": a recharts multi-series line chart of BTC/ETH/SOL percent
+    change from `GET /rates/history` (1H–ALL tabs, default 1M), one percent
+    y-axis, fixed per-asset colours (BTC `#D97706`, ETH `#6D4ED8`, SOL
+    `#0E9F8E`), crosshair tooltip with % + price, legend plus labels at the
+    line ends, per-asset price/24h-change rows below, and an accessible
+    "View as table" toggle.
+  - Hero banner ("Pay with anything."), Quick send (saved payees as
+    deterministic avatar circles linking to `/send?payee=<id>`), and a Swap
+    card: debounced 500ms quotes (`amount_side FROM`), fee/total/net
+    display, a live countdown to `expires_at` that re-quotes at zero,
+    ISSUANCE/REDEMPTION peg handling, friendly messages for
+    `USDX_TWO_STEP` / `USDX_USES_ISSUANCE` / `EXPOSURE_LIMIT_EXCEEDED` /
+    `PARTY_OUTSTANDING_CAP_EXCEEDED` / `PAIR_TRIPPED` / `STALE_PRICE`, an
+    inline "Add \<CCY> wallet" before quoting when the target wallet is
+    missing, and Convert with a per-quote Idempotency-Key.
+  - "My portfolio" (rows per wallet with icon, 24h change and default
+    star) and "Recent activity" (last 6 transactions).
+
+### Added — Wallets (frontend/portal)
+
+- Wallets page groups Fiat / Crypto / USD-X, each wallet a card with
+  currency icon, label, balance (respects the hide toggle), USD value,
+  status badge and default star, plus an actions menu (Set as default via
+  `updateWallet` — only when a currency has more than one wallet — Rename
+  with the 64-character cap, View statement).
+- Add-wallet wizard: type → currency (from `GET /currencies`, excluding
+  held currencies; USD-X reuses the chain-picking `OpenUsdxWalletForm`
+  flow) → optional label + confirm → success with "Fund it"
+  (`/move/deposit`) or "Buy \<CCY>" (`/convert?to=<CCY>`) CTA.
+- Wallet detail shows the default flag, gains a Rename action and a
+  Convert action (`/convert?from=<id>`).
+- New `/convert` page (nav item under Move money, `fx:convert`) reusing
+  the Swap card full-width, pre-seeded from `?from=` / `?to=` deep links.
+- New `toast`/`Toasts` in `@damp/web-shared/ui`; a `ResizeObserver` stub
+  in the portal test setup keeps recharts renderable under jsdom.
+
+## 2026-11-27 — Portal money API: wallets, quotes, conversions and price history (slices 4b/4c)
+
+### Added — price history (services/pricing, slice 4c)
+
+- New migration `003_price_points.sql`: one row per (symbol, 1-minute
+  bucket) holding the aggregated mid and its sources. The aggregator
+  upserts after every poll — for each crypto USD leg (BTC/ETH/SOL vs USD)
+  and each fiat USD leg (USD/EUR, USD/GBP, USD/KES) — but only while the
+  symbol is OK: a stale or tripped symbol is deliberately not recorded, so
+  the chart can never show a price the quote path refuses (the gap is the
+  chart's own TRIPPED marker). A retention job (at boot, then daily) keeps
+  minute buckets for 2 days, downsamples older rows to the last point per
+  hour, and deletes rows older than 400 days.
+- `GET /rates/history?symbols=BTC,ETH&range=1H|1D|1W|1M|1Y|ALL&base=USD`
+  (role `pricing.read`): per symbol, points `[{t, price}]` converted into
+  `base` through the USD legs at each point's own time (the base leg
+  contributes the point whose bucket is closest, ties going to the earlier
+  point so a chart never uses lookahead), downsampled to at most 300
+  points, plus `change_pct` = (last−first)/first×100 as an exactly-2-dp
+  string — computed on fixed-point BigInts, never floats. A fiat base leg
+  is fetched in full (a daily point's closest match can predate a short
+  window); a crypto leg from the window's start.
+- `GET /rates` (the board) gains `change_24h_pct` per entry — the newest
+  recorded point against the newest at or before 24h ago, computed on the
+  *displayed* rate (a crypto entry's inverted leg) — when history has
+  enough points; a database outage degrades the field, never the board.
+  Non-USD boards omit it: their cross-rate change needs both legs composed
+  per point, which is the history endpoint's job, not the board's.
+
+### Added — the portal money API (core-ledger + bff + auth-proxy)
+
+- core-ledger gains `GET /currencies` (`ledger.user-proxy`): the active
+  currencies from the chart with kind, decimals, name and the derived
+  `native_chain` (NativeChain — a property of the custody model, not of the
+  currency row).
+- bff customer routes, every one deriving the caller from the auth context
+  (never a body field) and ownership-checking every wallet it names before
+  any other service hears about it:
+  - `GET /currencies` — core-ledger's chart in camelCase.
+  - `POST /wallets {currency, label?}` — any supported currency, stamped
+    with the native chain for crypto, idempotent per (user, currency) by
+    core-ledger's EnsureWallet; USD-X answers 422 `USE_USDX_ROUTE` (it
+    lives on two chains — open it through the existing POST /wallets/usdx).
+  - `PATCH /wallets/:walletId {is_default?, label?}` — ownership-checked,
+    then core-ledger's PATCH (is_default may only be set true, labels
+    capped at 64 runes). Wallet views gain `isDefault`.
+  - `POST /quotes {fromWalletId, toWalletId? | toCurrency?, amount,
+    amountSide?}` — derives both currencies from the wallets, quotes
+    through services/pricing with `party_id` = the caller. The
+    USD<->USD-X pair answers a synthetic 1:1 peg preview (`quote_id: null`,
+    `rate: "1"`, `fee: "0"`, `route: "ISSUANCE" | "REDEMPTION"` — nothing
+    is minted; bff does not know the issuance fee schedule, which lives in
+    core-ledger); any other USD-X pair answers 422 `USDX_USES_ISSUANCE`.
+    Every response carries `route: "FX" | "ISSUANCE" | "REDEMPTION"`.
+  - `POST /conversions {fromWalletId, toWalletId, amount, quoteId?}` —
+    KYC-gated exactly like POST /transfers (the caller's tier, before any
+    ownership read or core-ledger call), Idempotency-Key mandatory. FX
+    books core-ledger's POST /fx/conversions (201); the peg routes reuse
+    the issuance/redemption journals with the same shapes, idempotency
+    discipline and saga handle (202); other USD-X pairs answer 422
+    `USDX_TWO_STEP` ("convert to USD first"). Response: `{route,
+    transaction, correlationId, sagaStatus, status}`.
+  - `GET /conversions` — the caller's FX_CONVERSION / USDX_ISSUE /
+    USDX_REDEEM transactions. core-ledger's `GET /transactions` gains an
+    optional repeated or comma-separated `type` filter (validated against
+    the known TxType values, 400 on an unknown one), applied in SQL before
+    the limit and keyset cursor — so bff passes the three types through and
+    returns core-ledger's cursor directly, and a conversion older than a
+    page of deposits still pages into view.
+  - `GET /rates` and `GET /rates/history` — customer paths proxied to
+    services/pricing (svc-bff holds pricing.read), separate from the ops
+    console's `/pricing/*` surface.
+- `services/auth-proxy` route table (no new permissions): `GET /currencies`
+  → wallets:read:own; `POST /wallets`, `PATCH /wallets/:walletId` →
+  wallets:write:own/:any; `POST /quotes` → fx:quote; `POST /conversions` →
+  fx:convert; `GET /conversions` → transactions:read:own; `GET /rates`,
+  `GET /rates/history` → wallets:read:own. POST /bridges was already
+  customer-reachable (bridge:create) — unchanged.
+
+### Added — shared frontend API (@damp/web-shared)
+
+- `wallets.ts` (`currencies`, `createWallet`, `updateWallet`), `fx.ts`
+  (`quote`, `convert`, `conversions` — typed against bff's exact wire
+  shapes including `route`) and `rates.ts` (`rates`, `history`, plus the
+  normalizing `historyQuery` helper), exported from the api barrel.
+- `payments.ts`: `createIntent` and `payInvoice` accept the cross-asset
+  legs `sourceWalletId`/`sourceAmount`/`quoteId` (passed through to
+  services/payments untouched — verified by a new bff passthrough e2e), and
+  `PaymentIntent` carries them back.
+
+## 2026-11-26 — Pay from any wallet: cross-asset payments (slice 4a)
+
+### Added — TO-side quotes (services/pricing)
+
+- `POST /quotes` accepts optional `amount_side: "FROM" | "TO"` (default
+  FROM). A TO-side quote fixes the **net the payee must receive** — the
+  shape an invoice payment needs, since the invoice is fixed in the payee's
+  currency — and pricing solves for the smallest `from` amount whose
+  conversion nets at least that: a ceil-division estimate on net's exact
+  linear bound, stepped up over `convertAmount`'s two truncations and then
+  minimized by binary search (a linear walk would not terminate practically
+  on a wide-scale pair — the ETH→USD gross truncation is flat over ~10^12
+  wei at a time). The minted quote is pinned to the solved amount exactly as
+  a FROM-side quote is, and the exposure guard sees the same solved notional.
+  The response gains `amount_side` and returns both `amount` (the solved
+  `from` amount) and `net`. Minimality and net-≥-target are unit-tested
+  across BTC 8dp, ETH 18dp and KES 2dp.
+
+### Added — payments from any wallet (services/payments)
+
+- New migration `004_cross_asset_intents.sql`: `payment_intents` gains
+  `source_wallet_id`, `source_currency`, `quote_id`, `source_amount`,
+  `conversion_ref` (the redemption saga's correlation id) and
+  `conversion_next_poll_at` (the poller's lease); the status vocabulary gains
+  `CONVERTING`. `currency`/`amount` keep their meaning — what the payee
+  receives for a TRANSFER, what moves on the rail otherwise.
+- `POST /payment-intents` (and `POST /invoices/:id/pay`, which passes the
+  same fields through) accepts optional `sourceWalletId`, `sourceAmount` and
+  `quoteId`. The wallet is fetched from core-ledger (`GET /wallets/:id`) and
+  must belong to the payer and be ACTIVE; a same-currency wallet simply
+  substitutes for the ensured one (so a payer can pick which USD-X wallet,
+  ETH or Solana, to pay from). Cross-currency is a TRANSFER to an in-platform
+  WALLET beneficiary only — DEPOSIT/WITHDRAWAL rails stay single-currency
+  (422 `CROSS_CURRENCY_RAIL_UNSUPPORTED`) — and requires the quote and its
+  pinned `source_amount` (422 `QUOTE_REQUIRED` / `SOURCE_AMOUNT_REQUIRED`).
+  Settlement books it through core-ledger's `POST /fx/payments` under the
+  intent-derived idempotency key; terminal quote refusals
+  (`QUOTE_EXPIRED`, `QUOTE_ALREADY_USED`, `QUOTE_AMOUNT_MISMATCH`,
+  `QUOTE_PARTY_MISMATCH`, `INSUFFICIENT_FUNDS`) fail the intent with the
+  ledger's code.
+- **USD-X source is a two-step.** USD-X never converts through FX, so the
+  intent is created `CONVERTING` and a redemption posts at creation
+  (`POST /redemptions`, idempotency key `payments:<intent>:redeem`) into the
+  payer's USD wallet; a `ConversionPoller` (outbox-relay claim shape:
+  `FOR UPDATE SKIP LOCKED` lease, every replica can run one) polls
+  `GET /transfers/:correlationId` and, once the saga is `COMPLETED`, settles
+  the fiat leg — a plain transfer for a USD target (the redemption is 1:1 at
+  the default zero redemption fee), an FX payment against the stored USD
+  quote otherwise. If the saga fails, the intent fails with the saga's
+  reason; the ledger reverses the redemption itself while it is PENDING
+  (the USD-X in suspense returns to the payer's wallet). A crash between the
+  intent and the redemption is recovered by the poller re-posting under the
+  same idempotency key, which resumes the same saga.
+- **Known limitation — quotes can expire during the burn.** On-chain
+  finality is slower than a quote TTL: if the USD→target quote expires while
+  the burn confirms, the intent fails with `QUOTE_EXPIRED_DURING_CONVERSION`
+  and the redeemed USD remains in the payer's USD wallet (it is their money;
+  it is never spent against an unpinnable rate).
+- Invoice pay cross-currency checks the booked net after settlement: the net
+  is read from the FX payment's transaction metadata (`metadata.net`, in the
+  target currency's smallest units, now rendered by core-ledger's
+  `renderTransaction`) and compared to the invoice amount; a shortfall — or a
+  response without a well-formed net — is a bug, and it fails loudly — the
+  intent stays un-settled for an operator rather than marking an underpaid
+  invoice PAID.
+- The core-ledger client gains `getWallet`, `payConverted`, `redeem` and
+  `getTransfer` (service-token auth, idempotency headers, `LedgerError`
+  mapping, 404→null on reads), and `LedgerError` now surfaces the envelope's
+  error `code`.
+
+### Changed — core-ledger auth (no flow changes)
+
+- `ledger.settlement` (svc-payments) now also holds `GET /wallets/:walletId`
+  (to verify a source wallet's owner/currency/status), `POST /redemptions`
+  (to start the USD-X leg) and `GET /transfers/:correlationId` (to poll the
+  burn saga). Everything else the role can and cannot touch is unchanged.
+
+## 2026-11-26 — Ops Console: crypto exposure, rebalances and pricing (slice 3b)
+
+### Added — the treasury/exposure and pricing surfaces reach the Ops Console
+
+- `services/auth-proxy` route table now exposes rms's exposure and rebalance
+  surface (`GET /exposure`, `GET/PUT /exposure/limits/:currency`,
+  `GET/POST /treasury/rebalances`) and pricing's pair policy
+  (`GET /pricing/pairs`, `GET /pricing/rates`, `PATCH /pricing/pairs/:base/:quote`).
+  Reads sit on `reserves:read`; the writes (set a mandate, post a rebalance,
+  tune a pair) on `reserves:manage` — the same segregation as reserve
+  targets, so `admin` (which holds `reserves:read` only) cannot change them.
+  No new permissions were added.
+- `services/bff` forwards both surfaces: the rms routes join
+  `RmsProxyController`, and a new `PricingProxyController` maps
+  `/pricing/*` → pricing's `/pairs` and `/rates` (stripping the `/pricing`
+  prefix), using the same `UpstreamProxy` + svc-bff service-account token
+  (svc-bff already holds `pricing.read`/`pricing.admin` and `rms.user-proxy`).
+  New `PRICING_URL` config (empty answers 503 like the other proxies),
+  wired through `scripts/stack.sh` (`http://localhost:13009`) and bff's
+  `.env.example`.
+- `@damp/web-shared/api` gains `treasury.ts` (exposure rows, limits,
+  rebalances) and `pricing.ts` (pairs, indicative rates) with a new `patch`
+  client helper, typed against the exact upstream response shapes.
+- Ops Console treasury workspace gains two pages — **Crypto exposure**
+  (per-asset liabilities/holdings/net exposure with signed short styling,
+  mandate, utilisation bar, custodian MATCH/DRIFT badge, edit-mandate and
+  record-rebalance modals, and rebalance history) and **Pricing** (indicative
+  rates with OK/STALE/TRIPPED status, pair policy table, pair edit drawer).
+  Both are gated on `reserves:read` for the route/nav like Custodians, with
+  mutating controls behind `reserves:manage`.
+
+## 2026-11-26 — Treasury and exposure for custodial crypto (slice 3a)
+
+### Added — ledger treasury positions and the rebalance journal (core-ledger)
+
+- `GET /treasury/positions` reports, per active custodial crypto currency
+  (BTC/ETH/SOL), the customer liabilities (the `GLWalletParent(C)` subtree
+  sum — a new `SubtreeBalance` rollup over the materialized hierarchy),
+  custody holdings, FX position and `net_exposure =
+  custody_holdings - customer_liabilities` (negative = the house is short)
+  as decimal strings. Roles: `ledger.reserves.custodian` (rms),
+  `ledger.user-proxy`, `ledger.reports.read`.
+- `POST /treasury/rebalances` (idempotent) posts the journal for one
+  treasury desk trade, new `TREASURY_REBALANCE` transaction type and
+  `TREASURY_REBALANCE` entity type. BUY: DR crypto-at-custodian / CR FX
+  position (crypto), DR FX position / CR trust bank (fiat); SELL is the
+  exact mirror. The posting engine floors the two real asset accounts
+  (trust bank on BUY, custody on SELL) so a trade cannot manufacture a
+  negative asset balance. Writes are locked to the new `ledger.treasury`
+  role — held by rms alone, mirroring the reserves writers' isolation.
+
+### Added — exposure policy, crypto custodian reconciliation and the treasury desk surface (services/rms)
+
+- New migration (`003_exposure.sql`): `exposure_limits` (max_short/max_long
+  per currency, seeded 5 BTC / 100 ETH / 5000 SOL both sides) and
+  `treasury_rebalances` (the desk's own record, unique on `ledger_tx_id`).
+  The `custodians` table now accepts BTC/ETH/SOL via a check constraint,
+  and BTC/ETH/SOL stub custodians are seeded.
+- The stub custodian now reports the ledger's own custody holdings (from
+  `GET /treasury/positions`) for crypto custodians, plus the same
+  configurable drift. Crypto statements stay in rms — they are never
+  posted to `/reserves/custodian-snapshots`, which is the USD-X peg leg —
+  and reconcile in rms: `GET /exposure` computes a per-currency
+  MATCH/DRIFT status (abs diff vs `CRYPTO_RECON_TOLERANCE`, default 0),
+  alongside positions, limits, utilisation in bps and the latest custodian
+  snapshot.
+- `POST /exposure/check` (role `rms.exposure.check`, held by svc-pricing)
+  takes the signed change in customer liabilities a quote would cause and
+  refuses with `422 EXPOSURE_LIMIT_EXCEEDED` if the projected position
+  breaches -max_short or +max_long. It fails closed: a currency with no
+  `exposure_limits` row is refused with `422 NO_EXPOSURE_POLICY` rather
+  than quoted unbounded — treasury must set a mandate before that currency
+  can be quoted.
+- Known limitation: the check compares against the ledger's *booked*
+  positions, so quotes issued but not yet consumed are not counted. The
+  gap is bounded by quote TTL and pricing's per-party outstanding cap, not
+  by this check.
+- `GET/PUT /exposure/limits/:currency` (audited via the audit relay) and
+  `POST /treasury/rebalances` — validates the trade, calls core-ledger
+  under a deterministic Idempotency-Key derived from the trade content (so
+  retries replay, never double-trade), records it and audits it in one
+  transaction; replays return the existing row without double-auditing.
+  `GET /treasury/rebalances` lists.
+
+### Added — the rms exposure gate in the quote flow (services/pricing)
+
+- `RmsExposureGuard` replaces the slice-3 placeholder: before the local
+  reservation, every crypto-legged quote asks rms `POST /exposure/check`
+  with svc-pricing's own token (rms audience via a new
+  `aud-mapper-rms`). If `to` is custodial crypto, delta = +gross units of
+  `to`; if `from` is custodial crypto, delta = -amount of `from`; fiat legs
+  are not checked. rms refusal → `422 EXPOSURE_LIMIT_EXCEEDED`;
+  unreachable → `503 RMS_UNAVAILABLE`, fail closed. The guard composes with
+  `DbExposureGuard` under the existing `EXPOSURE_GUARD` token, so the
+  quotes flow needed no changes.
+- `RMS_URL` config wired through pricing's config class, `.env.example`,
+  `scripts/stack.sh` (http://localhost:13005) and the k8s deployment
+  (rms.default.svc.cluster.local:3005).
+
+### Changed — Keycloak realm template
+
+- core-ledger client: new `ledger.treasury` role, granted to svc-rms
+  (scope mapping + service account) beside `ledger.reserves.custodian`.
+- rms client: new `rms.exposure.check` role, granted to svc-pricing; and
+  svc-pricing's tokens now carry the rms audience via `aud-mapper-rms`.
+
+## 2026-11-26 — services/pricing: the only issuer of FX quotes
+
+### Added — a pricing service that owns every rate the platform quotes
+
+- `services/pricing` (NestJS, modeled on services/rms): prices
+  USD/EUR/GBP/KES/BTC/ETH/SOL from Coinbase + Kraken tickers and an
+  er-api-shaped fiat feed (or a fixed-rate stub for local/e2e), all in
+  BigInt fixed-point arithmetic at the ledger's 18-decimal rate scale.
+- Aggregation policy: crypto symbols need two fresh sources (median), fiat
+  one; a deviation circuit breaker trips a symbol when any two sources
+  disagree by more than 150bps and refuses to quote until they agree again;
+  cross rates are computed through USD, with inverted legs truncating
+  toward the house.
+- `POST /quotes` mints single-use quotes pinned to one amount and one party
+  in core-ledger via `POST /fx/quotes` under `ledger.pricing`, after an
+  exposure guard enforces the pair's `max_notional_usd` and a per-party cap
+  on *outstanding* (unexpired) quoted notional, so abandoned re-quotes don't
+  use up a user's allowance. The guard reserves first: a per-party advisory
+  lock, the cap check and a `RESERVED` row commit together before the ledger
+  call, and the row then becomes `ISSUED`, or is deleted if the ledger fails.
+  Concurrent requests therefore can't overshoot the cap. Daily and tier spend
+  limits stay with bff and KYC tiers. USD-X is refused with `422 USDX_USES_ISSUANCE`. The
+  response's gross/fee/net use core-ledger's exact `Convert()` arithmetic
+  (unit-tested for parity with `fx_test.go`).
+- `GET /rates`, `GET /pairs`, `PATCH /pairs/:base/:quote` (audited),
+  behind the new `pricing` resource client's roles (`pricing.quote`,
+  `pricing.read`, `pricing.admin`). Own database (`pricing` /
+  `pricing_test`), own migrations, audit outbox relay.
+
+### Changed — wiring
+
+- Keycloak realm template: the `pricing` bearer-only resource client with
+  its roles; the confidential `svc-pricing` service account holding
+  `ledger.pricing` (the role's only holder); svc-bff and svc-payments get
+  pricing.quote/pricing.read, and svc-bff also gets pricing.admin and the
+  user-proxy role for audited pair changes.
+- `scripts/stack.sh` starts pricing on host port 13009 with the stub feed;
+  `infra/postgres/init/07-pricing-database.sql` and CI's database step
+  create its databases; `infra/k8s/pricing-deployment.yaml` deploys it on
+  port 3006 with live feeds.
+
+## 2026-11-26 — Multi-asset ledger (slice 1 of multi-asset wallets)
+
+### Added — custodial BTC/ETH/SOL, crypto FX and pay-with-conversion in core-ledger
+
+- `DefaultCurrencies()` gains BTC (8dp), ETH (18dp) and SOL (9dp). These are
+  custodial: the chain comes from the currency (BTC→`BITCOIN`, ETH→`ETHEREUM`,
+  SOL→`SOLANA`), and a wallet carries no address (`WRONG_CHAIN`,
+  `UNEXPECTED_ADDRESS`). Each gets an FX position, an FX spread, a "Crypto
+  at custodian" and a "Crypto in transit" account. USD-X's chart and wallet
+  rules are unchanged.
+- `Convert` now accepts every pair except those involving USD-X, which still
+  crosses only through issuance and redemption (`USDX_USES_ISSUANCE`).
+  Before, it accepted fiat↔fiat only.
+- New `PayConverted` flow and `POST /fx/payments` (role `ledger.settlement`).
+  One journal debits the payer in one currency and credits a different
+  owner's wallet in another, across a quote. This is the basis for paying
+  with any wallet.
+- Default wallets: `wallets.is_default`, at most one per (user, currency),
+  set via `PATCH /wallets/:walletId`, which also renames a wallet (labels are
+  trimmed, with a 64-rune maximum).
+- Migration `00010_multi_asset.sql`.
+
+### Changed — FX quotes can no longer be set by users or reused
+
+- `POST /fx/quotes` is reachable only with the new `ledger.pricing` role
+  (added to the Keycloak realm template). bff's user-proxy role can no
+  longer choose its own rate.
+- A quote is single-use: a partial unique index on
+  `transactions(fx_quote_id)` covers FX conversions and payments; reversals
+  are excluded. Reuse fails with `QUOTE_ALREADY_USED` (409), while an
+  idempotent replay still returns the original transaction.
+- A quote can be pinned to an exact `from_amount` and a `party_id`
+  (`QUOTE_AMOUNT_MISMATCH`, `QUOTE_PARTY_MISMATCH`), so the pricing service's
+  exposure check covers exactly one movement.
+
 ## 2026-11-26 — Hardening H1–H7 brought into main
 
 ### Changed — the stacked hardening branches reach `main`

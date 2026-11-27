@@ -1,20 +1,19 @@
 import { useMemo, useState } from 'react';
-import { ArrowDownToLine, ArrowLeftRight, ArrowRight, ArrowUpFromLine, CheckSquare, Coins, ReceiptText } from 'lucide-react';
-import { apiErrorMessage, approvalsApi, ledgerApi } from '@damp/web-shared/api';
+import { Link } from 'react-router-dom';
+import { ArrowDownRight, ArrowRight, ArrowUpRight, CheckSquare, Eye, EyeOff, ReceiptText, Star } from 'lucide-react';
+import { approvalsApi, apiErrorMessage, ledgerApi, ratesApi, type Wallet } from '@damp/web-shared/api';
 import { Can, useAuth } from '@damp/web-shared/auth';
 import { useAsync } from '@damp/web-shared/lib';
-import { Callout, Card, CardHeader, EmptyState, ErrorState, LinkButton, MoneyText, PageHeader, Skeleton, SkeletonRows, StatusBadge } from '@damp/web-shared/ui';
-import { Link } from 'react-router-dom';
+import { Badge, Callout, Card, CardHeader, EmptyState, ErrorState, IconButton, LinkButton, Logo, Skeleton, SkeletonRows, StatusBadge } from '@damp/web-shared/ui';
 import KycBanner from '../components/KycBanner';
 import TransactionDrawer, { TransactionRow } from '../components/TransactionDrawer';
-import { RULES } from './landing/content';
-
-const ACTIONS = [
-  { to: '/move/deposit', label: 'Deposit', icon: ArrowDownToLine, anyOf: ['wallets:write:own'] as const },
-  { to: '/move/transfer', label: 'Transfer', icon: ArrowLeftRight, anyOf: ['wallets:write:own'] as const },
-  { to: '/move/withdraw', label: 'Withdraw', icon: ArrowUpFromLine, anyOf: ['wallets:write:own'] as const },
-  { to: '/usdx', label: 'Issue / redeem USD-X', icon: Coins, anyOf: ['issuance:create', 'redemption:create'] as const },
-];
+import MarketsChart from '../components/MarketsChart';
+import QuickSend from '../components/QuickSend';
+import SwapCard from '../components/SwapCard';
+import CurrencyIcon from '../components/CurrencyIcon';
+import { boardRates, change24hFor, formatPct, formatUsd, portfolioTotal, walletUsdValue, type RateMap } from '../lib/portfolio';
+import { currencyMeta } from '../lib/currency';
+import { toggleBalancesHidden, useBalancesHidden } from '../lib/balancesVisibility';
 
 function PendingApprovals() {
   const pending = useAsync(() => approvalsApi.list(), []);
@@ -27,16 +26,99 @@ function PendingApprovals() {
   );
 }
 
+/** The 24h change badge — icon + sign, colour never carries it alone. */
+function ChangeBadge({ pct }: { pct: string | null }) {
+  if (pct === null) return <Badge tone="neutral">—</Badge>;
+  const up = !pct.startsWith('-');
+  return (
+    <Badge tone="neutral" className={up ? 'text-cyan-ink' : 'text-warn-ink'}>
+      {up ? <ArrowUpRight className="size-3.5" aria-hidden /> : <ArrowDownRight className="size-3.5" aria-hidden />}
+      {formatPct(pct)}
+      <span className="sr-only">{up ? '(up)' : '(down)'}</span>
+    </Badge>
+  );
+}
+
+/** One row of "My portfolio": icon, name, units, USD value, 24h change, default star. */
+function PortfolioRow({ wallet, rates, hidden }: { wallet: Wallet; rates: RateMap; hidden: boolean }) {
+  const usd = walletUsdValue(wallet, rates);
+  const change = change24hFor(wallet.currency, rates);
+  return (
+    <Link to={`/wallets/${wallet.id}`} className="group flex items-center gap-3 rounded-[14px] px-2 py-2.5 no-underline hover:bg-canvas">
+      <CurrencyIcon currency={wallet.currency} chain={wallet.chain} />
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5 truncate text-sm font-semibold text-ink">
+          {wallet.label || currencyMeta(wallet.currency).name}
+          {wallet.isDefault && <Star className="size-3.5 shrink-0 fill-warn text-warn" aria-label="Default wallet" />}
+        </span>
+        <span className="block text-xs text-muted">
+          {currencyMeta(wallet.currency).name}
+          {wallet.chain ? ` · on ${wallet.chain.toLowerCase()}` : ''}
+          {wallet.status.toUpperCase() !== 'ACTIVE' && <StatusBadge status={wallet.status} className="ml-2" />}
+        </span>
+      </span>
+      <span className="flex flex-col items-end gap-0.5">
+        <span className="font-mono text-[13px] font-semibold tabular-nums text-navy">{hidden ? '••••••' : wallet.balance.display}</span>
+        <span className="font-mono text-[11px] tabular-nums text-muted">{hidden ? '••••••' : usd === null ? 'price unavailable' : formatUsd(usd)}</span>
+      </span>
+      {change !== null && (
+        <span className="hidden sm:block">
+          <ChangeBadge pct={change} />
+        </span>
+      )}
+    </Link>
+  );
+}
+
 export default function HomePage() {
   const { user, can } = useAuth();
   const dash = useAsync(() => ledgerApi.dashboard(), []);
+  const rates = useAsync(() => ratesApi.rates('USD'), []);
   const [openTx, setOpenTx] = useState<string | null>(null);
+  const hidden = useBalancesHidden();
+
   const ownIds = useMemo(() => new Set(dash.data?.wallets.map((w) => w.id) ?? []), [dash.data]);
+  const rateMap = useMemo(() => boardRates(rates.data), [rates.data]);
+  const total = useMemo(() => portfolioTotal(dash.data?.wallets ?? [], rateMap), [dash.data, rateMap]);
   const firstName = user?.name.split(' ')[0];
+
+  const balanceError = dash.error || rates.error;
 
   return (
     <>
-      <PageHeader hero eyebrow="Home" title={firstName ? `Hello, ${firstName}` : 'Hello'} description="Your balances, recent activity and what needs your attention." />
+      {balanceError && (
+        <div className="mb-4">
+          <Card>
+            <ErrorState message={apiErrorMessage(balanceError)} onRetry={() => (dash.reload(), rates.reload())} />
+          </Card>
+        </div>
+      )}
+
+      <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0">
+          <p className="eyebrow mb-1">Home</p>
+          <h1 className="text-2xl font-extrabold tracking-tight text-navy sm:text-[30px]">{firstName ? `Hello, ${firstName}` : 'Hello'}</h1>
+          <p className="mt-1 text-[15px] text-muted">Your portfolio across fiat, crypto and USD-X.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="text-right">
+            <p className="text-xs font-semibold text-muted">Total portfolio value</p>
+            {dash.loading || rates.loading ? (
+              <Skeleton className="ml-auto mt-1 h-8 w-32" />
+            ) : (
+              <p className="font-mono text-[28px] leading-tight font-extrabold tabular-nums tracking-tight text-navy">
+                {hidden ? '••••••' : total.total === null ? '—' : formatUsd(total.total)}
+              </p>
+            )}
+          </div>
+          <IconButton label={hidden ? 'Show balances' : 'Hide balances'} aria-pressed={hidden} onClick={toggleBalancesHidden}>
+            {hidden ? <EyeOff className="size-5" aria-hidden /> : <Eye className="size-5" aria-hidden />}
+          </IconButton>
+        </div>
+      </header>
+      {!balanceError && total.missingSome && !hidden && (
+        <p className="-mt-3 mb-4 text-xs text-muted">Some prices are unavailable right now, so a few balances are left out of the total.</p>
+      )}
 
       <div className="flex flex-col gap-4">
         <KycBanner />
@@ -45,52 +127,58 @@ export default function HomePage() {
         </Can>
       </div>
 
-      <section aria-label="Balances" className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {dash.loading ? (
-          Array.from({ length: 3 }, (_, i) => (
-            <div key={i} className="rounded-card border border-line bg-surface p-5">
-              <Skeleton className="w-24" />
-              <Skeleton className="mt-3 h-8 w-36" />
+      <div className="mt-5 grid gap-5 lg:grid-cols-12">
+        <div className="lg:col-span-7">
+          <MarketsChart rates={rateMap} />
+        </div>
+
+        <div className="flex flex-col gap-5 lg:col-span-5">
+          <section aria-label="Pay with anything" className="relative overflow-hidden rounded-card bg-gradient-to-br from-navy via-[#0E2463] to-[#1463D6] p-6 text-white shadow-card">
+            <div aria-hidden className="pointer-events-none absolute inset-0" style={{ backgroundImage: 'radial-gradient(rgba(255,255,255,0.08) 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
+            <div className="relative">
+              <Logo inverted />
+              <h2 className="mt-4 text-xl font-extrabold tracking-tight text-white sm:text-2xl">Pay with anything.</h2>
+              <p className="mt-1 max-w-xs text-sm leading-relaxed text-on-navy-muted">Hold fiat and crypto, pay in any currency, convert in seconds.</p>
             </div>
-          ))
-        ) : dash.error ? (
-          <Card className="sm:col-span-2 xl:col-span-4">
-            <ErrorState message={apiErrorMessage(dash.error)} onRetry={dash.reload} />
-          </Card>
-        ) : dash.data?.wallets.length ? (
-          dash.data.wallets.map((w, i) => (
-            <Link
-              key={w.id}
-              to={`/wallets/${w.id}`}
-              className={`lift animate-rise stagger-${Math.min(i + 1, 6)} group flex flex-col gap-2 rounded-card border p-5 no-underline ${i === 0 ? 'border-navy bg-navy text-white' : 'border-line bg-surface text-ink shadow-card'}`}
-            >
-              <span className="flex items-center justify-between gap-2">
-                <span className={`text-[13px] font-semibold ${i === 0 ? 'text-on-navy-muted' : 'text-muted'}`}>
-                  {w.currency}
-                  {w.chain ? ` · ${w.chain.toLowerCase()}` : ''} · {w.label || 'Wallet'}
-                </span>
-                {w.status.toUpperCase() !== 'ACTIVE' && <StatusBadge status={w.status} />}
-              </span>
-              <MoneyText money={w.balance} size="xl" className={i === 0 ? 'text-white' : 'text-navy'} />
-            </Link>
-          ))
-        ) : (
-          <Card className="sm:col-span-2 xl:col-span-4">
+          </section>
+
+          <QuickSend />
+
+          <SwapCard onChanged={() => (dash.reload(), rates.reload())} />
+        </div>
+      </div>
+
+      <div className="mt-5 grid gap-5 lg:grid-cols-12">
+        <Card className="lg:col-span-7">
+          <CardHeader
+            title="My portfolio"
+            description="Every wallet, valued in dollars at the live rate."
+            actions={<LinkButton to="/wallets" variant="ghost" size="sm" iconRight={<ArrowRight className="size-4" aria-hidden />}>Edit</LinkButton>}
+          />
+          {dash.loading ? (
+            <SkeletonRows rows={4} />
+          ) : dash.error ? null : !dash.data?.wallets.length ? (
             <EmptyState title="No wallets yet" action={can('wallets:write:own') ? <LinkButton to="/move/deposit">Make your first deposit</LinkButton> : undefined}>
               Your first deposit opens a wallet in that currency.
             </EmptyState>
-          </Card>
-        )}
-      </section>
+          ) : (
+            <ul className="m-0 flex list-none flex-col p-0">
+              {dash.data.wallets.map((w) => (
+                <li key={w.id} className="animate-rise">
+                  <PortfolioRow wallet={w} rates={rateMap} hidden={hidden} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-[2fr_1fr]">
-        <Card>
+        <Card className="lg:col-span-5">
           <CardHeader title="Recent activity" actions={<LinkButton to="/transactions" variant="ghost" size="sm">See all</LinkButton>} />
           {dash.loading ? (
             <SkeletonRows rows={5} />
           ) : dash.error ? null : dash.data?.recentTransactions.length ? (
             <ul className="m-0 flex list-none flex-col p-0">
-              {dash.data.recentTransactions.map((tx) => (
+              {dash.data.recentTransactions.slice(0, 6).map((tx) => (
                 <TransactionRow key={tx.id} tx={tx} ownWalletIds={ownIds} onOpen={setOpenTx} />
               ))}
             </ul>
@@ -100,36 +188,7 @@ export default function HomePage() {
             </EmptyState>
           )}
         </Card>
-
-        <Card>
-          <CardHeader title="Quick actions" />
-          <div className="grid grid-cols-2 gap-2.5">
-            {ACTIONS.filter((a) => can(...a.anyOf)).map((a) => (
-              <Link key={a.to} to={a.to} className="lift nudge flex min-h-24 flex-col justify-between gap-3 rounded-[16px] border border-line bg-canvas p-3.5 text-sm font-bold text-navy no-underline transition-colors hover:border-action/40 hover:bg-action-tint">
-                <span className="flex items-start justify-between gap-2">
-                  <span className="grid size-9 place-items-center rounded-[11px] bg-surface text-action shadow-card">
-                    <a.icon className="size-[18px]" aria-hidden />
-                  </span>
-                  <ArrowRight className="mt-1 size-4 text-subtle" aria-hidden />
-                </span>
-                {a.label}
-              </Link>
-            ))}
-          </div>
-        </Card>
       </div>
-
-      <section aria-labelledby="protected-h" className="mt-5 rounded-card border border-line bg-surface p-5 sm:p-6">
-        <h2 id="protected-h" className="text-base font-bold text-ink">How your money is protected</h2>
-        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {RULES.map((r) => (
-            <div key={r.n} className="reveal flex flex-col gap-1.5">
-              <span className="text-sm font-bold text-navy">{r.title}</span>
-              <code className="w-fit rounded-lg bg-action-tint px-2 py-1 font-mono text-[11px] text-action-ink">{r.code}</code>
-            </div>
-          ))}
-        </div>
-      </section>
 
       <TransactionDrawer transactionId={openTx} onClose={() => setOpenTx(null)} />
     </>

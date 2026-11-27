@@ -23,4 +23,30 @@ describe('saga steps', () => {
     expect(sagaSteps(t).map((s) => s.state)).toEqual(['done', 'done', 'active', 'todo']);
     expect(sagaSteps({ ...t, status: 'BURN_CONFIRMED' }).map((s) => s.state)).toEqual(['done', 'done', 'done', 'active']);
   });
+
+  it('names the chains in a bridge’s four steps', () => {
+    const t = { ...base, kind: 'BRIDGE' as const, sourceChain: 'ETHEREUM', targetChain: 'SOLANA' };
+    expect(sagaSteps(t).map((s) => s.label)).toEqual([
+      'USD-X debited on the ledger',
+      'Burned on Ethereum',
+      'Minted on Solana',
+      'Credited to your Solana wallet',
+    ]);
+  });
+
+  it('walks a bridge through burn, burn finality, mint and credit', () => {
+    const t = { ...base, kind: 'BRIDGE' as const, sourceChain: 'ETHEREUM', targetChain: 'SOLANA' };
+    expect(states(t)).toEqual(['done', 'active', 'todo', 'todo']);
+    expect(states({ ...t, sourceTxHash: '0xab' })).toEqual(['done', 'done', 'active', 'todo']);
+    expect(states({ ...t, status: 'BURN_CONFIRMED' })).toEqual(['done', 'done', 'active', 'todo']);
+    expect(states({ ...t, status: 'MINT_SUBMITTED', destTxHash: '0xcd' })).toEqual(['done', 'done', 'done', 'active']);
+    expect(states({ ...t, status: 'COMPLETED' })).toEqual(['done', 'done', 'done', 'done']);
+  });
+
+  it('marks where a failed bridge stopped', () => {
+    const t = { ...base, kind: 'BRIDGE' as const, sourceChain: 'ETHEREUM', targetChain: 'SOLANA' };
+    expect(states({ ...t, status: 'FAILED' })).toEqual(['done', 'failed', 'todo', 'todo']);
+    // A destination mint that terminally failed after the burn was final.
+    expect(states({ ...t, status: 'COMPENSATED', sourceTxHash: '0xab' })).toEqual(['done', 'done', 'failed', 'todo']);
+  });
 });

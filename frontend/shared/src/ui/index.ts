@@ -9,3 +9,4 @@ export * from './Tabs';
 export * from './Logo';
 export * from './Motion';
 export * from './Hero';
+export * from './Toast';

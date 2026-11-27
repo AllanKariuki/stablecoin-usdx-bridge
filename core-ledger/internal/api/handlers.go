@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/bridge"
 	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
@@ -72,8 +74,13 @@ func (h *Handlers) Register(app *fiber.App) {
 	app.Post("/wallets", h.createWallet)
 	app.Get("/users/:userId/wallets", h.listWallets)
 	app.Get("/wallets/:walletId", h.getWallet)
+	app.Patch("/wallets/:walletId", h.updateWallet)
 	app.Get("/wallets/:walletId/statement", h.getStatement)
 	app.Post("/wallets/:walletId/status", h.setWalletStatus)
+
+	// Currencies: the supported set the portal's wallet/conversion screens
+	// render from (slice 4b).
+	app.Get("/currencies", h.listCurrencies)
 
 	// Money movement. Every one of these goes through h.idempotent, so a
 	// retry replays the first call's bytes instead of re-running the handler.
@@ -82,6 +89,7 @@ func (h *Handlers) Register(app *fiber.App) {
 	app.Post("/transfers", h.idempotent, h.transfer)
 	app.Post("/fx/quotes", h.createQuote)
 	app.Post("/fx/conversions", h.idempotent, h.convert)
+	app.Post("/fx/payments", h.idempotent, h.payConverted)
 	app.Post("/issuances", h.idempotent, h.issue)
 	app.Post("/redemptions", h.idempotent, h.redeem)
 	app.Post("/redemptions/:transactionId/confirm", h.idempotent, h.confirmRedemption)
@@ -116,6 +124,9 @@ func (h *Handlers) Register(app *fiber.App) {
 
 	// Reserves and reconciliation (P3) — see reserves.go.
 	h.registerReserves(app)
+
+	// Treasury and custodial-crypto exposure — see treasury.go.
+	h.registerTreasury(app)
 
 	// Bridge saga state
 	app.Get("/transfers/:correlationId", h.getTransfer)
@@ -192,6 +203,53 @@ func (h *Handlers) getWallet(c *fiber.Ctx) error {
 	return c.JSON(h.renderWallet(c, w))
 }
 
+// updateWallet patches product metadata that does not move money: the
+// default flag and the display label. is_default may only be set to true —
+// a default is cleared by making another wallet the default, never by
+// unsetting one, which is what keeps "at most one default per user and
+// currency" a single invariant instead of two.
+func (h *Handlers) updateWallet(c *fiber.Ctx) error {
+	var req struct {
+		IsDefault *bool   `json:"is_default"`
+		Label     *string `json:"label"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return badRequest(c, "invalid request body")
+	}
+	if req.IsDefault == nil && req.Label == nil {
+		return badRequest(c, "nothing to update: send is_default or label")
+	}
+	if req.IsDefault != nil && !*req.IsDefault {
+		return badRequest(c, "is_default can only be set to true; make another wallet the default to clear this one")
+	}
+	// A label is a display name, not a note: trim it and cap it so it stays a
+	// name rather than a place to smuggle anything a caller should be putting
+	// in metadata instead.
+	if req.Label != nil {
+		label := strings.TrimSpace(*req.Label)
+		if utf8.RuneCountInString(label) > 64 {
+			return badRequest(c, "label must be 64 characters or fewer")
+		}
+		req.Label = &label
+	}
+	walletID := c.Params("walletId")
+	if req.IsDefault != nil {
+		if err := h.repo.SetDefaultWallet(c.Context(), walletID, actor(c)); err != nil {
+			return fail(c, err)
+		}
+	}
+	if req.Label != nil {
+		if err := h.repo.UpdateWalletLabel(c.Context(), walletID, *req.Label, actor(c)); err != nil {
+			return fail(c, err)
+		}
+	}
+	w, err := h.repo.Wallet(c.Context(), walletID)
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.JSON(h.renderWallet(c, w))
+}
+
 func (h *Handlers) setWalletStatus(c *fiber.Ctx) error {
 	var req struct {
 		Status string `json:"status"`
@@ -207,6 +265,28 @@ func (h *Handlers) setWalletStatus(c *fiber.Ctx) error {
 		return fail(c, err)
 	}
 	return c.JSON(h.renderWallet(c, w))
+}
+
+// listCurrencies is the supported-currency set the portal renders its
+// wallet and conversion screens from (slice 4b). native_chain is derived
+// (ledger.NativeChain), not stored: a currency's chain is a property of the
+// platform's custody model, not of the currency row.
+func (h *Handlers) listCurrencies(c *fiber.Ctx) error {
+	cs, err := h.repo.Currencies(c.Context())
+	if err != nil {
+		return fail(c, err)
+	}
+	out := make([]fiber.Map, 0, len(cs))
+	for i := range cs {
+		out = append(out, fiber.Map{
+			"code":         cs[i].Code,
+			"kind":         cs[i].Kind,
+			"decimals":     cs[i].Decimals,
+			"name":         cs[i].Name,
+			"native_chain": ledger.NativeChain(cs[i].Code),
+		})
+	}
+	return c.JSON(fiber.Map{"currencies": out})
 }
 
 func (h *Handlers) getStatement(c *fiber.Ctx) error {
@@ -360,12 +440,14 @@ func (h *Handlers) transfer(c *fiber.Ctx) error {
 // ledger's own table is what lets a conversion be re-derived years later.
 func (h *Handlers) createQuote(c *fiber.Ctx) error {
 	var req struct {
-		BaseCcy   string `json:"base_currency"`
-		QuoteCcy  string `json:"quote_currency"`
-		Rate      string `json:"rate"`
-		SpreadBps int32  `json:"spread_bps"`
-		Source    string `json:"source"`
-		TTLSecs   int    `json:"ttl_seconds"`
+		BaseCcy    string `json:"base_currency"`
+		QuoteCcy   string `json:"quote_currency"`
+		Rate       string `json:"rate"`
+		SpreadBps  int32  `json:"spread_bps"`
+		Source     string `json:"source"`
+		TTLSecs    int    `json:"ttl_seconds"`
+		FromAmount string `json:"from_amount"` // optional: pin to one source amount, in base currency
+		PartyID    string `json:"party_id"`    // optional: pin to one wallet owner
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return badRequest(c, "invalid request body")
@@ -374,11 +456,28 @@ func (h *Handlers) createQuote(c *fiber.Ctx) error {
 	if err != nil {
 		return badRequest(c, err.Error())
 	}
-	if _, err := h.repo.Currency(c.Context(), req.BaseCcy); err != nil {
+	base, err := h.repo.Currency(c.Context(), req.BaseCcy)
+	if err != nil {
 		return fail(c, err)
 	}
 	if _, err := h.repo.Currency(c.Context(), req.QuoteCcy); err != nil {
 		return fail(c, err)
+	}
+
+	// A quote may be pinned to a fixed source amount (in the base currency's
+	// smallest units) and/or a fixed party, so the pricing service can bound
+	// its exposure per quote. The flows refuse to consume the quote on any
+	// other amount or by any other owner.
+	var fromAmount *big.Int
+	if req.FromAmount != "" {
+		fromAmount, err = ledger.ParseDecimal(req.FromAmount, base.Decimals)
+		if err != nil {
+			return badRequest(c, err.Error())
+		}
+	}
+	var partyID *string
+	if req.PartyID != "" {
+		partyID = &req.PartyID
 	}
 
 	ttl := req.TTLSecs
@@ -387,14 +486,16 @@ func (h *Handlers) createQuote(c *fiber.Ctx) error {
 	}
 	now := time.Now().UTC()
 	q := &ledger.FxQuote{
-		ID:        uuid.New().String(),
-		BaseCcy:   req.BaseCcy,
-		QuoteCcy:  req.QuoteCcy,
-		Rate:      rate,
-		SpreadBps: req.SpreadBps,
-		Source:    req.Source,
-		QuotedAt:  now,
-		ExpiresAt: now.Add(time.Duration(ttl) * time.Second),
+		ID:         uuid.New().String(),
+		BaseCcy:    req.BaseCcy,
+		QuoteCcy:   req.QuoteCcy,
+		Rate:       rate,
+		SpreadBps:  req.SpreadBps,
+		Source:     req.Source,
+		FromAmount: fromAmount,
+		PartyID:    partyID,
+		QuotedAt:   now,
+		ExpiresAt:  now.Add(time.Duration(ttl) * time.Second),
 	}
 	if err := h.repo.SaveQuote(c.Context(), q); err != nil {
 		return fail(c, err)
@@ -405,6 +506,8 @@ func (h *Handlers) createQuote(c *fiber.Ctx) error {
 		"quote_currency": q.QuoteCcy,
 		"rate":           ledger.FormatRate(q.Rate),
 		"spread_bps":     q.SpreadBps,
+		"from_amount":    ledger.FormatDecimal(q.FromAmount, base.Decimals),
+		"party_id":       req.PartyID,
 		"expires_at":     q.ExpiresAt,
 	})
 }
@@ -431,6 +534,47 @@ func (h *Handlers) convert(c *fiber.Ctx) error {
 	}
 
 	tx, err := h.ledger.Convert(c.Context(), ledger.ConvertRequest{
+		FromWalletID:   req.FromWalletID,
+		ToWalletID:     req.ToWalletID,
+		Amount:         amount,
+		QuoteID:        req.QuoteID,
+		IdempotencyKey: key,
+		InitiatedBy:    actor(c),
+		EntityType:     req.EntityType,
+		EntityID:       req.EntityID,
+	})
+	if err != nil {
+		return fail(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(h.renderTransaction(c, tx))
+}
+
+// payConverted settles a payment whose two wallets hold different
+// currencies — services/payments' "pay with conversion" flow. The quote
+// must exist and match the pair before the payer's funds move; the ledger
+// is the last word on whether both wallets can take the post.
+func (h *Handlers) payConverted(c *fiber.Ctx) error {
+	var req struct {
+		FromWalletID string               `json:"from_wallet_id"`
+		ToWalletID   string               `json:"to_wallet_id"`
+		Amount       ledger.DecimalAmount `json:"amount"`
+		QuoteID      string               `json:"quote_id"`
+		EntityType   ledger.EntityType    `json:"entity_type"`
+		EntityID     string               `json:"entity_id"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return badRequest(c, "invalid request body")
+	}
+	key, err := idempotencyKey(c)
+	if err != nil {
+		return fail(c, err)
+	}
+	amount, err := h.amountForWallet(c, req.FromWalletID, req.Amount)
+	if err != nil {
+		return fail(c, err)
+	}
+
+	tx, err := h.ledger.PayConverted(c.Context(), ledger.PayConvertedRequest{
 		FromWalletID:   req.FromWalletID,
 		ToWalletID:     req.ToWalletID,
 		Amount:         amount,
@@ -799,16 +943,26 @@ func (h *Handlers) getTransaction(c *fiber.Ctx) error {
 // scoped to transactions:read:own only is expected to always pass their
 // own id — enforcement of that is the gateway/BFF's job (see
 // services/auth-proxy's route table), not this handler's.
+//
+// type is an optional repeated or comma-separated filter
+// (?type=FX_CONVERSION&type=USDX_ISSUE or ?type=FX_CONVERSION,USDX_ISSUE),
+// validated against the known TxType values — an unknown type is a 400, not
+// a silently empty page. The filter runs in the query, before the limit and
+// the keyset cursor, so paging a filtered feed never skips matches.
 func (h *Handlers) listTransactions(c *fiber.Ctx) error {
 	afterCreatedAt, afterID, err := decodeTxCursor(c.Query("cursor"))
 	if err != nil {
 		return badRequest(c, err.Error())
 	}
 	limit := clampLimit(c.QueryInt("limit"), 50, 200)
+	types, err := txTypesParam(c)
+	if err != nil {
+		return badRequest(c, err.Error())
+	}
 
 	// Fetch one extra row to know whether a next page exists without a
 	// separate COUNT query — trimmed back to limit before rendering.
-	txs, err := h.repo.ListTransactionsPage(c.Context(), c.Query("user_id"), afterCreatedAt, afterID, limit+1)
+	txs, err := h.repo.ListTransactionsPage(c.Context(), c.Query("user_id"), types, afterCreatedAt, afterID, limit+1)
 	if err != nil {
 		return fail(c, err)
 	}
@@ -1212,13 +1366,14 @@ func (h *Handlers) amountForWallet(c *fiber.Ctx, walletID string, amount ledger.
 
 func (h *Handlers) renderWallet(c *fiber.Ctx, w *ledger.Wallet) fiber.Map {
 	out := fiber.Map{
-		"id":       w.ID,
-		"user_id":  w.UserID,
-		"currency": w.Currency,
-		"chain":    w.Chain,
-		"address":  w.Address,
-		"status":   w.Status,
-		"label":    w.Label,
+		"id":         w.ID,
+		"user_id":    w.UserID,
+		"currency":   w.Currency,
+		"chain":      w.Chain,
+		"address":    w.Address,
+		"status":     w.Status,
+		"label":      w.Label,
+		"is_default": w.IsDefault,
 	}
 	bal, err := h.repo.Balance(c.Context(), w.AccountID)
 	if err != nil {
@@ -1230,6 +1385,12 @@ func (h *Handlers) renderWallet(c *fiber.Ctx, w *ledger.Wallet) fiber.Map {
 	return out
 }
 
+// renderTransaction renders a posted transaction. `metadata` is passed through
+// as stored: it is the transaction's own record of the numbers behind the
+// postings — an FX payment's gross/fee/net in the target currency's smallest
+// units, a redemption's correlation id — and a caller that needs to read one
+// back (services/payments checking a converted invoice was covered) has no
+// other way to see it.
 func (h *Handlers) renderTransaction(c *fiber.Ctx, tx *ledger.Transaction) fiber.Map {
 	decimals := map[string]int32{}
 	lines := make([]fiber.Map, 0, len(tx.Entries))
@@ -1251,6 +1412,12 @@ func (h *Handlers) renderTransaction(c *fiber.Ctx, tx *ledger.Transaction) fiber
 			"description":     e.Description,
 		})
 	}
+	// A nil metadata column renders as {} rather than null, so a client can
+	// treat the field as an object unconditionally.
+	metadata := tx.Metadata
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
 	return fiber.Map{
 		"id":           tx.ID,
 		"type":         tx.Type,
@@ -1260,6 +1427,7 @@ func (h *Handlers) renderTransaction(c *fiber.Ctx, tx *ledger.Transaction) fiber
 		"description":  tx.Description,
 		"external_ref": tx.ExternalRef,
 		"created_at":   tx.CreatedAt.UTC().Format(time.RFC3339),
+		"metadata":     metadata,
 		"entries":      lines,
 	}
 }
@@ -1351,7 +1519,7 @@ func statusFor(code string) int {
 	case "NO_OPEN_DEAD_LETTER":
 		return fiber.StatusNotFound
 	case "INSUFFICIENT_FUNDS", "ACCOUNT_FROZEN", "ACCOUNT_CLOSED", "PERIOD_CLOSED",
-		"ALREADY_REVERSED", "WALLET_NOT_EMPTY", "QUOTE_EXPIRED",
+		"ALREADY_REVERSED", "WALLET_NOT_EMPTY", "QUOTE_EXPIRED", "QUOTE_ALREADY_USED",
 		"IDEMPOTENCY_KEY_REUSED", "IDEMPOTENT_REQUEST_IN_PROGRESS",
 		"BREAK_GLASS_PENDING", "SAGA_ALREADY_SETTLED":
 		return fiber.StatusConflict

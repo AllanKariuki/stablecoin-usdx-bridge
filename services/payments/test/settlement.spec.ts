@@ -40,13 +40,18 @@ function intent(over: Partial<PaymentIntent> = {}): PaymentIntent {
     metadata: {},
     createdAt: new Date(),
     settledAt: null,
+    sourceWalletId: null,
+    sourceCurrency: null,
+    quoteId: null,
+    sourceAmount: null,
+    conversionRef: '',
     ...over,
   };
 }
 
 function harness(over: { current?: PaymentIntent; settleWins?: boolean } = {}) {
   const current = over.current ?? intent();
-  const calls = { deposits: 0, withdrawals: 0, transfers: 0, markSettled: 0, markFailed: [] as string[] };
+  const calls = { deposits: 0, withdrawals: 0, transfers: 0, payConverted: 0, redeems: 0, markSettled: 0, markFailed: [] as string[] };
   let settled = over.settleWins ?? true;
 
   const intents = {
@@ -63,26 +68,39 @@ function harness(over: { current?: PaymentIntent; settleWins?: boolean } = {}) {
       calls.markFailed.push(reason);
       return true;
     }),
+    setConversionRef: jest.fn(async () => true),
   };
 
   const ledger = {
-    deposit: jest.fn(async () => {
+    deposit: jest.fn(async (): Promise<unknown> => {
       calls.deposits += 1;
       return { id: 'tx_1', type: 'FIAT_DEPOSIT', status: 'POSTED', created_at: '' };
     }),
-    withdraw: jest.fn(async () => {
+    withdraw: jest.fn(async (): Promise<unknown> => {
       calls.withdrawals += 1;
       return { id: 'tx_2', type: 'FIAT_WITHDRAWAL', status: 'POSTED', created_at: '' };
     }),
-    transfer: jest.fn(async () => {
+    transfer: jest.fn(async (): Promise<unknown> => {
       calls.transfers += 1;
       return { id: 'tx_3', type: 'INTERNAL_TRANSFER', status: 'POSTED', created_at: '' };
     }),
-    ensureWallet: jest.fn(async () => ({ id: 'wal_2', user_id: 'party_2', currency: 'USD', chain: '' })),
+    payConverted: jest.fn(async (): Promise<unknown> => {
+      calls.payConverted += 1;
+      return { id: 'tx_4', type: 'FX_PAYMENT', status: 'POSTED', created_at: '' };
+    }),
+    redeem: jest.fn(async (): Promise<unknown> => {
+      calls.redeems += 1;
+      return { id: 'tx_5', type: 'USDX_REDEEM', status: 'POSTED', correlation_id: 'corr_1', saga_status: 'PENDING' };
+    }),
+    getTransfer: jest.fn(async (): Promise<unknown> => ({ correlation_id: 'corr_1', kind: 'redeem', status: 'COMPLETED', amount: '10.000000', source_chain: 'eth', last_error: '' })),
+    ensureWallet: jest.fn(async (_party: string, _currency: string): Promise<unknown> => ({ id: 'wal_2', user_id: 'party_2', currency: 'USD', chain: '', status: 'ACTIVE' })),
   };
 
-  const banks = { findBeneficiary: jest.fn(async () => null) };
-  const invoices = { markPaid: jest.fn(async () => undefined) };
+  const banks = { findBeneficiary: jest.fn(async (): Promise<unknown> => null) };
+  const invoices = {
+    markPaid: jest.fn(async () => undefined),
+    find: jest.fn(async (id: string) => ({ id, number: 'INV-2026-0001', issuerPartyId: 'party_2', payerPartyId: 'party_1', amount: '1000.00', currency: 'KES', status: 'OPEN' })),
+  };
   // A transaction that runs its callback against a marker executor, so the
   // tests can assert that every write which must commit together was handed
   // the same one. The real rollback behaviour is covered against Postgres in
@@ -264,5 +282,261 @@ describe('SettlementService', () => {
     await h.service.onRailCallback('stub', callback());
 
     expect(h.invoices.markPaid).toHaveBeenCalledWith('inv_1', 'pi_1', h.tx);
+  });
+
+  describe('cross-currency TRANSFER (slice 4a)', () => {
+    const cross = (over: Partial<PaymentIntent> = {}) =>
+      intent({
+        direction: 'TRANSFER',
+        beneficiaryId: 'ben_1',
+        amount: '1000.00',
+        currency: 'KES',
+        sourceWalletId: 'wal_btc',
+        sourceCurrency: 'BTC',
+        quoteId: 'q_1',
+        sourceAmount: '0.01000000',
+        ...over,
+      });
+
+    function harnessWithPayee() {
+      const h = harness();
+      h.banks.findBeneficiary.mockResolvedValue({ partyId: 'party_1', kind: 'WALLET', targetPartyId: 'party_2', accountRef: '', name: 'Recipient' });
+      h.ledger.ensureWallet.mockImplementation(async (_party: string, currency: string) => ({
+        id: `wal_${currency.toLowerCase()}_2`,
+        user_id: 'party_2',
+        currency,
+        chain: '',
+        status: 'ACTIVE',
+      }));
+      return h;
+    }
+
+    it('settles through /fx/payments with the stored source wallet, amount and quote', async () => {
+      const h = harnessWithPayee();
+      await h.service.settle(cross(), '1000.00');
+
+      expect(h.calls.payConverted).toBe(1);
+      expect(h.ledger.payConverted).toHaveBeenCalledWith({
+        fromWalletId: 'wal_btc',
+        toWalletId: 'wal_kes_2',
+        amount: '0.01000000',
+        quoteId: 'q_1',
+        reference: 'pi_1',
+        idempotencyKey: 'payments:pi_1',
+        actor: 'party_1',
+      });
+      expect(h.calls.transfers).toBe(0);
+      expect(h.intents.markSettled).toHaveBeenCalledWith('pi_1', 'tx_4', h.tx);
+    });
+
+    it('fails the intent when the ledger refuses the quote terminally', async () => {
+      const h = harnessWithPayee();
+      h.ledger.payConverted.mockRejectedValueOnce(
+        new LedgerError('rejected', 409, '{"code":"QUOTE_EXPIRED"}'),
+      );
+
+      await h.service.settle(cross(), '1000.00');
+
+      expect(h.calls.markFailed).toHaveLength(1);
+      expect(h.calls.markFailed[0]).toContain('QUOTE_EXPIRED');
+      expect(h.intents.markSettled).not.toHaveBeenCalled();
+    });
+
+    it('does NOT fail the intent when the ledger answer is unknown', async () => {
+      const h = harnessWithPayee();
+      h.ledger.payConverted.mockRejectedValueOnce(new LedgerError('upstream', 503, 'service unavailable'));
+
+      await expect(h.service.settle(cross(), '1000.00')).rejects.toThrow();
+      expect(h.calls.markFailed).toHaveLength(0);
+    });
+
+    it('checks the booked net covers the invoice amount and settles when it does', async () => {
+      const h = harnessWithPayee();
+      // PayConverted stamps gross/fee/net into the transaction metadata, in
+      // the target currency's smallest units: 1000.00 KES is 100000.
+      h.ledger.payConverted.mockResolvedValueOnce({
+        id: 'tx_4',
+        type: 'FX_PAYMENT',
+        status: 'POSTED',
+        created_at: '',
+        metadata: { gross: '101010', fee: '1010', net: '100000' },
+      });
+
+      await h.service.settle(cross({ invoiceId: 'inv_1' }), '1000.00');
+
+      expect(h.intents.markSettled).toHaveBeenCalled();
+      expect(h.invoices.markPaid).toHaveBeenCalledWith('inv_1', 'pi_1', h.tx);
+    });
+
+    it('fails loudly — throws, settles nothing — when the booked net is below the invoice amount', async () => {
+      const h = harnessWithPayee();
+      h.ledger.payConverted.mockResolvedValueOnce({
+        id: 'tx_4',
+        type: 'FX_PAYMENT',
+        status: 'POSTED',
+        created_at: '',
+        metadata: { gross: '100909', fee: '1009', net: '99900' }, // 999.00 KES
+      });
+
+      await expect(h.service.settle(cross({ invoiceId: 'inv_1' }), '1000.00')).rejects.toThrow('below invoice');
+      expect(h.intents.markSettled).not.toHaveBeenCalled();
+      expect(h.invoices.markPaid).not.toHaveBeenCalled();
+    });
+
+    it('fails loudly when the transaction carries no metadata.net rather than passing silently', async () => {
+      const h = harnessWithPayee();
+      h.ledger.payConverted.mockResolvedValueOnce({
+        id: 'tx_4',
+        type: 'FX_PAYMENT',
+        status: 'POSTED',
+        created_at: '',
+        metadata: { gross: '101010', fee: '1010' },
+      });
+
+      await expect(h.service.settle(cross({ invoiceId: 'inv_1' }), '1000.00')).rejects.toThrow('metadata.net');
+      expect(h.intents.markSettled).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('completeConversion — the USD-X two-step (slice 4a)', () => {
+    function converting(over: Partial<PaymentIntent> = {}) {
+      return intent({
+        direction: 'TRANSFER',
+        beneficiaryId: 'ben_1',
+        amount: '10.00',
+        currency: 'USD',
+        walletId: 'wal_usdx',
+        rail: 'internal',
+        status: 'CONVERTING',
+        sourceWalletId: 'wal_usdx',
+        sourceCurrency: 'USDX',
+        quoteId: null,
+        sourceAmount: '10.00',
+        conversionRef: 'corr_1',
+        ...over,
+      });
+    }
+
+    function harnessWithPayee() {
+      const h = harness();
+      h.banks.findBeneficiary.mockResolvedValue({ partyId: 'party_1', kind: 'WALLET', targetPartyId: 'party_2', accountRef: '', name: 'Recipient' });
+      h.ledger.ensureWallet.mockImplementation(async (party: string, currency: string) => ({
+        id: party === 'party_1' ? `wal_${currency.toLowerCase()}_1` : `wal_${currency.toLowerCase()}_2`,
+        user_id: party,
+        currency,
+        chain: '',
+        status: 'ACTIVE',
+      }));
+      return h;
+    }
+
+    it('transfers the redeemed USD to the payee once the saga is COMPLETED', async () => {
+      const h = harnessWithPayee();
+      await h.service.completeConversion(converting());
+
+      // The payer's USD wallet (the redemption target) was ensured again —
+      // idempotently — and the payee's wallet in the intent currency.
+      expect(h.ledger.ensureWallet).toHaveBeenCalledWith('party_1', 'USD');
+      expect(h.ledger.ensureWallet).toHaveBeenCalledWith('party_2', 'USD');
+      expect(h.ledger.transfer).toHaveBeenCalledWith({
+        fromWalletId: 'wal_usd_1',
+        toWalletId: 'wal_usd_2',
+        amount: '10.00',
+        reference: 'pi_1',
+        idempotencyKey: 'payments:pi_1',
+        actor: 'party_1',
+      });
+      expect(h.intents.markSettled).toHaveBeenCalledWith('pi_1', 'tx_3', h.tx);
+    });
+
+    it('converts the redeemed USD across the stored quote for a non-USD target', async () => {
+      const h = harnessWithPayee();
+      const kes = converting({ currency: 'KES', amount: '1000.00', quoteId: 'q_1', sourceAmount: '7.80' });
+      await h.service.completeConversion(kes);
+
+      expect(h.ledger.payConverted).toHaveBeenCalledWith({
+        fromWalletId: 'wal_usd_1',
+        toWalletId: 'wal_kes_2',
+        amount: '7.80',
+        quoteId: 'q_1',
+        reference: 'pi_1',
+        idempotencyKey: 'payments:pi_1',
+        actor: 'party_1',
+      });
+      expect(h.intents.markSettled).toHaveBeenCalled();
+    });
+
+    it('marks the intent FAILED with QUOTE_EXPIRED_DURING_CONVERSION when the quote died during the burn', async () => {
+      const h = harnessWithPayee();
+      h.ledger.payConverted.mockRejectedValueOnce(
+        new LedgerError('rejected', 409, '{"code":"QUOTE_EXPIRED"}'),
+      );
+      await h.service.completeConversion(converting({ currency: 'KES', quoteId: 'q_1', sourceAmount: '7.80' }));
+
+      expect(h.calls.markFailed).toHaveLength(1);
+      expect(h.calls.markFailed[0]).toContain('QUOTE_EXPIRED_DURING_CONVERSION');
+      expect(h.calls.markFailed[0]).toContain('the redeemed USD remains in the payer');
+      expect(h.intents.markSettled).not.toHaveBeenCalled();
+    });
+
+    it('fails the intent with the saga reason when the redemption FAILED (the ledger reverses it)', async () => {
+      const h = harnessWithPayee();
+      h.ledger.getTransfer.mockResolvedValueOnce({
+        correlation_id: 'corr_1',
+        kind: 'redeem',
+        status: 'FAILED',
+        amount: '10.000000',
+        source_chain: 'eth',
+        last_error: 'burn never confirmed',
+      });
+      await h.service.completeConversion(converting());
+
+      expect(h.calls.markFailed).toHaveLength(1);
+      expect(h.calls.markFailed[0]).toContain('burn never confirmed');
+      expect(h.calls.transfers).toBe(0);
+      expect(h.calls.payConverted).toBe(0);
+    });
+
+    it('waits on a saga that is still in flight', async () => {
+      const h = harnessWithPayee();
+      h.ledger.getTransfer.mockResolvedValueOnce({
+        correlation_id: 'corr_1',
+        kind: 'redeem',
+        status: 'BURN_CONFIRMED',
+        amount: '10.000000',
+        source_chain: 'eth',
+        last_error: '',
+      });
+      await h.service.completeConversion(converting());
+
+      expect(h.calls.transfers).toBe(0);
+      expect(h.calls.markFailed).toHaveLength(0);
+    });
+
+    it('re-posts the redemption under the same idempotency key when the crash window left conversion_ref empty', async () => {
+      const h = harnessWithPayee();
+      await h.service.completeConversion(converting({ conversionRef: '' }));
+
+      expect(h.calls.redeems).toBe(1);
+      expect(h.ledger.redeem).toHaveBeenCalledWith({
+        usdxWalletId: 'wal_usdx',
+        fiatWalletId: 'wal_usd_1',
+        amount: '10.00',
+        idempotencyKey: 'payments:pi_1:redeem',
+        actor: 'party_1',
+      });
+      expect(h.intents.setConversionRef).toHaveBeenCalledWith('pi_1', 'corr_1');
+      // The saga state is only meaningful once the transfer row exists.
+      expect(h.calls.transfers).toBe(0);
+    });
+
+    it('does nothing for an intent that is no longer CONVERTING', async () => {
+      const h = harnessWithPayee();
+      await h.service.completeConversion(converting({ status: 'SETTLED', ledgerTxId: 'tx_9' }));
+
+      expect(h.calls.redeems).toBe(0);
+      expect(h.calls.transfers).toBe(0);
+      expect(h.ledger.getTransfer).not.toHaveBeenCalled();
+    });
   });
 });

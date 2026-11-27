@@ -244,8 +244,10 @@ func (r *Repository) TransactionsForEntity(ctx context.Context, typ EntityType, 
 // non-empty, restricts to transactions against that user's own wallets (via
 // a join on the accounts they own) — the BFF's cross-wallet transaction
 // list core-ledger doesn't otherwise have (see docs/building-plan.md's P1
-// section).
-func (r *Repository) ListTransactionsPage(ctx context.Context, userID string, afterCreatedAt time.Time, afterID string, limit int) ([]Transaction, error) {
+// section). types, when non-empty, restricts to those transaction types;
+// the filter is applied before the limit, so a page is a page of matches,
+// not of candidates.
+func (r *Repository) ListTransactionsPage(ctx context.Context, userID string, types []TxType, afterCreatedAt time.Time, afterID string, limit int) ([]Transaction, error) {
 	q := r.db.WithContext(ctx).Preload("Entries", func(db *gorm.DB) *gorm.DB {
 		return db.Order("journal_entries.line_no")
 	}).Order("created_at DESC, id DESC").Limit(limit)
@@ -256,6 +258,9 @@ func (r *Repository) ListTransactionsPage(ctx context.Context, userID string, af
 				"JOIN accounts a ON a.id = je.account_id WHERE a.owner_user_id = ?)",
 			userID,
 		)
+	}
+	if len(types) > 0 {
+		q = q.Where("type IN ?", types)
 	}
 	if !afterCreatedAt.IsZero() {
 		q = q.Where("(created_at, id) < (?, ?)", afterCreatedAt, afterID)

@@ -25,6 +25,11 @@ const CURRENCY_DECIMALS: Record<string, number> = {
   EUR: 2,
   KES: 2,
   USDX: 6,
+  // Custodial crypto scales mirror core-ledger's DefaultCurrencies
+  // (internal/ledger/chart.go) — BTC/ETH/SOL at 8/18/9 decimals.
+  BTC: 8,
+  ETH: 18,
+  SOL: 9,
 };
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -33,6 +38,17 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   KES: 'KSh ',
   USDX: '',
 };
+
+/**
+ * The currencies the platform custodies crypto in — the same set
+ * core-ledger's IsCustodialCrypto recognises. Exposure policy, crypto
+ * custodian reconciliation and the stub's baseline choice all branch on it.
+ */
+export const CUSTODIAL_CRYPTO = ['BTC', 'ETH', 'SOL'] as const;
+
+export function isCustodialCrypto(currency: string): boolean {
+  return (CUSTODIAL_CRYPTO as readonly string[]).includes(currency);
+}
 
 export function decimalsFor(currency: string): number {
   return CURRENCY_DECIMALS[currency] ?? 2;

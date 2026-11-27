@@ -10,6 +10,7 @@ export interface WalletView {
   address: string;
   status: string;
   label: string;
+  isDefault: boolean;
   balance: Money;
 }
 
@@ -21,7 +22,26 @@ interface CoreLedgerWallet {
   address: string;
   status: string;
   label: string;
+  is_default: boolean;
   balance: string;
+}
+
+/** camelCase translation of core-ledger's GET /currencies response
+ * (core-ledger/internal/api/handlers.go's listCurrencies). */
+export interface CurrencyView {
+  code: string;
+  kind: string;
+  decimals: number;
+  name: string;
+  nativeChain: string;
+}
+
+interface CoreLedgerCurrency {
+  code: string;
+  kind: string;
+  decimals: number;
+  name: string;
+  native_chain: string;
 }
 
 export interface StatementEntryView {
@@ -58,4 +78,4 @@ interface CoreLedgerStatement {
   entries: CoreLedgerStatementEntry[];
 }
 
-export type { CoreLedgerWallet, CoreLedgerStatement, CoreLedgerStatementEntry };
+export type { CoreLedgerWallet, CoreLedgerStatement, CoreLedgerStatementEntry, CoreLedgerCurrency };
