@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-27 — Portal: pay invoices from any wallet (slice 5b)
+
+### Changed — Invoice pay (frontend/portal)
+
+- The public payment link (`/pay/:token`) and the in-app "To pay" invoice list
+  both replace the fixed-wallet pay with the shared `PayFromPicker`, so a
+  payer can fund an invoice from any wallet they hold:
+  - Same-currency source pays straight out (`sourceWalletId` only).
+  - Cross-currency source asks for a TO-side live quote minted for the fixed
+    invoice amount — the picker shows you-pay / rate / fee / recipient-gets
+    with a countdown and auto re-quote — and submits `quoteId` +
+    `sourceAmount` (= the pinned quote amount) with the pay.
+  - A USD-X source into USD rides the 1:1 redemption with no quote, notes it
+    settles after the burn confirms, and the result shows `ConvertingTracker`
+    polling the CONVERTING intent to settlement.
+  - Idempotency-Key is minted once on confirm and reused on retries; errors
+    surface through the shared friendly-code map.
+- The public link keeps its anonymous resolve-and-sign-in flow untouched;
+  wallets only load for a signed-in payer.
+
 ## 2026-11-27 — Portal: send money from any wallet (slice 5b)
 
 ### Added — Send wizard (frontend/portal)
