@@ -25,6 +25,8 @@ const (
 	AuditPeriodClosed        = "ledger.period.closed"
 	AuditDeadLetterResolved  = "ledger.saga.dead_letter_resolved"
 	AuditWalletCreated       = "ledger.wallet.created"
+	AuditWalletDefaultSet    = "ledger.wallet.default_set"
+	AuditWalletLabelChanged  = "ledger.wallet.label_changed"
 	AuditChainSupplyRecorded = "ledger.reserve.chain_supply_recorded"
 	AuditCustodianRecorded   = "ledger.reserve.custodian_snapshot_recorded"
 	auditSystemActorFallback = "system:core-ledger"

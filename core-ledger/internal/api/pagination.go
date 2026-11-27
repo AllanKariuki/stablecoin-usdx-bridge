@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AllanKariuki/stablecoin-usdx-bridge/core-ledger/internal/ledger"
+
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -18,6 +20,33 @@ func parseDateParam(c *fiber.Ctx, name string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 	return time.Parse("2006-01-02", raw)
+}
+
+// txTypesParam reads an optional transaction-type filter, accepting both a
+// repeated param (?type=A&type=B) and a comma-separated one (?type=A,B).
+// Every value is validated against the known TxType set: an unknown type is
+// a caller bug, and returning an empty page for it would hide that — so it
+// is an error the handler maps to 400. Nil means "no filter".
+func txTypesParam(c *fiber.Ctx) ([]ledger.TxType, error) {
+	var out []ledger.TxType
+	seen := make(map[ledger.TxType]bool)
+	for _, raw := range c.Context().QueryArgs().PeekMulti("type") {
+		for _, part := range strings.Split(string(raw), ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			t := ledger.TxType(strings.ToUpper(part))
+			if !t.Valid() {
+				return nil, fmt.Errorf("unknown transaction type %q", part)
+			}
+			if !seen[t] {
+				seen[t] = true
+				out = append(out, t)
+			}
+		}
+	}
+	return out, nil
 }
 
 // Cursors are opaque to the client by design — a generated frontend client

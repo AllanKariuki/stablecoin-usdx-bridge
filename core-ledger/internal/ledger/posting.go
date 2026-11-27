@@ -203,8 +203,33 @@ func (r *Repository) Post(ctx context.Context, req PostRequest) (*Transaction, e
 			return out, nil
 		}
 		if isUniqueViolation(lastErr) {
-			// Another request with the same idempotency key won the race; its
-			// transaction is the answer for both callers.
+			// A unique violation here is one of two things: the idempotency-key
+			// race (another request with the same key won — its transaction is
+			// the answer for both callers), or the partial unique index that
+			// makes an FX quote single-use. The constraint name tells them
+			// apart; conflating them would turn a legitimate second use of a
+			// quote into a silent replay of an unrelated transaction.
+			if uniqueConstraint(lastErr) == fxQuoteUniqueIndex {
+				// Two concurrent retries sharing one idempotency key can race
+				// this index: the winner consumed the quote, the loser's insert
+				// trips the quote index rather than the idempotency one. Look
+				// for the winner's transaction by idempotency key first — if it
+				// exists, this is a replay and must return it, not refuse the
+				// (already-consumed) quote. Only a genuine second use, with no
+				// transaction under this key, is QUOTE_ALREADY_USED.
+				existing, err := r.FindTransactionByIdempotencyKey(ctx, req.IdempotencyKey)
+				if err == nil {
+					return existing, nil
+				}
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, err
+				}
+				quoteID := "<none>"
+				if req.FxQuoteID != nil {
+					quoteID = *req.FxQuoteID
+				}
+				return nil, postErr("QUOTE_ALREADY_USED", "quote %s was already consumed by a conversion or payment", quoteID)
+			}
 			return r.FindTransactionByIdempotencyKey(ctx, req.IdempotencyKey)
 		}
 		if !isSerializationFailure(lastErr) {
@@ -499,4 +524,19 @@ func isUniqueViolation(err error) bool {
 		return pgErr.Code == "23505"
 	}
 	return false
+}
+
+// fxQuoteUniqueIndex is the partial unique index 00010_multi_asset.sql adds
+// to make an FX quote single-use. It is the one unique-violation Post must
+// not mistake for an idempotency race — see Post above.
+const fxQuoteUniqueIndex = "uniq_transactions_fx_quote"
+
+// uniqueConstraint returns the name of the constraint a Postgres unique
+// violation broke, or "" if the error isn't one.
+func uniqueConstraint(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.ConstraintName
+	}
+	return ""
 }

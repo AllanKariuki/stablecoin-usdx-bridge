@@ -22,10 +22,20 @@ export class TransactionsService {
    * here, one call to core-ledger's GET /transactions?user_id=... (see
    * core-ledger/internal/api/handlers.go's listTransactions), instead of
    * the frontend firing one request per wallet.
+   *
+   * types, when given, is forwarded as core-ledger's repeated/comma-
+   * separated `type` filter and applied in SQL before the limit — so the
+   * cursor is a cursor into the filtered feed, and a page of conversions is
+   * never empty because the page happened to hold deposits.
    */
-  async listForUser(userId: string, cursor?: string, limit?: number): Promise<TransactionPage> {
+  async listForUser(userId: string, cursor?: string, limit?: number, types?: string[]): Promise<TransactionPage> {
     const page = await this.coreLedger.get<CoreLedgerTransactionPage>('/transactions', {
-      query: { user_id: userId, cursor, limit: limit ? String(limit) : undefined },
+      query: {
+        user_id: userId,
+        cursor,
+        limit: limit ? String(limit) : undefined,
+        type: types && types.length > 0 ? types.join(',') : undefined,
+      },
     });
     return {
       transactions: page.transactions.map(toTransactionView),

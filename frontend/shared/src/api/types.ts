@@ -9,6 +9,10 @@ export interface Wallet {
   address: string;
   status: string;
   label: string;
+  /** The default wallet for its currency (meaningful where more than one
+   * can exist — the USD-X chains). Optional: bff always renders it, but
+   * older fixtures don't. */
+  isDefault?: boolean;
   balance: Money;
 }
 

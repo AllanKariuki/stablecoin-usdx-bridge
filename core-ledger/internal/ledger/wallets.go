@@ -32,15 +32,32 @@ func (r *Repository) EnsureWallet(ctx context.Context, userID, currency, chain, 
 	if err != nil {
 		return nil, err
 	}
-	if cur.Kind == CurrencyCrypto && chain == "" {
-		return nil, postErr("MISSING_CHAIN", "%s is an on-chain currency; a wallet in it must name a chain", currency)
-	}
-	if cur.Kind == CurrencyFiat && chain != "" {
-		return nil, postErr("UNEXPECTED_CHAIN", "%s is a fiat currency; a wallet in it cannot be on chain %s", currency, chain)
-	}
-	if cur.Kind == CurrencyCrypto {
-		if err := validateAddress(chain, address); err != nil {
-			return nil, err
+	// Custodial crypto wallets differ from USD-X wallets on both inputs: the
+	// chain is a property of the currency (BTC lives on Bitcoin and nowhere
+	// else), and the address is the platform's — the user never supplies one.
+	// USD-X keeps its existing rules below: either chain is valid, and the
+	// address is a real on-chain address the saga can settle against.
+	if IsCustodialCrypto(currency) {
+		native := NativeChain(currency)
+		if chain == "" {
+			chain = native
+		} else if chain != native {
+			return nil, postErr("WRONG_CHAIN", "%s is native to %s; a wallet in it cannot be on %s", currency, native, chain)
+		}
+		if address != "" {
+			return nil, postErr("UNEXPECTED_ADDRESS", "%s is custodied by the platform; a wallet in it carries no address (got %q)", currency, address)
+		}
+	} else {
+		if cur.Kind == CurrencyCrypto && chain == "" {
+			return nil, postErr("MISSING_CHAIN", "%s is an on-chain currency; a wallet in it must name a chain", currency)
+		}
+		if cur.Kind == CurrencyFiat && chain != "" {
+			return nil, postErr("UNEXPECTED_CHAIN", "%s is a fiat currency; a wallet in it cannot be on chain %s", currency, chain)
+		}
+		if cur.Kind == CurrencyCrypto {
+			if err := validateAddress(chain, address); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -157,6 +174,64 @@ func (r *Repository) WalletsOf(ctx context.Context, userID string) ([]Wallet, er
 	var ws []Wallet
 	err := r.db.WithContext(ctx).Where("user_id = ?", userID).Order("currency, chain").Find(&ws).Error
 	return ws, err
+}
+
+// SetDefaultWallet marks one of a user's wallets in a currency as the
+// default — the wallet a payment lands in when the payer names only a
+// currency. Clearing the user's other wallets in that currency and setting
+// this one in a single transaction is what keeps the invariant true under
+// concurrent calls; the partial unique index is the backstop that makes a
+// bug fail loudly instead of quietly producing two defaults.
+//
+// by is the actor, recorded in the audit trail in the same transaction.
+func (r *Repository) SetDefaultWallet(ctx context.Context, walletID, by string) error {
+	w, err := r.Wallet(ctx, walletID)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&Wallet{}).
+			Where("user_id = ? AND currency = ?", w.UserID, w.Currency).
+			Update("is_default", false).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&Wallet{}).Where("id = ?", walletID).Update("is_default", true).Error; err != nil {
+			return err
+		}
+		return enqueueAudit(ctx, tx, audit.Event{
+			Actor:       by,
+			Action:      AuditWalletDefaultSet,
+			SubjectType: auditSubjectWallet,
+			SubjectID:   walletID,
+			AfterState:  map[string]any{"is_default": true},
+			Metadata:    map[string]any{"user_id": w.UserID, "currency": w.Currency},
+		})
+	})
+}
+
+// UpdateWalletLabel renames a wallet. The label is display-only — the
+// journal keys every posting on ids, never on it — so nothing else moves
+// with it, and that is the reason this is a wallet update rather than an
+// account one.
+func (r *Repository) UpdateWalletLabel(ctx context.Context, walletID, label, by string) error {
+	w, err := r.Wallet(ctx, walletID)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&Wallet{}).Where("id = ?", walletID).Update("label", label).Error; err != nil {
+			return err
+		}
+		return enqueueAudit(ctx, tx, audit.Event{
+			Actor:       by,
+			Action:      AuditWalletLabelChanged,
+			SubjectType: auditSubjectWallet,
+			SubjectID:   walletID,
+			BeforeState: map[string]any{"label": w.Label},
+			AfterState:  map[string]any{"label": label},
+			Metadata:    map[string]any{"user_id": w.UserID, "currency": w.Currency},
+		})
+	})
 }
 
 // SetWalletStatus freezes, unfreezes or closes a wallet, carrying the change

@@ -175,6 +175,25 @@ export class CustodiansRepository {
     );
     return rows.map(toStatement);
   }
+
+  /**
+   * Each active custodian's latest statement for one currency — the number
+   * GET /exposure compares against the ledger's custody holdings. The
+   * DISTINCT ON reads one row per custodian rather than collapsing
+   * everything to the single newest, so a second custodian added for the
+   * same currency contributes instead of silently replacing the first.
+   */
+  async latestStatements(currency: string): Promise<CustodianStatement[]> {
+    const { rows } = await this.db.query<StatementRow>(
+      `SELECT DISTINCT ON (s.custodian_id) s.*
+       FROM custodian_statements s
+       JOIN custodians c ON c.id = s.custodian_id
+       WHERE c.currency = $1 AND c.status = 'ACTIVE'
+       ORDER BY s.custodian_id, s.as_of DESC`,
+      [currency],
+    );
+    return rows.map(toStatement);
+  }
 }
 
 function toCustodian(row: CustodianRow): Custodian {

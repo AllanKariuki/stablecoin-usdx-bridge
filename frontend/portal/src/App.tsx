@@ -7,6 +7,7 @@ import Landing from './pages/Landing';
 import HomePage from './pages/HomePage';
 import WalletsPage from './pages/WalletsPage';
 import WalletDetailPage from './pages/WalletDetailPage';
+import ConvertPage from './pages/ConvertPage';
 import MoveMoneyPage from './pages/MoveMoneyPage';
 import UsdxPage from './pages/UsdxPage';
 import TransactionsPage from './pages/TransactionsPage';
@@ -46,6 +47,7 @@ export default function App() {
         <Route path="/home" element={<HomePage />} />
         <Route path="/wallets" element={<RequirePermission anyOf={['wallets:read:own']}><WalletsPage /></RequirePermission>} />
         <Route path="/wallets/:walletId" element={<RequirePermission anyOf={['wallets:read:own']}><WalletDetailPage /></RequirePermission>} />
+        <Route path="/convert" element={<RequirePermission anyOf={['fx:convert']}><ConvertPage /></RequirePermission>} />
         <Route path="/move" element={<Navigate to="/move/deposit" replace />} />
         <Route path="/move/:kind" element={<RequirePermission anyOf={['wallets:write:own']}><MoveMoneyPage /></RequirePermission>} />
         <Route path="/usdx" element={<RequirePermission anyOf={['issuance:create', 'redemption:create']}><UsdxPage /></RequirePermission>} />
