@@ -22,7 +22,7 @@ export default function SagaTimeline({ transfer }: { transfer: SagaTransfer }) {
     <div className="flex flex-col gap-5 rounded-card border border-line bg-canvas p-5" data-testid="saga-progress">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="eyebrow">{redeem ? 'Redemption' : 'Issuance'}</p>
+          <p className="eyebrow">{transfer.kind === 'BRIDGE' ? 'Bridge' : redeem ? 'Redemption' : 'Issuance'}</p>
           <p className="mt-1 text-lg font-extrabold tracking-tight text-navy">{transfer.amount.display} USD-X</p>
         </div>
         <Badge tone={STATUS_TONE[transfer.status]}>{sagaLabel(transfer)}</Badge>

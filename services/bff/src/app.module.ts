@@ -7,6 +7,7 @@ import { TransactionsModule } from './transactions/transactions.module';
 import { MoneyMovementModule } from './money-movement/money-movement.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { IssuanceModule } from './issuance/issuance.module';
+import { FxModule } from './fx/fx.module';
 import { UpstreamModule } from './upstream/upstream.module';
 
 /**
@@ -31,6 +32,7 @@ export function createAppModule(version?: string, commit?: string): DynamicModul
       MoneyMovementModule,
       DashboardModule,
       IssuanceModule,
+      FxModule,
       UpstreamModule,
     ],
   };

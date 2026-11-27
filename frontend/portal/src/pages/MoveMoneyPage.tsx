@@ -4,7 +4,8 @@ import { ArrowRight, CheckCircle2, Wallet as WalletIcon } from 'lucide-react';
 import { apiErrorMessage, ledgerApi, newIdempotencyKey, parseAmountInput, type Transaction } from '@damp/web-shared/api';
 import { paymentsApi, type PaymentIntent } from '@damp/web-shared/api/payments';
 import { formatDateTime, useAsync } from '@damp/web-shared/lib';
-import { AmountInput, Button, Callout, Card, EmptyState, ErrorState, Field, Input, KeyValueList, LinkButton, MonoRef, MoneyText, NavTabs, PageHeader, Select, SkeletonRows, StatusBadge } from '@damp/web-shared/ui';
+import { AmountInput, Button, Callout, Card, EmptyState, ErrorState, Field, Input, KeyValueList, LinkButton, MonoRef, MoneyText, PageHeader, Select, SkeletonRows, StatusBadge } from '@damp/web-shared/ui';
+import MoveNav from '../components/MoveNav';
 import WalletSelect from '../components/WalletSelect';
 import { useWallets } from '../hooks/useWallets';
 
@@ -124,13 +125,7 @@ export default function MoveMoneyPage() {
   return (
     <>
       <PageHeader eyebrow="Move money" title={COPY[k].title} description={COPY[k].description} />
-      <NavTabs
-        tabs={[
-          { to: '/move/deposit', label: 'Deposit' },
-          { to: '/move/withdraw', label: 'Withdraw' },
-          { to: '/move/transfer', label: 'Transfer' },
-        ]}
-      />
+      <MoveNav />
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,560px)_1fr]">
         <Card>

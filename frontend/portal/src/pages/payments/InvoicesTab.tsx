@@ -1,17 +1,21 @@
-import { useState } from 'react';
-import { FileText, Plus } from 'lucide-react';
-import { apiErrorMessage, newIdempotencyKey, parseAmountInput } from '@damp/web-shared/api';
-import { paymentsApi, type Invoice } from '@damp/web-shared/api/payments';
+import { useEffect, useState } from 'react';
+import { CheckCircle2, FileText, Plus } from 'lucide-react';
+import { apiErrorMessage, newIdempotencyKey, parseAmountInput, type Wallet } from '@damp/web-shared/api';
+import { paymentsApi, type Invoice, type PaymentIntent } from '@damp/web-shared/api/payments';
 import { Can } from '@damp/web-shared/auth';
 import { formatDate, useAsync } from '@damp/web-shared/lib';
 import { AmountInput, Button, Callout, Card, CardHeader, ConfirmDialog, DataTable, Field, Input, KeyValueList, Modal, MonoRef, MoneyText, Select, StatusBadge, Tabs } from '@damp/web-shared/ui';
+import ConvertingTracker from '../../components/ConvertingTracker';
+import PayFromPicker, { type PayFromSelection } from '../../components/PayFromPicker';
+import { useWallets } from '../../hooks/useWallets';
 
 export default function InvoicesTab() {
   const [role, setRole] = useState<'issued' | 'payer'>('issued');
   const invoices = useAsync(() => paymentsApi.invoices(role), [role]);
+  const wallets = useWallets();
   const [creating, setCreating] = useState(false);
   const [voiding, setVoiding] = useState<Invoice | null>(null);
-  const [paying, setPaying] = useState<{ invoice: Invoice; key: string } | null>(null);
+  const [paying, setPaying] = useState<Invoice | null>(null);
 
   return (
     <Card>
@@ -75,7 +79,7 @@ export default function InvoicesTab() {
                       </Button>
                     </div>
                   ) : (
-                    <Button size="sm" onClick={() => setPaying({ invoice: i, key: newIdempotencyKey() })}>
+                    <Button size="sm" onClick={() => setPaying(i)}>
                       Pay
                     </Button>
                   )}
@@ -104,32 +108,105 @@ export default function InvoicesTab() {
         }}
       />
 
-      <ConfirmDialog
-        open={paying !== null}
-        onClose={() => setPaying(null)}
-        title={`Pay invoice ${paying?.invoice.number ?? ''}`}
-        confirmLabel={paying ? `Pay ${paying.invoice.amount.display}` : 'Pay'}
-        consequence="Money moves from your wallet to the issuer’s straight away, in one ledger transaction."
-        onConfirm={async () => {
-          try {
-            await paymentsApi.payInvoice(paying!.invoice.id, paying!.key);
-          } catch (err) {
-            throw new Error(apiErrorMessage(err));
-          }
-          invoices.reload();
-        }}
-      >
-        {paying && (
-          <KeyValueList
-            items={[
-              { label: 'Amount', value: <MoneyText money={paying.invoice.amount} /> },
-              { label: 'Description', value: paying.invoice.description || '—' },
-              { label: 'Due', value: formatDate(paying.invoice.dueDate) },
-            ]}
-          />
-        )}
-      </ConfirmDialog>
+      <PayInvoiceModal invoice={paying} wallets={wallets.data ?? []} open={paying !== null} onClose={() => setPaying(null)} onPaid={invoices.reload} />
     </Card>
+  );
+}
+
+/** Pay an open invoice from any wallet — same currency pays straight out,
+ * cross-currency rides a TO-side quote, a USD-X source books as CONVERTING. */
+function PayInvoiceModal({ invoice, wallets, open, onClose, onPaid }: { invoice: Invoice | null; wallets: Wallet[]; open: boolean; onClose: () => void; onPaid: () => void }) {
+  const [source, setSource] = useState<PayFromSelection>({});
+  const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<PaymentIntent | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setSource({});
+      setIdempotencyKey(null);
+      setBusy(false);
+      setError(null);
+      setResult(null);
+    }
+  }, [open]);
+
+  const targetCurrency = invoice?.amount.currency ?? 'USD';
+  const targetAmount = invoice?.amount.amount ?? null;
+
+  const sourceWallet = source.sourceWallet;
+  const needsQuote = Boolean(sourceWallet && sourceWallet.currency !== targetCurrency && !(sourceWallet.currency === 'USDX' && targetCurrency === 'USD'));
+  const quoteReady = !needsQuote || Boolean(source.quoteId);
+
+  const submit = async () => {
+    if (!invoice) return;
+    // One idempotency key per confirmed pay, reused on every retry of it.
+    const key = idempotencyKey ?? newIdempotencyKey();
+    setIdempotencyKey(key);
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const intent = await paymentsApi.payInvoice(invoice.id, key, {
+        ...(source.sourceWalletId ? { sourceWalletId: source.sourceWalletId } : {}),
+        ...(source.quoteId ? { quoteId: source.quoteId, sourceAmount: source.sourceAmount } : {}),
+      });
+      setResult(intent);
+      onPaid();
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      onClose={busy ? () => undefined : onClose}
+      title={result ? (result.status.toUpperCase() === 'CONVERTING' ? 'Invoice paying' : 'Payment sent') : `Pay invoice ${invoice?.number ?? ''}`}
+      footer={
+        result ? (
+          <Button onClick={onClose}>Done</Button>
+        ) : (
+          <>
+            <Button variant="secondary" onClick={onClose} disabled={busy}>
+              Cancel
+            </Button>
+            <Button onClick={submit} loading={busy} disabled={!quoteReady}>
+              Pay {invoice?.amount.display ?? ''}
+            </Button>
+          </>
+        )
+      }
+    >
+      {result ? (
+        result.status.toUpperCase() === 'CONVERTING' ? (
+          <ConvertingTracker intent={result} />
+        ) : (
+          <div className="flex flex-col items-start gap-4" role="status">
+            <span className="grid size-14 place-items-center rounded-[18px] bg-cyan-tint text-cyan-ink">
+              <CheckCircle2 className="size-7" aria-hidden />
+            </span>
+            <h2 className="text-2xl font-extrabold tracking-tight text-navy">Payment sent</h2>
+            <KeyValueList
+              className="w-full"
+              items={[
+                { label: 'Status', value: <StatusBadge status={result.status} /> },
+                { label: 'Amount', value: <MoneyText money={result.amount} /> },
+                { label: 'Reference', value: <MonoRef value={result.id} /> },
+              ]}
+            />
+          </div>
+        )
+      ) : (
+        <div className="flex flex-col gap-4">
+          <PayFromPicker wallets={wallets} targetCurrency={targetCurrency} targetAmount={targetAmount} onChange={setSource} />
+          {error && <Callout tone="danger">{error}</Callout>}
+        </div>
+      )}
+    </Modal>
   );
 }
 

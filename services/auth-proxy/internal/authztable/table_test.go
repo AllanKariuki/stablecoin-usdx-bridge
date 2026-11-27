@@ -93,6 +93,58 @@ func TestManualAdjustments_RequireAdjustPermission(t *testing.T) {
 	}
 }
 
+func TestExposureAndPricing_ReadVsManage(t *testing.T) {
+	// Reads are gated on reserves:read; the writes on reserves:manage. The
+	// same split as reserves/attestations — the treasury role holds both,
+	// admin holds reserves:read only, so the writes must not be reachable
+	// with reserves:read alone.
+	read := []struct{ method, path string }{
+		{"GET", "/exposure"},
+		{"GET", "/exposure/limits/BTC"},
+		{"GET", "/treasury/rebalances"},
+		{"GET", "/pricing/pairs"},
+		{"GET", "/pricing/rates"},
+	}
+	for _, r := range read {
+		rule, found := authztable.Default.Match(r.method, r.path)
+		if !found {
+			t.Fatalf("setup: expected a rule for %s %s", r.method, r.path)
+		}
+		if !rule.Allows([]authz.Permission{authz.PermissionReservesRead}) {
+			t.Errorf("expected reserves:read to authorize %s %s", r.method, r.path)
+		}
+		if !rule.Allows(authz.RolePermissions[authz.RoleTreasury]) {
+			t.Errorf("expected the treasury role to authorize %s %s", r.method, r.path)
+		}
+	}
+
+	manage := []struct{ method, path string }{
+		{"PUT", "/exposure/limits/BTC"},
+		{"POST", "/treasury/rebalances"},
+		{"PATCH", "/pricing/pairs/BTC/USD"},
+	}
+	for _, r := range manage {
+		rule, found := authztable.Default.Match(r.method, r.path)
+		if !found {
+			t.Fatalf("setup: expected a rule for %s %s", r.method, r.path)
+		}
+		if rule.Allows([]authz.Permission{authz.PermissionReservesRead}) {
+			t.Errorf("reserves:read alone must not authorize %s %s", r.method, r.path)
+		}
+		if !rule.Allows([]authz.Permission{authz.PermissionReservesManage}) {
+			t.Errorf("expected reserves:manage to authorize %s %s", r.method, r.path)
+		}
+		// admin holds reserves:read but not reserves:manage (segregation of
+		// duties), so a write must not be reachable with the admin role.
+		if rule.Allows(authz.RolePermissions[authz.RoleAdmin]) {
+			t.Errorf("the admin role must not be able to %s %s", r.method, r.path)
+		}
+		if !rule.Allows(authz.RolePermissions[authz.RoleTreasury]) {
+			t.Errorf("expected the treasury role to authorize %s %s", r.method, r.path)
+		}
+	}
+}
+
 func TestTransfers_RemainAvailableToCustomers(t *testing.T) {
 	rule, found := authztable.Default.Match("POST", "/transfers")
 	if !found {
@@ -100,5 +152,74 @@ func TestTransfers_RemainAvailableToCustomers(t *testing.T) {
 	}
 	if !rule.Allows(authz.RolePermissions[authz.RoleCustomer]) {
 		t.Error("customers must still be able to transfer between their own wallets")
+	}
+}
+
+// Slice 4b: the portal money API. Every route is reachable with the
+// customer role alone (the portal's audience), and the permission split is
+// what the rule names it: quoting is fx:quote, converting is fx:convert,
+// reading your conversion history is transactions:read:own, and the wallet
+// writes sit on wallets:write:own — never, say, on fx:quote alone.
+func TestPortalMoneyApi_CustomerSurface(t *testing.T) {
+	cases := []struct {
+		method, path    string
+		permission      authz.Permission
+		denyPermissions []authz.Permission
+	}{
+		{"GET", "/currencies", authz.PermissionWalletsReadOwn, nil},
+		{"POST", "/wallets", authz.PermissionWalletsWriteOwn, []authz.Permission{authz.PermissionWalletsReadOwn}},
+		{"PATCH", "/wallets/w-1", authz.PermissionWalletsWriteOwn, []authz.Permission{authz.PermissionWalletsReadOwn}},
+		{"POST", "/quotes", authz.PermissionFxQuote, []authz.Permission{authz.PermissionFxConvert, authz.PermissionWalletsWriteOwn}},
+		{"POST", "/conversions", authz.PermissionFxConvert, []authz.Permission{authz.PermissionFxQuote}},
+		{"GET", "/conversions", authz.PermissionTransactionsReadOwn, []authz.Permission{authz.PermissionWalletsReadOwn}},
+		{"GET", "/rates", authz.PermissionWalletsReadOwn, []authz.Permission{authz.PermissionFxQuote}},
+		{"GET", "/rates/history", authz.PermissionWalletsReadOwn, []authz.Permission{authz.PermissionFxQuote}},
+	}
+	for _, tc := range cases {
+		rule, found := authztable.Default.Match(tc.method, tc.path)
+		if !found {
+			t.Fatalf("expected a rule for %s %s", tc.method, tc.path)
+		}
+		if !rule.Allows(authz.RolePermissions[authz.RoleCustomer]) {
+			t.Errorf("the customer role must reach %s %s", tc.method, tc.path)
+		}
+		if !rule.Allows([]authz.Permission{tc.permission}) {
+			t.Errorf("expected %s alone to authorize %s %s", tc.permission, tc.method, tc.path)
+		}
+		for _, deny := range tc.denyPermissions {
+			if rule.Allows([]authz.Permission{deny}) {
+				t.Errorf("%s must not authorize %s %s", deny, tc.method, tc.path)
+			}
+		}
+	}
+}
+
+// The customer /rates paths must not unlock the ops console's /pricing/*
+// surface (reserves:read), and vice versa: a customer reaches their own
+// rates board, never the treasury one.
+func TestPortalRates_AreNotTheOpsPricingSurface(t *testing.T) {
+	customer := authz.RolePermissions[authz.RoleCustomer]
+	if rule, found := authztable.Default.Match("GET", "/pricing/rates"); !found || rule.Allows(customer) {
+		t.Error("the customer role must not reach GET /pricing/rates (reserves:read)")
+	}
+	if rule, found := authztable.Default.Match("GET", "/rates/history"); !found || !rule.Allows(customer) {
+		t.Error("the customer role must reach GET /rates/history")
+	}
+	// An auditor (wallets:read:any, no wallets:read:own) holds none of the
+	// customer-rate permissions, so the portal rates stay a customer surface.
+	if rule, found := authztable.Default.Match("GET", "/rates"); !found || rule.Allows(authz.RolePermissions[authz.RoleAuditor]) {
+		t.Error("the auditor role must not reach GET /rates (wallets:read:own)")
+	}
+}
+
+// POST /wallets must not capture the USD-X route: /wallets/usdx keeps its
+// own rule (write:own) and the bare route must not match it or vice versa.
+func TestPortalWallets_UsdxRouteKeepsItsOwnRule(t *testing.T) {
+	rule, found := authztable.Default.Match("POST", "/wallets/usdx")
+	if !found {
+		t.Fatal("expected a rule for POST /wallets/usdx")
+	}
+	if rule.Path != "/wallets/usdx" {
+		t.Errorf("POST /wallets/usdx matched %q, want the usdx-specific rule", rule.Path)
 	}
 }

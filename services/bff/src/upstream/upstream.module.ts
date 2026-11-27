@@ -4,6 +4,7 @@ import { PaymentsProxyController } from './payments.controller';
 import { ComplianceProxyController, KycProxyController, WorkflowProxyController } from './p5.controller';
 import { AuditTrailProxyController, ReportingProxyController } from './p7.controller';
 import { CoreLedgerOperationsProxyController, RmsProxyController } from './operations.controller';
+import { PricingProxyController } from './pricing.controller';
 import { UpstreamProxy } from './upstream.proxy';
 
 // ServiceTokenClient is not listed here: core-ledger.module.ts is @Global
@@ -20,6 +21,7 @@ import { UpstreamProxy } from './upstream.proxy';
     AuditTrailProxyController,
     RmsProxyController,
     CoreLedgerOperationsProxyController,
+    PricingProxyController,
   ],
   providers: [UpstreamProxy],
 })

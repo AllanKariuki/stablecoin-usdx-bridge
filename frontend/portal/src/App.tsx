@@ -7,10 +7,15 @@ import Landing from './pages/Landing';
 import HomePage from './pages/HomePage';
 import WalletsPage from './pages/WalletsPage';
 import WalletDetailPage from './pages/WalletDetailPage';
+import ConvertPage from './pages/ConvertPage';
 import MoveMoneyPage from './pages/MoveMoneyPage';
 import UsdxPage from './pages/UsdxPage';
 import TransactionsPage from './pages/TransactionsPage';
 import PaymentsPage from './pages/PaymentsPage';
+import SendMoneyPage from './pages/SendMoneyPage';
+import DepositPage from './pages/DepositPage';
+import HelpPage from './pages/HelpPage';
+import WithdrawPage from './pages/WithdrawPage';
 import PayInvoicePage from './pages/PayInvoicePage';
 import VerificationPage from './pages/VerificationPage';
 import NotificationsPage from './pages/NotificationsPage';
@@ -46,15 +51,20 @@ export default function App() {
         <Route path="/home" element={<HomePage />} />
         <Route path="/wallets" element={<RequirePermission anyOf={['wallets:read:own']}><WalletsPage /></RequirePermission>} />
         <Route path="/wallets/:walletId" element={<RequirePermission anyOf={['wallets:read:own']}><WalletDetailPage /></RequirePermission>} />
+        <Route path="/convert" element={<RequirePermission anyOf={['fx:convert']}><ConvertPage /></RequirePermission>} />
         <Route path="/move" element={<Navigate to="/move/deposit" replace />} />
+        <Route path="/move/deposit" element={<RequirePermission anyOf={['wallets:write:own']}><DepositPage /></RequirePermission>} />
+        <Route path="/move/withdraw" element={<RequirePermission anyOf={['wallets:write:own']}><WithdrawPage /></RequirePermission>} />
         <Route path="/move/:kind" element={<RequirePermission anyOf={['wallets:write:own']}><MoveMoneyPage /></RequirePermission>} />
         <Route path="/usdx" element={<RequirePermission anyOf={['issuance:create', 'redemption:create']}><UsdxPage /></RequirePermission>} />
         <Route path="/transactions" element={<RequirePermission anyOf={['transactions:read:own']}><TransactionsPage /></RequirePermission>} />
         <Route path="/payments/*" element={<RequirePermission anyOf={['payments:read:own']}><PaymentsPage /></RequirePermission>} />
+        <Route path="/send" element={<RequirePermission anyOf={['payments:write:own']}><SendMoneyPage /></RequirePermission>} />
         <Route path="/verification" element={<RequirePermission anyOf={['kyc:submit']}><VerificationPage /></RequirePermission>} />
         <Route path="/notifications" element={<RequirePermission anyOf={['notifications:read:own']}><NotificationsPage /></RequirePermission>} />
         <Route path="/approvals" element={<RequirePermission anyOf={['approvals:propose', 'approvals:decide']}><ApprovalsPage /></RequirePermission>} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/help" element={<HelpPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

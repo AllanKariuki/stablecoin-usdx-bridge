@@ -18,7 +18,9 @@ export class FakeCoreLedger {
   lastAuth = '';
   /** Every write core-ledger was asked to post, for asserting a rejected request never reached it. */
   writes: Array<{ path: string; actor: string }> = [];
-  private transactions: Array<{ id: string; user_id: string; created_at: string; amount: string }> = [];
+  private transactions: Array<{ id: string; user_id: string; created_at: string; amount: string; type: string }> = [];
+  /** The query GET /transactions last saw — what the type filter contracts on. */
+  lastTransactionsQuery: { userId: string; types: string[]; cursor: string } | null = null;
   private nextId = 1;
 
   constructor() {
@@ -72,10 +74,25 @@ export class FakeCoreLedger {
         currency,
         chain,
         address: String(body.address ?? ''),
+        label: String(body.label ?? ''),
+        is_default: false,
         balance: currency === 'USDX' ? '0.000000' : '0.00',
       };
       this.wallets.set(wallet.id, wallet);
       return this.json(res, 201, this.renderWallet(wallet));
+    }
+
+    if (method === 'GET' && url.pathname === '/currencies') {
+      return this.json(res, 200, {
+        currencies: [
+          { code: 'USD', kind: 'FIAT', decimals: 2, name: 'US Dollar', native_chain: '' },
+          { code: 'KES', kind: 'FIAT', decimals: 2, name: 'Kenyan Shilling', native_chain: '' },
+          { code: 'BTC', kind: 'CRYPTO', decimals: 8, name: 'Bitcoin', native_chain: 'BITCOIN' },
+          { code: 'ETH', kind: 'CRYPTO', decimals: 18, name: 'Ether', native_chain: 'ETHEREUM' },
+          { code: 'SOL', kind: 'CRYPTO', decimals: 9, name: 'Solana', native_chain: 'SOLANA' },
+          { code: 'USDX', kind: 'CRYPTO', decimals: 6, name: 'USD-X', native_chain: '' },
+        ],
+      });
     }
 
     const usersWalletsMatch = url.pathname.match(/^\/users\/([^/]+)\/wallets$/);
@@ -89,6 +106,22 @@ export class FakeCoreLedger {
     if (method === 'GET' && walletMatch) {
       const wallet = this.wallets.get(decodeURIComponent(walletMatch[1]));
       if (!wallet) return this.json(res, 404, { error: 'not found', code: 'UNKNOWN_WALLET' });
+      return this.json(res, 200, this.renderWallet(wallet));
+    }
+
+    if (method === 'PATCH' && walletMatch) {
+      const wallet = this.wallets.get(decodeURIComponent(walletMatch[1]));
+      if (!wallet) return this.json(res, 404, { error: 'not found', code: 'UNKNOWN_WALLET' });
+      if (body.is_default === false) {
+        return this.json(res, 400, { error: 'is_default can only be set to true', code: 'BAD_REQUEST' });
+      }
+      if (body.is_default !== undefined && body.is_default) {
+        for (const w of this.wallets.values()) {
+          if (w.user_id === wallet.user_id && w.currency === wallet.currency) w.is_default = false;
+        }
+        wallet.is_default = true;
+      }
+      if (body.label !== undefined) wallet.label = String(body.label);
       return this.json(res, 200, this.renderWallet(wallet));
     }
 
@@ -129,9 +162,29 @@ export class FakeCoreLedger {
         user_id: wallet.user_id,
         created_at: new Date().toISOString(),
         amount: String(body.amount),
+        type: 'FIAT_DEPOSIT',
       };
       this.transactions.push(tx);
       return this.json(res, 201, this.renderTransaction(tx, wallet.currency));
+    }
+
+    if (method === 'POST' && url.pathname === '/fx/conversions') {
+      this.lastActor = String(req.headers['x-user-id'] ?? '');
+      this.writes.push({ path: url.pathname, actor: this.lastActor });
+      const from = this.wallets.get(String(body.from_wallet_id));
+      if (!from) return this.json(res, 404, { error: 'no such wallet', code: 'UNKNOWN_WALLET' });
+      if (!this.wallets.has(String(body.to_wallet_id))) {
+        return this.json(res, 404, { error: 'no such wallet', code: 'UNKNOWN_WALLET' });
+      }
+      const tx = {
+        id: `tx-${this.nextId++}`,
+        user_id: from.user_id,
+        created_at: new Date().toISOString(),
+        amount: String(body.amount),
+        type: 'FX_CONVERSION',
+      };
+      this.transactions.push(tx);
+      return this.json(res, 201, this.renderTransaction(tx, from.currency));
     }
 
     if (method === 'POST' && url.pathname === '/bridges') {
@@ -197,7 +250,12 @@ export class FakeCoreLedger {
         });
       }
       const saga = this.sagas.get(correlationId)!;
-      const tx = { id: String(saga.ledger_tx_id), created_at: String(saga.created_at), amount: String(body.amount) };
+      const tx = {
+        id: String(saga.ledger_tx_id),
+        created_at: String(saga.created_at),
+        amount: String(body.amount),
+        type: issuing ? 'USDX_ISSUE' : 'USDX_REDEEM',
+      };
       return this.json(res, 202, {
         ...this.renderTransaction(tx, issuing ? 'USD' : 'USDX'),
         correlation_id: correlationId,
@@ -215,7 +273,18 @@ export class FakeCoreLedger {
     if (method === 'GET' && url.pathname === '/transactions') {
       const userId = url.searchParams.get('user_id') ?? '';
       const limit = Number(url.searchParams.get('limit') ?? '50');
-      const matched = this.transactions.filter((t) => t.user_id === userId).slice(0, limit);
+      // The repeated/comma-separated `type` filter, applied before the limit
+      // exactly as core-ledger's SQL does.
+      const types = url.searchParams
+        .getAll('type')
+        .flatMap((value) => value.split(','))
+        .map((value) => value.trim())
+        .filter(Boolean);
+      this.lastTransactionsQuery = { userId, types, cursor: url.searchParams.get('cursor') ?? '' };
+      const matched = this.transactions
+        .filter((t) => t.user_id === userId)
+        .filter((t) => types.length === 0 || types.includes(t.type))
+        .slice(0, limit);
       return this.json(res, 200, {
         transactions: matched.map((t) => this.renderTransaction(t, 'USD')),
         next_cursor: '',
@@ -240,15 +309,16 @@ export class FakeCoreLedger {
       chain: w.chain,
       address: w.address,
       status: 'ACTIVE',
-      label: 'Main',
+      label: w.label,
+      is_default: w.is_default,
       balance: w.balance,
     };
   }
 
-  private renderTransaction(t: { id: string; created_at: string; amount: string }, currency: string) {
+  private renderTransaction(t: { id: string; created_at: string; amount: string; type: string }, currency: string) {
     return {
       id: t.id,
-      type: 'FIAT_DEPOSIT',
+      type: t.type,
       status: 'POSTED',
       reversed: false,
       value_date: '2026-01-01',
@@ -282,5 +352,7 @@ interface FakeWallet {
   currency: string;
   chain: string;
   address: string;
+  label: string;
+  is_default: boolean;
   balance: string;
 }

@@ -7,15 +7,30 @@ import { Field, Textarea } from './Form';
 
 /**
  * Native <dialog>: focus trap, Esc and the inert backdrop come from the
- * browser. `onClose` fires for Esc and the close button alike.
+ * browser. `onClose` fires for Esc and the close button alike. Where
+ * showModal isn't implemented (jsdom), the open attribute is set instead
+ * so the content stays reachable to tests and assistive tech.
  */
 export function Modal({ open, onClose, title, children, footer, size = 'md' }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; footer?: ReactNode; size?: 'sm' | 'md' | 'lg' }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
-    if (open && !d.open) d.showModal?.();
-    if (!open && d.open) d.close?.();
+    if (open && !d.open) {
+      try {
+        if (d.showModal) d.showModal();
+        else d.setAttribute('open', '');
+      } catch {
+        d.setAttribute('open', '');
+      }
+    }
+    if (!open && d.open) {
+      try {
+        d.close?.();
+      } catch {
+        d.removeAttribute('open');
+      }
+    }
   }, [open]);
   const widths = { sm: 'max-w-md', md: 'max-w-lg', lg: 'max-w-2xl' };
   return (

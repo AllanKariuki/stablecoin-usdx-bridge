@@ -1,14 +1,66 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useParams } from 'react-router-dom';
-import { ArrowDownToLine, ArrowUpFromLine, ReceiptText } from 'lucide-react';
-import { apiErrorMessage, apiStatus, ledgerApi } from '@damp/web-shared/api';
+import { ArrowDownToLine, ArrowLeftRight, ArrowUpFromLine, Pencil, ReceiptText, Star } from 'lucide-react';
+import { apiErrorMessage, apiStatus, ledgerApi, walletsApi } from '@damp/web-shared/api';
 import { Can } from '@damp/web-shared/auth';
 import { formatDate, humanize, useAsync } from '@damp/web-shared/lib';
 import { NotFoundPage } from '@damp/web-shared/pages';
-import { Button, Callout, Card, CardHeader, DataTable, ErrorState, Field, HeroPanel, Input, KeyValueList, LinkButton, MonoRef, MoneyText, PageHeader, Skeleton, StatusBadge } from '@damp/web-shared/ui';
+import { Button, Callout, Card, CardHeader, DataTable, ErrorState, Field, HeroPanel, Input, KeyValueList, LinkButton, Modal, MonoRef, MoneyText, PageHeader, Skeleton, StatusBadge, toast } from '@damp/web-shared/ui';
 import TransactionDrawer from '../components/TransactionDrawer';
 import SignedAmount from '../components/SignedAmount';
 import { isFrozen } from '../hooks/useWallets';
+
+/** Label rename — the same 64-character cap the backend enforces. */
+function RenameWallet({ walletId, label, onRenamed }: { walletId: string; label: string; onRenamed: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState(label);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (value.length > 64) return setError('Keep the label to 64 characters or fewer.');
+    setBusy(true);
+    setError(null);
+    try {
+      await walletsApi.updateWallet(walletId, { label: value.trim() || undefined });
+      onRenamed();
+      setOpen(false);
+      toast('Wallet renamed.');
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Button variant="secondary" size="sm" icon={<Pencil className="size-4" aria-hidden />} onClick={() => (setValue(label), setOpen(true))}>
+        Rename
+      </Button>
+      <Modal
+        open={open}
+        onClose={busy ? () => undefined : () => setOpen(false)}
+        title="Rename wallet"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setOpen(false)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button type="submit" form="detail-rename-form" loading={busy}>
+              Save
+            </Button>
+          </>
+        }
+      >
+        <form id="detail-rename-form" onSubmit={submit} noValidate className="flex flex-col gap-4">
+          <Field label="Label" hint="Up to 64 characters." error={error ?? undefined}>
+            <Input value={value} onChange={(e) => (setValue(e.target.value), setError(null))} autoFocus />
+          </Field>
+        </form>
+      </Modal>
+    </>
+  );
+}
 
 export default function WalletDetailPage() {
   const { walletId = '' } = useParams();
@@ -25,12 +77,23 @@ export default function WalletDetailPage() {
     <>
       <PageHeader
         eyebrow="Wallet"
-        title={w ? `${w.label || w.currency} · ${w.currency}` : <Skeleton className="h-8 w-56" />}
+        title={
+          <span className="flex items-center gap-2">
+            {w ? `${w.label || w.currency} · ${w.currency}` : <Skeleton className="h-8 w-56" />}
+            {w?.isDefault && <Star className="size-5 fill-warn text-warn" aria-label="Default wallet" />}
+          </span>
+        }
         actions={
-          w && !isFrozen(w) ? (
+          w ? (
             <Can anyOf={['wallets:write:own']}>
-              <LinkButton to="/move/deposit" variant="secondary" icon={<ArrowDownToLine className="size-4" aria-hidden />}>Deposit</LinkButton>
-              <LinkButton to="/move/withdraw" variant="secondary" icon={<ArrowUpFromLine className="size-4" aria-hidden />}>Withdraw</LinkButton>
+              {!isFrozen(w) && (
+                <>
+                  <LinkButton to={`/convert?from=${w.id}`} variant="secondary" icon={<ArrowLeftRight className="size-4" aria-hidden />}>Convert</LinkButton>
+                  <LinkButton to="/move/deposit" variant="secondary" icon={<ArrowDownToLine className="size-4" aria-hidden />}>Deposit</LinkButton>
+                  <LinkButton to="/move/withdraw" variant="secondary" icon={<ArrowUpFromLine className="size-4" aria-hidden />}>Withdraw</LinkButton>
+                </>
+              )}
+              <RenameWallet walletId={w.id} label={w.label} onRenamed={wallet.reload} />
             </Can>
           ) : undefined
         }
@@ -61,6 +124,7 @@ export default function WalletDetailPage() {
                     { label: 'Currency', value: w.currency },
                     ...(w.chain ? [{ label: 'Chain', value: humanize(w.chain) }] : []),
                     ...(w.address ? [{ label: 'Address', value: <MonoRef value={w.address} /> }] : []),
+                    { label: 'Default', value: w.isDefault ? 'Yes — the one payments prefer in this currency' : 'No' },
                     { label: 'Wallet reference', value: <MonoRef value={w.id} /> },
                   ]}
                 />
