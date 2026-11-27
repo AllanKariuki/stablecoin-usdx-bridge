@@ -87,6 +87,15 @@ const FRIENDLY: Record<string, string> = {
   QUOTE_EXPIRED: 'That quote expired. Get a fresh one.',
   KYC_REQUIRED: 'Verify your identity before doing this.',
   LIMIT_EXCEEDED: "This is over your account's limit for your verification tier.",
+  // The conversion surface (slice 4b/5a): pair-level refusals.
+  SAME_CURRENCY: 'Both wallets hold the same currency — there’s nothing to convert.',
+  USDX_TWO_STEP: 'USD-X converts in two steps: USD-X → USD, then USD → your target currency.',
+  USDX_USES_ISSUANCE: 'USD-X is only quoted against USD — issue or redeem on the USD-X page instead.',
+  USE_USDX_ROUTE: 'USD-X wallets are opened through the USD-X route — pick a chain instead.',
+  EXPOSURE_LIMIT_EXCEEDED: 'This conversion would push the platform past its exposure limit for that asset. Try a smaller amount.',
+  PARTY_OUTSTANDING_CAP_EXCEEDED: 'This is over your outstanding conversion cap. Try a smaller amount.',
+  PAIR_TRIPPED: 'This pair is paused while its price sources disagree. Try again in a few minutes.',
+  STALE_PRICE: 'Prices for this pair are too old to quote right now. Try again in a few minutes.',
 };
 
 /**

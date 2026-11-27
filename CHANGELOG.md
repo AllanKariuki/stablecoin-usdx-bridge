@@ -3,6 +3,54 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-27 — Portal: multi-asset dashboard and wallets (slice 5a)
+
+### Added — Home dashboard (frontend/portal)
+
+- The Home page is rebuilt as a 12-column (stacked on mobile) multi-asset
+  dashboard on the real APIs — no mock data:
+  - Header: greeting, total portfolio value in USD (every wallet's balance
+    × its USD rate; USD-X = 1:1) with a localStorage-persisted eye toggle;
+    wallets whose rate is unavailable show "—" and a "some prices
+    unavailable" note. All sums are BigInt-exact (new `addDecimal` /
+    `mulDecimal` / `divDecimal` helpers in `@damp/web-shared/api/money` —
+    money never passes through a float).
+  - "Markets": a recharts multi-series line chart of BTC/ETH/SOL percent
+    change from `GET /rates/history` (1H–ALL tabs, default 1M), one percent
+    y-axis, fixed per-asset colours (BTC `#D97706`, ETH `#6D4ED8`, SOL
+    `#0E9F8E`), crosshair tooltip with % + price, legend plus labels at the
+    line ends, per-asset price/24h-change rows below, and an accessible
+    "View as table" toggle.
+  - Hero banner ("Pay with anything."), Quick send (saved payees as
+    deterministic avatar circles linking to `/send?payee=<id>`), and a Swap
+    card: debounced 500ms quotes (`amount_side FROM`), fee/total/net
+    display, a live countdown to `expires_at` that re-quotes at zero,
+    ISSUANCE/REDEMPTION peg handling, friendly messages for
+    `USDX_TWO_STEP` / `USDX_USES_ISSUANCE` / `EXPOSURE_LIMIT_EXCEEDED` /
+    `PARTY_OUTSTANDING_CAP_EXCEEDED` / `PAIR_TRIPPED` / `STALE_PRICE`, an
+    inline "Add \<CCY> wallet" before quoting when the target wallet is
+    missing, and Convert with a per-quote Idempotency-Key.
+  - "My portfolio" (rows per wallet with icon, 24h change and default
+    star) and "Recent activity" (last 6 transactions).
+
+### Added — Wallets (frontend/portal)
+
+- Wallets page groups Fiat / Crypto / USD-X, each wallet a card with
+  currency icon, label, balance (respects the hide toggle), USD value,
+  status badge and default star, plus an actions menu (Set as default via
+  `updateWallet` — only when a currency has more than one wallet — Rename
+  with the 64-character cap, View statement).
+- Add-wallet wizard: type → currency (from `GET /currencies`, excluding
+  held currencies; USD-X reuses the chain-picking `OpenUsdxWalletForm`
+  flow) → optional label + confirm → success with "Fund it"
+  (`/move/deposit`) or "Buy \<CCY>" (`/convert?to=<CCY>`) CTA.
+- Wallet detail shows the default flag, gains a Rename action and a
+  Convert action (`/convert?from=<id>`).
+- New `/convert` page (nav item under Move money, `fx:convert`) reusing
+  the Swap card full-width, pre-seeded from `?from=` / `?to=` deep links.
+- New `toast`/`Toasts` in `@damp/web-shared/ui`; a `ResizeObserver` stub
+  in the portal test setup keeps recharts renderable under jsdom.
+
 ## 2026-11-27 — Portal money API: wallets, quotes, conversions and price history (slices 4b/4c)
 
 ### Added — price history (services/pricing, slice 4c)
