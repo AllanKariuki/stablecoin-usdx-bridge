@@ -44,6 +44,13 @@ export interface TransactionEntry {
   description: string;
 }
 
+/** The booked FX numbers bff surfaces from core-ledger's transaction
+ * metadata (rate and spread only — nothing else leaves the bff). */
+export interface TransactionFx {
+  rate: string;
+  spreadBps: number;
+}
+
 export interface Transaction {
   id: string;
   type: string;
@@ -53,6 +60,7 @@ export interface Transaction {
   description: string;
   externalRef: string;
   createdAt: string;
+  fx?: TransactionFx;
   entries: TransactionEntry[];
 }
 

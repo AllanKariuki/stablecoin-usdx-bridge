@@ -8,8 +8,20 @@ import { Button, Callout, Card, Field, Input, Select } from '@damp/web-shared/ui
  * Swap card can reuse it. Ethereum mints to an address the user gives;
  * Solana USD-X is held in an account DAMP looks after.
  */
-export default function OpenUsdxWalletForm({ onOpened, compact = false }: { onOpened: (w: Wallet) => void; compact?: boolean }) {
-  const [chain, setChain] = useState('ETHEREUM');
+export default function OpenUsdxWalletForm({
+  onOpened,
+  compact = false,
+  chain: initialChain = 'ETHEREUM',
+  lockChain = false,
+}: {
+  onOpened: (w: Wallet) => void;
+  compact?: boolean;
+  /** Pre-select a chain (a bridge's fixed destination chain). */
+  chain?: string;
+  /** Hide the chain picker — the chain is already decided. */
+  lockChain?: boolean;
+}) {
+  const [chain, setChain] = useState(initialChain);
   const [address, setAddress] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,12 +46,19 @@ export default function OpenUsdxWalletForm({ onOpened, compact = false }: { onOp
             <p className="mt-1 text-sm text-muted">You need one before you can issue. Pick the chain your USD-X should live on.</p>
           </div>
         )}
-        <Field label="Chain">
-          <Select value={chain} onChange={(e) => setChain(e.target.value)}>
-            <option value="ETHEREUM">Ethereum (Sepolia)</option>
-            <option value="SOLANA">Solana (devnet)</option>
-          </Select>
-        </Field>
+        {lockChain ? (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[13px] font-bold text-ink">Chain</span>
+            <p className="text-sm text-ink">{chain === 'ETHEREUM' ? 'Ethereum (Sepolia)' : 'Solana (devnet)'}</p>
+          </div>
+        ) : (
+          <Field label="Chain">
+            <Select value={chain} onChange={(e) => setChain(e.target.value)}>
+              <option value="ETHEREUM">Ethereum (Sepolia)</option>
+              <option value="SOLANA">Solana (devnet)</option>
+            </Select>
+          </Field>
+        )}
         {chain === 'ETHEREUM' ? (
           <Field label="Your Ethereum address" hint="USD-X is minted to this address.">
             <Input className="font-mono" placeholder="0x…" value={address} onChange={(e) => setAddress(e.target.value.trim())} />

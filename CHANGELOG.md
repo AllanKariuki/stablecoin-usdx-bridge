@@ -3,6 +3,39 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-27 — Portal: convert page with history, and USD-X chain moves (slice 5b)
+
+### Added — Convert page (frontend/portal)
+
+- `/convert` is now a full two-column screen: the existing `SwapCard` stays on
+  the left (keeping its `?from=` / `?to=` deep links), with a "How conversion
+  works" explainer beside it — live multi-source pricing, ~30s quotes that
+  re-quote automatically, spread as the only fee, 1:1 USD↔USD-X, and the
+  two-step route other USD-X pairs take via dollars.
+- Below both, a "Conversion history" table lists every swap and USD-X
+  issue/redeem (from `GET /conversions`), newest first, with cursor "Load
+  more" pagination; columns show date, from → to (with currency icons),
+  amount out, amount in, rate and status. Rows open the existing
+  `TransactionDrawer`. Loading, empty and error-with-retry states are handled.
+
+### Added — Move between chains (frontend/portal)
+
+- The USD-X page gains a "Move between chains" card: pick one of the caller's
+  USD-X wallets (ETHEREUM/SOLANA), enter an amount, and the destination is the
+  other chain. When that chain has no wallet yet, an inline "Open a USD-X
+  wallet on <chain>" step (via `OpenUsdxWalletForm`, chain pre-selected and
+  locked) runs first.
+- Submitting posts `POST /bridges` with an Idempotency-Key minted once per
+  confirm, then follows the saga through `GET /transfers/:correlationId` to a
+  terminal state on the existing `SagaTimeline`. Friendly errors throughout.
+
+### Changed — Portal and bff
+
+- Conversion history shows the booked FX rate: bff maps only `metadata.rate` /
+  `metadata.spread_bps` into a `fx` field (never the rest of metadata, so
+  `payee_user_id` stays internal), and the bridge saga timeline now uses
+  bridge-specific steps naming the source and destination chains.
+
 ## 2026-11-27 — Portal: pay invoices from any wallet (slice 5b)
 
 ### Changed — Invoice pay (frontend/portal)

@@ -2,6 +2,7 @@ import { ArrowDownToLine, Coins } from 'lucide-react';
 import { apiErrorMessage } from '@damp/web-shared/api';
 import { Card, ErrorState, FeatureCard, PageHeader, SkeletonRows } from '@damp/web-shared/ui';
 import IssueRedeemForm from '../components/IssueRedeemForm';
+import BridgeCard from '../components/BridgeCard';
 import { useWallets } from '../hooks/useWallets';
 
 export default function UsdxPage() {
@@ -28,7 +29,12 @@ export default function UsdxPage() {
           <ErrorState message={apiErrorMessage(wallets.error)} onRetry={wallets.reload} />
         </Card>
       ) : (
-        <IssueRedeemForm wallets={wallets.data ?? []} onChanged={wallets.reload} />
+        <>
+          <IssueRedeemForm wallets={wallets.data ?? []} onChanged={wallets.reload} />
+          <div className="mt-8">
+            <BridgeCard wallets={wallets.data ?? []} onChanged={wallets.reload} />
+          </div>
+        </>
       )}
     </>
   );
