@@ -99,6 +99,8 @@ const FRIENDLY: Record<string, string> = {
   // The cross-asset payment rails (slice 5b): send and invoice pay.
   QUOTE_REQUIRED: 'That payment needs a live quote. Go back and let us price it again.',
   SOURCE_AMOUNT_REQUIRED: 'That payment needs the exact source amount from its quote. Go back and re-check the amount.',
+  MPESA_KES_ONLY: 'M-Pesa moves Kenyan shillings only. Use a KES wallet, or a bank account for other currencies.',
+  RAIL_UNAVAILABLE: 'That payment method isn’t available right now. Try a bank account, or try again later.',
   CROSS_CURRENCY_RAIL_UNSUPPORTED: 'Bank and M-Pesa payouts move one currency only. Convert first, then send.',
   QUOTE_ALREADY_USED: 'That quote was already used. Go back and we’ll price a fresh one.',
   QUOTE_AMOUNT_MISMATCH: 'The amount no longer matches its quote. Go back and let us price it again.',

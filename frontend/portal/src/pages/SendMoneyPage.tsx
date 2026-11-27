@@ -8,6 +8,7 @@ import { cx, useAsync } from '@damp/web-shared/lib';
 import { AmountInput, Button, Callout, Card, Field, KeyValueList, LinkButton, MonoRef, PageHeader, Select, SkeletonRows, StatusBadge, Tabs } from '@damp/web-shared/ui';
 import AddPayeeModal from '../components/AddPayeeModal';
 import ConvertingTracker from '../components/ConvertingTracker';
+import Stepper from '../components/Stepper';
 import PayFromPicker, { type PayFromSelection } from '../components/PayFromPicker';
 import { useWallets } from '../hooks/useWallets';
 import { currencyMeta } from '../lib/currency';
@@ -50,35 +51,6 @@ const initials = (name: string) =>
     .join('');
 
 const currencyLabel = (code: string) => (code === 'USDX' ? 'USD-X' : code);
-
-function Stepper({ step }: { step: 1 | 2 | 3 | 4 }) {
-  return (
-    <ol className="mb-6 flex list-none items-center gap-1 overflow-x-auto p-0">
-      {STEPS.map((label, i) => {
-        const n = (i + 1) as 1 | 2 | 3 | 4;
-        const done = n < step;
-        const active = n === step;
-        return (
-          <li key={label} className="flex items-center">
-            {i > 0 && <span aria-hidden className="mx-2 h-px w-5 shrink-0 bg-line-strong" />}
-            <span className="flex items-center gap-2">
-              <span
-                aria-hidden
-                className={cx(
-                  'grid size-7 shrink-0 place-items-center rounded-full text-xs font-bold',
-                  done ? 'bg-action text-white' : active ? 'bg-navy text-white' : 'border border-line-strong bg-canvas text-subtle',
-                )}
-              >
-                {done ? <Check className="size-3.5" aria-hidden /> : n}
-              </span>
-              <span className={cx('whitespace-nowrap text-[13px] font-semibold', active ? 'text-navy' : done ? 'text-ink' : 'text-subtle')}>{label}</span>
-            </span>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
 
 /** A selectable recipient row, with the same selected styling as the wallet pickers. */
 function PickCard({
@@ -271,7 +243,7 @@ export default function SendMoneyPage() {
       <PageHeader eyebrow="Move money" title="Send money" description="Send to someone on Interlock, a bank account, or M-Pesa — from any wallet you hold." />
       <div className="mx-auto max-w-2xl">
         <Card>
-          <Stepper step={step} />
+          <Stepper steps={STEPS} step={step} />
 
           {step === 1 && (
             <div className="flex flex-col gap-4">

@@ -3,6 +3,43 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-27 — Portal: deposit and withdraw wizards (slice 5c)
+
+### Added — step-by-step deposit and withdraw in the portal
+
+- `/move/deposit` is a four-step wizard: method (M-Pesa or bank transfer),
+  details, confirm, status.
+  - Details: the destination wallet (only currencies the method supports,
+    with an inline "Add <CCY> wallet"), the amount, and either the M-Pesa
+    number or the bank account to pull from.
+  - Status: polls the intent through "approve the prompt on your phone",
+    processing, then credited or failed (friendly reasons, with a retry).
+- `/move/withdraw` is a five-step wizard: from (fiat wallets only), method,
+  amount (checked exactly against the available balance), confirm, status.
+  - Confirmation requires retyping the amount. There is no PIN backend, so
+    retyping is the deliberate-act check the damp-ui design's security step
+    stands for.
+- Both wizards send `sourceWalletId`, so the user chooses which wallet
+  moves, and use a one-time Idempotency-Key per confirm.
+- New shared pieces: `Stepper` (the send wizard uses it too),
+  `MethodPicker`, `WalletRadio`, `IntentStatus` and `MoveNav`. Added
+  `compareDecimal` to the shared money helpers, plus friendly copy for
+  `MPESA_KES_ONLY` and `RAIL_UNAVAILABLE`. `/move/transfer` is unchanged
+  apart from the shared tabs.
+
+### Fixed — M-Pesa payments never reached the M-Pesa rail
+
+- `services/payments`: an intent naming only a phone number used to fall
+  through to the `stub` rail. So did a MOBILE beneficiary, because the
+  beneficiary branch never looked up its institution's rail. Wherever the
+  stub was enabled, an "M-Pesa" deposit could book ledger credit for
+  shillings that never arrived.
+  - A bare phone number now routes to `mpesa` and must be KES
+    (`422 MPESA_KES_ONLY`).
+  - BANK and MOBILE beneficiaries use their institution's rail.
+  - Where Daraja isn't configured, the registry refuses with
+    `RAIL_UNAVAILABLE`. New spec: `intents-rail-routing.spec.ts`.
+
 ## 2026-11-27 — Portal: convert page with history, and USD-X chain moves (slice 5b)
 
 ### Added — Convert page (frontend/portal)

@@ -2,7 +2,7 @@ import { BadRequestException, HttpStatus, Injectable, Logger, NotFoundException 
 import { ConfigService } from '@nestjs/config';
 import { AuditRequest, enqueueAuditEvent, KycGate, PlatformException } from '@damp/nest-platform';
 import { AUDIT, railActor, SERVICE } from '../audit/audit-actions';
-import { BanksRepository } from '../banks/banks.repository';
+import { BanksRepository, Beneficiary } from '../banks/banks.repository';
 import { CoreLedgerClient, LedgerError, LedgerWallet } from '../core-ledger/core-ledger.client';
 import { DbService } from '../db/db.service';
 import { decimalsFor, toScaled } from '../money/money';
@@ -64,7 +64,7 @@ export class IntentsService {
     let rail = 'stub';
     let accountRef = input.phoneNumber ?? '';
     let accountName = '';
-    let beneficiary: { kind: 'BANK' | 'WALLET' | 'MOBILE'; partyId: string; accountRef: string; name: string; targetPartyId: string } | null = null;
+    let beneficiary: Beneficiary | null = null;
 
     if (input.bankAccountId) {
       const account = await this.banks.findAccount(input.bankAccountId);
@@ -92,8 +92,30 @@ export class IntentsService {
       accountName = beneficiary.name;
       // A WALLET beneficiary never leaves the platform, so no rail is
       // involved at all — the "rail" is core-ledger's own transfer, which
-      // settles immediately below.
-      rail = beneficiary.kind === 'WALLET' ? 'internal' : rail;
+      // settles immediately below. A BANK or MOBILE beneficiary moves on its
+      // institution's rail, exactly as a bank account does: a MOBILE payee at
+      // the M-Pesa institution is an M-Pesa payout, not a stub one.
+      if (beneficiary.kind === 'WALLET') {
+        rail = 'internal';
+      } else if (beneficiary.bankId) {
+        const banks = await this.banks.availableBanks();
+        const bankId = beneficiary.bankId;
+        rail = banks.find((b) => b.id === bankId)?.rail ?? rail;
+      }
+    } else if (input.phoneNumber?.trim()) {
+      // A bare mobile number names M-Pesa: STK Push to collect, B2C to pay
+      // out. It used to fall through to the stub rail, which would have
+      // booked a deposit for fiat that never arrived wherever the stub is
+      // enabled. Where Daraja isn't configured the registry refuses with
+      // RAIL_UNAVAILABLE below, which is the honest answer.
+      if (input.currency.toUpperCase() !== 'KES') {
+        throw new PlatformException(
+          HttpStatus.UNPROCESSABLE_ENTITY,
+          'MPESA_KES_ONLY',
+          `M-Pesa moves Kenyan shillings only; ${input.currency.toUpperCase()} needs a bank account`,
+        );
+      }
+      rail = 'mpesa';
     }
 
     // Resolve the rail before touching core-ledger or writing anything. A

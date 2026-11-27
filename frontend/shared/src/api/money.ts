@@ -34,6 +34,18 @@ const joinDecimal = (sign: string, whole: bigint, scale: number) => {
   return `${sign}${withPoint.replace(/(?:\.0*|(\.\d*?)0+)$/, '$1')}`;
 };
 
+/** Exact decimal comparison: -1, 0 or 1 (a < b, a === b, a > b), e.g.
+ * compareDecimal('1.5', '1.50') === 0. Sign- and scale-agnostic like the
+ * other helpers, so a stored balance and a typed amount compare exactly. */
+export function compareDecimal(a: string, b: string): -1 | 0 | 1 {
+  const [ai, af] = decimalPart(a);
+  const [bi, bf] = decimalPart(b);
+  const scale = Math.max(af, bf);
+  const an = (isNegativeDecimal(a) ? -1n : 1n) * ai * 10n ** BigInt(scale - af);
+  const bn = (isNegativeDecimal(b) ? -1n : 1n) * bi * 10n ** BigInt(scale - bf);
+  return an < bn ? -1 : an > bn ? 1 : 0;
+}
+
 /** Exact decimal addition, e.g. addDecimal('0.1', '0.2') === '0.3'. */
 export function addDecimal(a: string, b: string): string {
   const [ai, af] = decimalPart(a);

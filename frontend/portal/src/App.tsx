@@ -13,6 +13,8 @@ import UsdxPage from './pages/UsdxPage';
 import TransactionsPage from './pages/TransactionsPage';
 import PaymentsPage from './pages/PaymentsPage';
 import SendMoneyPage from './pages/SendMoneyPage';
+import DepositPage from './pages/DepositPage';
+import WithdrawPage from './pages/WithdrawPage';
 import PayInvoicePage from './pages/PayInvoicePage';
 import VerificationPage from './pages/VerificationPage';
 import NotificationsPage from './pages/NotificationsPage';
@@ -50,6 +52,8 @@ export default function App() {
         <Route path="/wallets/:walletId" element={<RequirePermission anyOf={['wallets:read:own']}><WalletDetailPage /></RequirePermission>} />
         <Route path="/convert" element={<RequirePermission anyOf={['fx:convert']}><ConvertPage /></RequirePermission>} />
         <Route path="/move" element={<Navigate to="/move/deposit" replace />} />
+        <Route path="/move/deposit" element={<RequirePermission anyOf={['wallets:write:own']}><DepositPage /></RequirePermission>} />
+        <Route path="/move/withdraw" element={<RequirePermission anyOf={['wallets:write:own']}><WithdrawPage /></RequirePermission>} />
         <Route path="/move/:kind" element={<RequirePermission anyOf={['wallets:write:own']}><MoveMoneyPage /></RequirePermission>} />
         <Route path="/usdx" element={<RequirePermission anyOf={['issuance:create', 'redemption:create']}><UsdxPage /></RequirePermission>} />
         <Route path="/transactions" element={<RequirePermission anyOf={['transactions:read:own']}><TransactionsPage /></RequirePermission>} />
