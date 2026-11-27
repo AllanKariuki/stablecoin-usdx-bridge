@@ -35,6 +35,7 @@ export default function PricingPairs() {
           <CardHeader title="Indicative rates" description={`Aggregated mids against ${rates.data?.base ?? 'USD'}, with the same status the quote path refuses on.`} />
           <DataTable
             caption="Indicative rates"
+            pageSize={10}
             rows={rates.data?.entries}
             loading={rates.loading}
             error={rates.error ? apiErrorMessage(rates.error) : undefined}
@@ -55,6 +56,7 @@ export default function PricingPairs() {
           <CardHeader title="Pairs" description="Direction matters — a spread-bearing rate is never inverted, so USD/KES and KES/USD are two policies." />
           <DataTable
             caption="Pricing pairs"
+            pageSize={10}
             rows={pairs.data}
             loading={pairs.loading}
             error={pairs.error ? apiErrorMessage(pairs.error) : undefined}

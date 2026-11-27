@@ -6,6 +6,7 @@ import { Can } from '@damp/web-shared/auth';
 import { formatDateTime, useAsync } from '@damp/web-shared/lib';
 import { Button, Callout, Card, Checkbox, ConfirmDialog, DataTable, Drawer, KeyValueList, MonoRef, MoneyText, PageHeader, StatusBadge } from '@damp/web-shared/ui';
 import { JsonBlock } from '../../components/JsonBlock';
+import { PAGE_SIZES } from '../../list';
 
 export default function Attestations() {
   const list = useAsync(() => reservesApi.attestations(), []);
@@ -33,6 +34,8 @@ export default function Attestations() {
       <Card className="reveal">
         <DataTable
           caption="Attestations"
+          pageSize={10}
+          pageSizeOptions={PAGE_SIZES}
           rows={list.data}
           loading={list.loading}
           error={list.error ? apiErrorMessage(list.error) : undefined}

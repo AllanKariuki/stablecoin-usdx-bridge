@@ -5,6 +5,7 @@ import { treasuryApi, type ExposureRow } from '@damp/web-shared/api/treasury';
 import { Can } from '@damp/web-shared/auth';
 import { cx, formatDateTime, timeAgo, useAsync } from '@damp/web-shared/lib';
 import { AmountInput, Badge, Button, Callout, Card, CardHeader, DataTable, Field, Input, Modal, PageHeader, Segmented, Select } from '@damp/web-shared/ui';
+import { PAGE_SIZES } from '../../list';
 
 const ASSETS = ['BTC', 'ETH', 'SOL'];
 const FIAT = ['USD', 'EUR', 'GBP', 'KES'];
@@ -67,6 +68,7 @@ export default function Exposure() {
           />
           <DataTable
             caption="Crypto exposure"
+            pageSize={10}
             rows={rows.data}
             loading={rows.loading}
             error={rows.error ? apiErrorMessage(rows.error) : undefined}
@@ -125,6 +127,8 @@ export default function Exposure() {
           <CardHeader title="Rebalances" description="Trades the desk has posted, each with the journal entry it produced in the ledger." />
           <DataTable
             caption="Rebalance history"
+            pageSize={10}
+            pageSizeOptions={PAGE_SIZES}
             rows={rebalances.data}
             loading={rebalances.loading}
             error={rebalances.error ? apiErrorMessage(rebalances.error) : undefined}

@@ -5,6 +5,8 @@ import { complianceApi, type EnforcementKind } from '@damp/web-shared/api/compli
 import { Can } from '@damp/web-shared/auth';
 import { formatDateTime, humanize, useAsync } from '@damp/web-shared/lib';
 import { Button, Callout, Card, DataTable, Field, Input, Modal, MonoRef, PageHeader, Select, StatusBadge, Textarea } from '@damp/web-shared/ui';
+import { ListToolbar, SummaryStrip } from '../../components/ListToolbar';
+import { PAGE_SIZES, useSearch } from '../../list';
 
 const KINDS: Array<{ value: EnforcementKind; label: string; onChain: boolean; consequence: string }> = [
   { value: 'BLACKLIST', label: 'Blacklist an address', onChain: true, consequence: 'The USD-X contract will refuse every transfer to or from this address, on the chain you name.' },
@@ -18,6 +20,8 @@ const KINDS: Array<{ value: EnforcementKind; label: string; onChain: boolean; co
 export default function Enforcement() {
   const actions = useAsync(() => complianceApi.enforcement(), []);
   const [open, setOpen] = useState(false);
+  const search = useSearch(actions.data, (a) => [humanize(a.kind), a.target, a.partyId, a.chain, a.chainTxHash, a.status]);
+  const count = (re: RegExp) => (actions.data ?? []).filter((a) => re.test(a.status)).length;
 
   return (
     <>
@@ -33,10 +37,24 @@ export default function Enforcement() {
           </Can>
         }
       />
+      <SummaryStrip
+        loading={actions.loading}
+        items={[
+          { label: 'Requests', value: actions.data?.length ?? 0, tone: 'action' },
+          { label: 'Awaiting approval', value: count(/^PENDING_APPROVAL$/), tone: 'warn' },
+          { label: 'In flight', value: count(/^(APPROVED|SUBMITTED)$/), tone: 'cyan' },
+          { label: 'Executed', value: count(/^EXECUTED$/) },
+          { label: 'Failed or rejected', value: count(/^(FAILED|REJECTED)$/) },
+        ]}
+      />
       <Card className="reveal">
+        <ListToolbar search={{ value: search.query, onChange: search.setQuery, placeholder: 'Search action, target or chain' }} />
         <DataTable
           caption="Enforcement actions"
-          rows={actions.data}
+          rows={search.filtered}
+          pageSize={10}
+          pageSizeOptions={PAGE_SIZES}
+          resetKey={search.query}
           loading={actions.loading}
           error={actions.error ? apiErrorMessage(actions.error) : undefined}
           onRetry={actions.reload}

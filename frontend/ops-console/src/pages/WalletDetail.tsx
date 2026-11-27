@@ -21,6 +21,7 @@ import {
 } from '@damp/web-shared/ui';
 import { BackLink, DetailGrid } from '../components/Detail';
 import { rememberRecent } from '../recent';
+import { PAGE_SIZES } from '../list';
 
 export default function WalletDetail() {
   const { walletId = '' } = useParams();
@@ -80,6 +81,8 @@ export default function WalletDetail() {
             <CardHeader title="Statement" description="Newest entries last, with the running balance after each." />
             <DataTable
               caption="Wallet statement"
+              pageSize={10}
+              pageSizeOptions={PAGE_SIZES}
               rows={statement.data?.entries}
               loading={statement.loading}
               error={statement.error ? apiErrorMessage(statement.error) : undefined}

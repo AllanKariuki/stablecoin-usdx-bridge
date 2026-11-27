@@ -7,6 +7,8 @@ import { formatDateTime, humanize, timeAgo, useAsync } from '@damp/web-shared/li
 import { Card, DataTable, Drawer, ErrorState, KeyValueList, MonoRef, PageHeader, Skeleton, StatusBadge, Tabs } from '@damp/web-shared/ui';
 import { LEGS, LegVerdict } from '../../components/LegStatus';
 import { RunVerdicts } from './ReservesDashboard';
+import { SummaryStrip } from '../../components/ListToolbar';
+import { PAGE_SIZES } from '../../list';
 
 const duration = (seconds: number) => {
   if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))} min`;
@@ -28,6 +30,14 @@ export default function Reconciliation() {
         title="Reconciliation"
         description="Every run of the three-leg check, and the breaks still open. Figures are raw smallest units — the scale a figure was compared at is part of the evidence."
       />
+      <SummaryStrip
+        loading={runs.loading || breaks.loading}
+        items={[
+          { label: 'Runs loaded', value: runs.data?.length ?? 0, tone: 'action' },
+          { label: 'Runs that found breaks', value: (runs.data ?? []).filter((r) => r.break_count > 0).length, tone: 'cyan' },
+          { label: 'Open breaks', value: breaks.data?.length ?? 0, tone: (breaks.data?.length ?? 0) > 0 ? 'warn' : 'default' },
+        ]}
+      />
       <Tabs
         value={tab}
         onChange={(t) => setParams(t === 'runs' ? {} : { tab: t }, { replace: true })}
@@ -41,6 +51,8 @@ export default function Reconciliation() {
           <DataTable
             caption="Reconciliation runs"
             rows={runs.data}
+            pageSize={10}
+            pageSizeOptions={PAGE_SIZES}
             loading={runs.loading}
             error={runs.error ? apiErrorMessage(runs.error) : undefined}
             onRetry={runs.reload}
@@ -59,6 +71,8 @@ export default function Reconciliation() {
           <DataTable
             caption="Open reconciliation breaks"
             rows={breaks.data}
+            pageSize={10}
+            pageSizeOptions={PAGE_SIZES}
             loading={breaks.loading}
             error={breaks.error ? apiErrorMessage(breaks.error) : undefined}
             onRetry={breaks.reload}
