@@ -114,6 +114,7 @@ export default function CaseDetail() {
               <CardHeader title="Alerts in this case" />
               <DataTable
                 caption="Alerts in this case"
+                pageSize={8}
                 rows={c?.alerts}
                 loading={kase.loading}
                 rowKey={(a) => a.id}

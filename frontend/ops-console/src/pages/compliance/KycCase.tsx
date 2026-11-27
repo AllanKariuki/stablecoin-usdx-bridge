@@ -74,6 +74,7 @@ export default function KycCase() {
               <CardHeader title="Documents" description="Uploaded straight to object storage. The SHA-256 is what the applicant’s browser computed." />
               <DataTable
                 caption="Submitted documents"
+                pageSize={8}
                 rows={c?.documents}
                 loading={kase.loading}
                 rowKey={(d) => d.id}

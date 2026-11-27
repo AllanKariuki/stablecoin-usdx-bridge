@@ -47,4 +47,19 @@ describe('staff entry', () => {
     fireEvent.click(screen.getByRole('button', { name: /continue with company sign-in/i }));
     expect(login).toHaveBeenCalledWith({ returnTo: '/' });
   });
+
+  it('remembers the workspace picked on the landing and signs in', () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) });
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <StaffEntry />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /treasury/i }));
+    expect(localStorage.getItem('damp.ops.workspace')).toBe('treasury');
+    expect(login).toHaveBeenCalledWith({ returnTo: '/' });
+    vi.unstubAllGlobals();
+  });
 });

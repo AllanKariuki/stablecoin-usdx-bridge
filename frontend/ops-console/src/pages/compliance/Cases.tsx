@@ -6,11 +6,15 @@ import { complianceApi } from '@damp/web-shared/api/compliance';
 import { timeAgo, useAsync } from '@damp/web-shared/lib';
 import { Card, DataTable, PageHeader, Segmented, StatusBadge } from '@damp/web-shared/ui';
 import { SeverityBadge } from '../../components/Severity';
+import { ListToolbar, SummaryStrip } from '../../components/ListToolbar';
+import { PAGE_SIZES, useSearch } from '../../list';
 
 export default function Cases() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<string>('');
   const cases = useAsync(() => complianceApi.cases(status || undefined), [status]);
+  const search = useSearch(cases.data, (c) => [c.reference, c.title, c.assignedTo, c.severity]);
+  const count = (pred: (c: NonNullable<typeof cases.data>[number]) => boolean) => (cases.data ?? []).filter(pred).length;
 
   return (
     <>
@@ -18,7 +22,18 @@ export default function Cases() {
         eyebrow="Compliance"
         title="Cases"
         description="Investigations opened from alerts. Close as cleared, or file a SAR with a narrative."
-        actions={
+      />
+      <SummaryStrip
+        loading={cases.loading}
+        items={[
+          { label: 'Cases shown', value: cases.data?.length ?? 0, tone: 'action' },
+          { label: 'Unassigned', value: count((c) => !c.assignedTo && !c.status.startsWith('CLOSED')), tone: 'warn' },
+          { label: 'Investigating', value: count((c) => c.status === 'INVESTIGATING'), tone: 'cyan' },
+          { label: 'Closed', value: count((c) => c.status.startsWith('CLOSED')) },
+        ]}
+      />
+      <Card className="reveal">
+        <ListToolbar search={{ value: search.query, onChange: search.setQuery, placeholder: 'Search reference, title or owner' }}>
           <Segmented
             label="Case status"
             value={status}
@@ -31,12 +46,13 @@ export default function Cases() {
               { value: 'CLOSED_CLEARED', label: 'Cleared' },
             ]}
           />
-        }
-      />
-      <Card className="reveal">
+        </ListToolbar>
         <DataTable
           caption="Compliance cases"
-          rows={cases.data}
+          rows={search.filtered}
+          pageSize={10}
+          pageSizeOptions={PAGE_SIZES}
+          resetKey={`${status}|${search.query}`}
           loading={cases.loading}
           error={cases.error ? apiErrorMessage(cases.error) : undefined}
           onRetry={cases.reload}

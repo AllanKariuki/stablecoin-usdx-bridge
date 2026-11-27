@@ -3,10 +3,15 @@ import { UserCheck } from 'lucide-react';
 import { apiErrorMessage, kycApi } from '@damp/web-shared/api';
 import { formatDateTime, timeAgo, useAsync } from '@damp/web-shared/lib';
 import { Card, DataTable, PageHeader, StatusBadge } from '@damp/web-shared/ui';
+import { ListToolbar, SummaryStrip } from '../../components/ListToolbar';
+import { PAGE_SIZES, useSearch } from '../../list';
 
 export default function KycQueue() {
   const navigate = useNavigate();
   const queue = useAsync(() => kycApi.queue(), []);
+  const search = useSearch(queue.data, (c) => [c.partyId, c.requestedTier, c.status]);
+  const rows = queue.data ?? [];
+  const dayAgo = Date.now() - 24 * 3600 * 1000;
   return (
     <>
       <PageHeader
@@ -14,10 +19,22 @@ export default function KycQueue() {
         title="KYC review"
         description="Submissions the screening provider flagged for a person to look at. Oldest first — the applicant is waiting."
       />
+      <SummaryStrip
+        loading={queue.loading}
+        items={[
+          { label: 'Waiting for review', value: rows.length, tone: 'action' },
+          { label: 'Waiting over a day', value: rows.filter((c) => c.submittedAt !== null && new Date(c.submittedAt).getTime() < dayAgo).length, tone: 'warn' },
+          { label: 'Risk score 70+', value: rows.filter((c) => (c.riskScore ?? 0) >= 70).length, tone: 'cyan' },
+        ]}
+      />
       <Card className="reveal">
+        <ListToolbar search={{ value: search.query, onChange: search.setQuery, placeholder: 'Search party or tier' }} />
         <DataTable
           caption="KYC review queue"
-          rows={queue.data}
+          rows={search.filtered}
+          pageSize={10}
+          pageSizeOptions={PAGE_SIZES}
+          resetKey={search.query}
           loading={queue.loading}
           error={queue.error ? apiErrorMessage(queue.error) : undefined}
           onRetry={queue.reload}

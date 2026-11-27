@@ -23,6 +23,7 @@ import {
   Tabs,
 } from '@damp/web-shared/ui';
 import { JsonBlock } from '../../components/JsonBlock';
+import { PAGE_SIZES } from '../../list';
 
 /** Read-only by construction: every call here is a GET. */
 export default function Audit() {
@@ -98,6 +99,8 @@ function EventsTab() {
       <Card>
         <DataTable
           caption="Audit events"
+          pageSize={10}
+          pageSizeOptions={PAGE_SIZES}
           rows={events.data}
           loading={events.loading}
           error={events.error ? apiErrorMessage(events.error) : undefined}
@@ -210,6 +213,8 @@ function AnchorsTab() {
       <CardHeader title="Anchors" description="Each anchor commits a contiguous range of events to one Merkle root, published externally." />
       <DataTable
         caption="Audit anchors"
+        pageSize={10}
+        pageSizeOptions={PAGE_SIZES}
         rows={anchors.data}
         loading={anchors.loading}
         error={anchors.error ? apiErrorMessage(anchors.error) : undefined}

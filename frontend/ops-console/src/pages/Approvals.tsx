@@ -5,6 +5,8 @@ import { Can, useAuth } from '@damp/web-shared/auth';
 import { formatDateTime, humanize, timeAgo, useAsync } from '@damp/web-shared/lib';
 import { Badge, Button, Callout, Card, ConfirmDialog, DataTable, Drawer, KeyValueList, MonoRef, PageHeader, PulseDot, StatusBadge } from '@damp/web-shared/ui';
 import { JsonBlock } from '../components/JsonBlock';
+import { ListToolbar, SummaryStrip } from '../components/ListToolbar';
+import { PAGE_SIZES, useSearch } from '../list';
 
 /**
  * Maker-checker queue (services/workflow). The approver confirms a payload
@@ -17,6 +19,9 @@ export default function Approvals() {
   const [selected, setSelected] = useState<ApprovalRequest | null>(null);
 
   const policyFor = (action: string) => policies.data?.find((p) => p.action === action);
+  const search = useSearch(requests.data, (r) => [humanize(r.action), r.action, r.subjectType, r.subjectId, r.requestedBy]);
+  const rows = requests.data ?? [];
+  const soon = Date.now() + 24 * 3600 * 1000;
 
   return (
     <>
@@ -25,10 +30,22 @@ export default function Approvals() {
         title="Approvals"
         description="Requests waiting for a second person. Each one names the exact payload you are agreeing to."
       />
+      <SummaryStrip
+        loading={requests.loading}
+        items={[
+          { label: 'Waiting for a decision', value: rows.filter((r) => r.status === 'PENDING').length, tone: 'action' },
+          { label: 'Expiring within a day', value: rows.filter((r) => r.status === 'PENDING' && new Date(r.expiresAt).getTime() < soon).length, tone: 'warn' },
+          { label: 'Action types', value: new Set(rows.map((r) => r.action)).size, tone: 'cyan' },
+        ]}
+      />
       <Card className="reveal">
+        <ListToolbar search={{ value: search.query, onChange: search.setQuery, placeholder: 'Search action, subject or requester' }} />
         <DataTable
           caption="Pending approval requests"
-          rows={requests.data}
+          rows={search.filtered}
+          pageSize={10}
+          pageSizeOptions={PAGE_SIZES}
+          resetKey={search.query}
           loading={requests.loading}
           error={requests.error ? apiErrorMessage(requests.error) : undefined}
           onRetry={requests.reload}

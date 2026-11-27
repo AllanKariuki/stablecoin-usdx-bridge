@@ -4,7 +4,8 @@ import { apiErrorMessage } from '@damp/web-shared/api';
 import { reportsApi, type ReportRunSummary } from '@damp/web-shared/api/reports';
 import { Can } from '@damp/web-shared/auth';
 import { formatDateTime, humanize, timeAgo, useAsync } from '@damp/web-shared/lib';
-import { Button, Callout, Card, CardHeader, DataTable, Drawer, ErrorState, KeyValueList, MonoRef, PageHeader, Skeleton, StatusBadge } from '@damp/web-shared/ui';
+import { Button, Callout, Card, CardHeader, DataTable, Drawer, ErrorState, KeyValueList, MonoRef, PageHeader, Pagination, Skeleton, StatusBadge } from '@damp/web-shared/ui';
+import { PAGE_SIZES } from '../../list';
 
 /**
  * Report definitions and their runs. Running a report reads data and records
@@ -64,6 +65,8 @@ export default function Reports() {
         <CardHeader title="Runs" />
         <DataTable
           caption="Report runs"
+          pageSize={10}
+          pageSizeOptions={PAGE_SIZES}
           rows={runs.data}
           loading={runs.loading}
           error={runs.error ? apiErrorMessage(runs.error) : undefined}
@@ -91,7 +94,10 @@ function RunDrawer({ runId, onClose }: { runId: string; onClose: () => void }) {
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const r = run.data;
   const columns = r?.result?.columns ?? [];
-  const rows = r?.result?.rows.slice(0, 50) ?? [];
+  const all = r?.result?.rows ?? [];
+  const [page, setPage] = useState(1);
+  const PREVIEW = 20;
+  const rows = all.slice((page - 1) * PREVIEW, page * PREVIEW);
 
   return (
     <Drawer
@@ -140,7 +146,7 @@ function RunDrawer({ runId, onClose }: { runId: string; onClose: () => void }) {
           />
           {columns.length > 0 && (
             <div>
-              <p className="eyebrow mb-2 text-[11px]">Preview{r.rowCount > rows.length ? ` · first ${rows.length} of ${r.rowCount}` : ''}</p>
+              <p className="eyebrow mb-2 text-[11px]">Preview{r.rowCount > all.length ? ` · ${all.length} of ${r.rowCount} rows returned` : ''}</p>
               <div className="overflow-x-auto rounded-[12px] border border-line">
                 <table className="w-full border-collapse text-[12.5px]">
                   <thead className="bg-canvas">
@@ -154,7 +160,7 @@ function RunDrawer({ runId, onClose }: { runId: string; onClose: () => void }) {
                   </thead>
                   <tbody>
                     {rows.map((row, i) => (
-                      <tr key={i} className="border-t border-line">
+                      <tr key={(page - 1) * PREVIEW + i} className="border-t border-line">
                         {columns.map((c) => (
                           <td key={c} className="px-3 py-1.5 font-mono whitespace-nowrap text-ink">
                             {String(row[c] ?? '')}
@@ -165,6 +171,7 @@ function RunDrawer({ runId, onClose }: { runId: string; onClose: () => void }) {
                   </tbody>
                 </table>
               </div>
+              {all.length > PREVIEW && <Pagination page={page} pageSize={PREVIEW} total={all.length} onPageChange={setPage} className="mt-3 pt-3" />}
             </div>
           )}
         </div>

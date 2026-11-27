@@ -7,6 +7,8 @@ import { Can } from '@damp/web-shared/auth';
 import { formatDateTime, humanize, timeAgo, useAsync } from '@damp/web-shared/lib';
 import { Button, Card, ConfirmDialog, DataTable, Drawer, KeyValueList, MonoRef, PageHeader, Segmented, StatusBadge } from '@damp/web-shared/ui';
 import { JsonBlock } from '../../components/JsonBlock';
+import { ListToolbar, SummaryStrip } from '../../components/ListToolbar';
+import { PAGE_SIZES, useSearch } from '../../list';
 import { SeverityBadge } from '../../components/Severity';
 
 export default function Alerts() {
@@ -14,6 +16,8 @@ export default function Alerts() {
   const alerts = useAsync(() => complianceApi.alerts(status), [status]);
   const [selected, setSelected] = useState<ComplianceAlert | null>(null);
   const [dismissing, setDismissing] = useState(false);
+  const search = useSearch(alerts.data, (a) => [humanize(a.rule), a.rule, a.partyId, a.detail, a.severity]);
+  const bySeverity = (re: RegExp) => (alerts.data ?? []).filter((a) => re.test(a.severity)).length;
 
   return (
     <>
@@ -21,7 +25,18 @@ export default function Alerts() {
         eyebrow="Compliance"
         title="Alerts"
         description="Rule hits from transaction monitoring and screening. Dismiss with a reason, or work them inside a case."
-        actions={
+      />
+      <SummaryStrip
+        loading={alerts.loading}
+        items={[
+          { label: status === 'OPEN' ? 'Open alerts' : 'Alerts shown', value: alerts.data?.length ?? 0, tone: 'action' },
+          { label: 'High or critical', value: bySeverity(/crit|high/i), tone: 'warn' },
+          { label: 'Medium', value: bySeverity(/med/i), tone: 'cyan' },
+          { label: 'Low', value: bySeverity(/low/i) },
+        ]}
+      />
+      <Card className="reveal">
+        <ListToolbar search={{ value: search.query, onChange: search.setQuery, placeholder: 'Search rule, party or detail' }}>
           <Segmented
             label="Alert status"
             value={status}
@@ -32,12 +47,13 @@ export default function Alerts() {
               { value: 'ALL', label: 'All' },
             ]}
           />
-        }
-      />
-      <Card className="reveal">
+        </ListToolbar>
         <DataTable
           caption="Compliance alerts"
-          rows={alerts.data}
+          rows={search.filtered}
+          pageSize={10}
+          pageSizeOptions={PAGE_SIZES}
+          resetKey={`${status}|${search.query}`}
           loading={alerts.loading}
           error={alerts.error ? apiErrorMessage(alerts.error) : undefined}
           onRetry={alerts.reload}

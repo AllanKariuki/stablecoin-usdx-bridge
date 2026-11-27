@@ -3,6 +3,65 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-27 — Ops Console refresh: Tamasha-style surfaces and paginated tables
+
+### Changed — Ops Console look (portal unchanged)
+
+- The Ops Console now uses Outfit (JetBrains Mono stays for ids and amounts)
+  and takes the Tamasha suite's shape language: softer 24px cards with a deep
+  diffuse shadow, a faint navy/cyan gradient canvas, lighter 600-weight
+  headings with tight tracking, and wide-tracked eyebrows. The DAMP palette,
+  Interlock logo, diamond motif and navy sidebar are kept.
+- These are token overrides in `ops-console/src/index.css`, so the shared
+  components pick them up in the console only. The portal still uses Plus
+  Jakarta Sans and the flatter cards.
+- Staff landing rebuilt in Tamasha's sign-in idiom: a navy visual panel with
+  the headline anchored over a scrim and floating glass pills, and a rounded
+  sign-in sheet that slides over it (from below on phones, from the side on
+  desktop). A pill call-to-action. Workspace rows now start sign-in and
+  remember the picked workspace.
+
+### Changed — Ops Console overviews
+
+- Every workspace overview now has the same frame: a hero with an
+  "attention strip" (glass pills such as "4 KYC waiting" that link to the
+  queue, or "All clear" when nothing is waiting), a row of count tiles, then
+  worklists on the left and a right rail with **Quick actions** (the
+  workspace's pages as round-icon rows) and **Recently viewed** wallets and
+  transactions from this device.
+- Worklists sit under Tamasha-style eyebrow section titles with "See all".
+  Treasury keeps the reserves dashboard full width, with the rail below it.
+  The auditor overview gains open-break and report-run tiles.
+- Counts are fetched once per overview and shared by the strip and tiles,
+  and only when the user holds the permission.
+
+### Added — pagination for tables
+
+- Shared `Pagination` ("Showing 11–20 of 84", numbered pages with gaps,
+  prev/next, optional rows-per-page picker) and `DataTable` props
+  `pageSize`, `pageSizeOptions` and `resetKey`. Paging is client-side and
+  opt-in, so portal tables are unchanged. A refetch that drops rows clamps to
+  the last page instead of jumping to the top.
+- Every Ops Console table is now paged: full lists at 10 rows with a
+  10/25/50 picker (ledger accounts at 25, still with "Load more" for the
+  next cursor page), small config tables at 10, and tables inside detail
+  pages at 8. Trial balances and a transaction's ledger entries stay whole,
+  since their legs are read together.
+- The report-run preview pages through every returned row (20 at a time)
+  instead of stopping at the first 50.
+
+### Changed — Ops Console list pages
+
+- Alerts, Cases, KYC review, Enforcement and Approvals get a toolbar inside
+  the card: the status filter moves there from the page header, next to a
+  search box that filters the loaded rows (rule, party, reference, owner,
+  target, requester and so on). Paging goes back to page 1 when the filter
+  or search changes.
+- A summary strip of counts sits above those lists and Reconciliation, worked
+  out from rows already loaded (no new API calls). Examples: high or critical
+  alerts, unassigned cases, KYC waiting over a day, enforcement awaiting
+  approval or in flight, approvals expiring within a day, open breaks.
+
 ## 2026-11-27 — Portal: deposit and withdraw wizards (slice 5c)
 
 ### Added — step-by-step deposit and withdraw in the portal

@@ -24,6 +24,7 @@ import {
   StatusBadge,
   Tabs,
 } from '@damp/web-shared/ui';
+import { PAGE_SIZES } from '../../list';
 
 type Tab = 'trial-balance' | 'integrity' | 'accounts' | 'close';
 
@@ -143,6 +144,7 @@ function IntegrityTab() {
           </Callout>
           <DataTable
             caption="Divergent accounts"
+            pageSize={10}
             rows={r.divergences}
             rowKey={(d) => d.gl_code}
             columns={[
@@ -185,6 +187,8 @@ function AccountsTab() {
       <CardHeader title="Chart of accounts" />
       <DataTable
         caption="Ledger accounts"
+        pageSize={25}
+        pageSizeOptions={PAGE_SIZES}
         rows={first.loading ? undefined : pages.flat()}
         loading={first.loading}
         error={first.error ? apiErrorMessage(first.error) : undefined}

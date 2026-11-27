@@ -5,6 +5,7 @@ import { reservesApi, type Custodian, type ReserveTarget } from '@damp/web-share
 import { Can } from '@damp/web-shared/auth';
 import { formatDateTime, timeAgo, useAsync } from '@damp/web-shared/lib';
 import { Button, Callout, Card, CardHeader, DataTable, Drawer, Field, Input, Modal, MoneyText, PageHeader, StatusBadge } from '@damp/web-shared/ui';
+import { PAGE_SIZES } from '../../list';
 
 export default function Custodians() {
   const custodians = useAsync(() => reservesApi.custodians(), []);
@@ -20,6 +21,7 @@ export default function Custodians() {
           <CardHeader title="Custodians" description="Select one for its statements." />
           <DataTable
             caption="Custodians"
+            pageSize={10}
             rows={custodians.data}
             loading={custodians.loading}
             error={custodians.error ? apiErrorMessage(custodians.error) : undefined}
@@ -51,6 +53,7 @@ export default function Custodians() {
           />
           <DataTable
             caption="Reserve targets"
+            pageSize={10}
             rows={targets.data}
             loading={targets.loading}
             error={targets.error ? apiErrorMessage(targets.error) : undefined}
@@ -126,6 +129,8 @@ function StatementsDrawer({ custodian, onClose }: { custodian: Custodian; onClos
         {error && <Callout tone="danger">{error}</Callout>}
         <DataTable
           caption="Custodian statements"
+          pageSize={10}
+          pageSizeOptions={PAGE_SIZES}
           rows={statements.data}
           loading={statements.loading}
           error={statements.error ? apiErrorMessage(statements.error) : undefined}
