@@ -1,5 +1,70 @@
 /* Must stay first: a CSS @import after any rule is ignored. */
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import "tailwindcss";
 @import "@damp/web-shared/styles/theme.css";
 @source "../../shared/src";
+
+/*
+ * Ops Console surface layer (2026-11-27). Takes the shape language of the
+ * Tamasha suite: Outfit type, soft roomy cards with a deep diffuse shadow
+ * instead of a hard edge, glass bars, a faintly tinted canvas and
+ * wide-tracked eyebrows. It stays on the DAMP palette, logo and navy sidebar.
+ *
+ * These overrides are unlayered on purpose. Tailwind v4 tokens are plain CSS
+ * variables, so redefining them here restyles the shared components in this
+ * app only; the portal keeps Plus Jakarta Sans and the flatter cards.
+ */
+:root {
+  --font-sans: 'Outfit', ui-sans-serif, system-ui, sans-serif;
+
+  --color-line: #e6ebf3;
+  --color-canvas: #f6f8fc;
+
+  --radius-card: 24px;
+  --radius-panel: 28px;
+
+  --shadow-card: 0 1px 2px rgb(15 27 61 / 0.03), 0 18px 40px -24px rgb(15 27 61 / 0.22);
+  --shadow-soft: 0 2px 8px rgb(15 27 61 / 0.06);
+  --shadow-float: 0 22px 48px -18px rgb(20 99 214 / 0.45);
+
+  /* DAMP's version of Tamasha's warm --gradient-app: a cool navy/cyan wash. */
+  --gradient-app: linear-gradient(170deg, #f7fafe 0%, #eef3fb 45%, #e6eefa 100%);
+}
+
+body {
+  background: var(--gradient-app);
+  background-attachment: fixed;
+}
+
+/* Outfit at 800 reads heavy; Tamasha sets headings at 600 with tight tracking. */
+:where(h1, h2, h3, h4) {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+@utility glass-panel {
+  background-color: rgb(255 255 255 / 0.6);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: var(--shadow-soft);
+}
+
+@utility card-soft {
+  background-color: var(--color-surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+@utility shadow-float {
+  box-shadow: var(--shadow-float);
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}

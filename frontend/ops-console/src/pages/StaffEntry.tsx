@@ -1,17 +1,18 @@
-import { Eye, Link2, Lock, ShieldCheck, Users } from 'lucide-react';
+import { ArrowRight, Eye, Link2, Lock, ShieldCheck, Users } from 'lucide-react';
 import { useAuth } from '@damp/web-shared/auth';
 import { cx } from '@damp/web-shared/lib';
-import { Logo } from '@damp/web-shared/ui';
+import { DecorDiamonds, Logo } from '@damp/web-shared/ui';
 import { STAFF_ROLES, WORKSPACE_META, type Workspace } from '../workspace-config';
+import { STORAGE_KEY } from '../workspace-context';
 
 /** The portal owns 5173 (the console's redirect target for customer accounts). */
 export const PORTAL_URL = 'http://localhost:5173';
 
-const HOW_IT_WORKS = [
-  { icon: ShieldCheck, text: 'Role-scoped workspaces: you see only what your role allows.' },
-  { icon: Link2, text: 'Every action is written to an append-only, hash-chained audit log.' },
-  { icon: Users, text: 'Large moves need a second approver, and you cannot approve your own.' },
-  { icon: Eye, text: 'Auditor access is read-only, with no mutating controls.' },
+const PILLS = [
+  { icon: ShieldCheck, text: 'Role-scoped workspaces' },
+  { icon: Link2, text: 'Hash-chained audit log' },
+  { icon: Users, text: 'Four-eyes approvals' },
+  { icon: Eye, text: 'Read-only auditors' },
 ];
 
 const NOTICES = [
@@ -26,51 +27,79 @@ const WORKSPACE_TONE: Record<Workspace, string> = {
   auditor: 'bg-cyan-tint text-cyan-ink',
 };
 
-/** The anonymous staff entry — no live status, queue counts or sample data. */
+const remember = (w: Workspace) => {
+  try {
+    localStorage.setItem(STORAGE_KEY, w);
+  } catch {
+    /* a remembered workspace is a convenience; private mode just forgets it */
+  }
+};
+
+/**
+ * The anonymous staff entry — no live status, queue counts or sample data.
+ * Tamasha's sign-in idiom: a full-bleed visual panel with the headline
+ * anchored at the bottom over a scrim, and a rounded sheet that slides over
+ * it (from below on phones, from the side on desktop).
+ */
 export default function StaffEntry() {
   const { login } = useAuth();
+  const signIn = (w?: Workspace) => {
+    if (w) remember(w);
+    void login({ returnTo: '/' });
+  };
 
   return (
-    <div className="flex min-h-dvh flex-wrap gap-3.5 bg-shell p-3.5 text-ink">
-      <section aria-labelledby="sys-h" className="relative flex min-w-0 flex-1 basis-[460px] flex-col gap-6 overflow-hidden rounded-[32px] bg-navy p-6 text-white sm:p-10">
-        <svg aria-hidden width="640" height="640" viewBox="0 0 200 200" className="pointer-events-none absolute -bottom-[260px] -right-[260px] opacity-10 animate-spin-slow">
-          <rect x="45" y="45" width="80" height="80" rx="10" transform="rotate(45 85 85)" fill="none" stroke="#1FD3E6" strokeWidth="2.5" />
-          <rect x="75" y="75" width="80" height="80" rx="10" transform="rotate(45 115 115)" fill="none" stroke="#FFFFFF" strokeWidth="2.5" />
-        </svg>
-        <div aria-hidden className="pointer-events-none absolute inset-0" style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
+    <div className="flex min-h-dvh flex-col text-ink lg:grid lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:p-4">
+      <section
+        aria-labelledby="sys-h"
+        className="relative flex h-[42vh] min-h-[320px] flex-col overflow-hidden bg-navy text-white lg:sticky lg:top-4 lg:h-[calc(100dvh-32px)] lg:rounded-[32px]"
+      >
+        <DecorDiamonds size={760} className="absolute -right-[260px] -top-[220px] opacity-[0.14]" />
+        <div aria-hidden className="pointer-events-none absolute inset-0" style={{ backgroundImage: 'radial-gradient(rgba(255,255,255,0.07) 1px, transparent 1px)', backgroundSize: '26px 26px' }} />
+        <div aria-hidden className="pointer-events-none absolute -left-32 top-1/3 size-[420px] rounded-full bg-cyan/20 blur-[110px]" />
+        <div aria-hidden className="pointer-events-none absolute inset-0 bg-gradient-to-t from-[#07133a] via-navy/30 to-transparent" />
 
-        <header className="relative">
+        <header className="relative p-5 sm:p-8">
           <Logo size={40} subtitle="Ops Console" inverted />
         </header>
 
-        <div className="animate-rise relative flex flex-col gap-3">
-          <h1 id="sys-h" className="m-0 max-w-[520px] text-[34px] font-extrabold leading-[1.04] tracking-[-0.04em] sm:text-[46px]">
-            The back office for every dollar we hold.
-          </h1>
-          <p className="m-0 max-w-[500px] text-base leading-relaxed text-on-navy-muted">
-            Compliance, treasury, admin and audit, each in its own workspace. You see only what your role allows, and every action you take is signed into the audit chain.
-          </p>
-        </div>
-
-        <ul className="animate-rise stagger-2 relative m-0 flex list-none flex-col gap-3 p-0">
-          {HOW_IT_WORKS.map((item) => (
-            <li key={item.text} className="flex items-start gap-3 rounded-[14px] border border-white/10 bg-white/6 px-3.5 py-3">
-              <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-cyan/15 text-cyan">
-                <item.icon className="size-4" aria-hidden />
+        <ul className="relative m-0 hidden list-none flex-wrap gap-2.5 px-8 lg:flex">
+          {PILLS.map((p, i) => (
+            <li
+              key={p.text}
+              className={cx('animate-rise inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 py-2 pr-4 pl-2 text-sm font-medium backdrop-blur-md', `stagger-${i + 1}`)}
+            >
+              <span className="grid size-7 place-items-center rounded-full bg-cyan/20 text-cyan">
+                <p.icon className="size-3.5" aria-hidden />
               </span>
-              <span className="text-sm leading-relaxed text-on-navy-muted">{item.text}</span>
+              {p.text}
             </li>
           ))}
         </ul>
+
+        <div className="animate-rise relative mt-auto flex flex-col gap-3 p-5 pb-12 sm:p-8 sm:pb-14 lg:p-10">
+          <p className="eyebrow m-0 text-cyan">DAMP back office</p>
+          <h1 id="sys-h" className="m-0 max-w-[560px] text-[32px] leading-[1.02] sm:text-[44px] lg:text-[54px]">
+            The back office for every dollar we hold.
+          </h1>
+          <p className="m-0 hidden max-w-[500px] text-base leading-relaxed text-on-navy-muted sm:block">
+            Compliance, treasury, admin and audit, each in its own workspace. You see only what your role allows, and every action you take is signed into the audit chain.
+          </p>
+        </div>
       </section>
 
-      <section aria-labelledby="in-h" className="flex min-w-0 flex-1 basis-[520px] flex-col gap-6 rounded-[32px] border border-line bg-surface p-6 sm:p-12">
+      <section
+        aria-labelledby="in-h"
+        className="relative z-10 -mt-6 flex flex-1 flex-col gap-7 rounded-t-[2rem] bg-surface px-5 pt-8 pb-10 shadow-card sm:px-10 lg:my-6 lg:-ml-10 lg:mt-6 lg:self-center lg:rounded-[32px] lg:px-12 lg:py-12"
+      >
         <div className="animate-rise flex flex-col gap-2.5">
-          <span className="inline-flex w-fit items-center gap-2 rounded-full bg-warn-tint px-3 py-1 text-xs font-bold text-warn-ink">
+          <span className="inline-flex w-fit items-center gap-2 rounded-full bg-warn-tint px-3 py-1 text-xs font-semibold text-warn-ink">
             <Lock className="size-3.5" aria-hidden />
             Staff only
           </span>
-          <h2 id="in-h" className="m-0 text-[34px] font-extrabold tracking-[-0.03em] text-navy">Sign in to your workspace</h2>
+          <h2 id="in-h" className="m-0 text-[30px] leading-tight text-navy sm:text-[34px]">
+            Sign in to your workspace
+          </h2>
           <p className="m-0 text-[15px] leading-relaxed text-muted">
             Use your company account. Customers sign in on the{' '}
             <a href={PORTAL_URL} className="text-action underline-offset-2 hover:underline">
@@ -82,44 +111,54 @@ export default function StaffEntry() {
 
         <button
           type="button"
-          onClick={() => void login({ returnTo: '/' })}
-          className="nudge animate-rise stagger-1 flex min-h-14 w-full cursor-pointer items-center justify-center gap-3 rounded-2xl bg-navy text-base font-bold text-white"
+          onClick={() => signIn()}
+          className="nudge animate-rise stagger-1 shadow-float flex min-h-14 w-full cursor-pointer items-center justify-center gap-3 rounded-full bg-action text-base font-semibold text-white transition-colors hover:bg-action-hover"
         >
           <ShieldCheck className="size-5" aria-hidden />
           Continue with company sign-in
         </button>
 
         <div className="animate-rise stagger-2 flex flex-col gap-3">
-          <span className="text-[13px] font-bold text-navy">Where you will land</span>
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+          <p className="eyebrow m-0">Where you will land</p>
+          <ul className="m-0 flex list-none flex-col gap-2.5 p-0">
             {STAFF_ROLES.map((w) => {
               const meta = WORKSPACE_META[w];
               return (
-                <article key={w} className="lift flex flex-col gap-2.5 rounded-[18px] border border-line bg-canvas p-4">
-                  <span className="flex items-center justify-between">
-                    <span className={cx('grid size-10 place-items-center rounded-xl', WORKSPACE_TONE[w])}>
-                      <meta.icon className="size-[19px]" aria-hidden />
+                <li key={w}>
+                  <button
+                    type="button"
+                    onClick={() => signIn(w)}
+                    title={`Sign in and open the ${meta.label} workspace`}
+                    className="nudge lift flex w-full cursor-pointer items-center gap-4 rounded-[22px] border border-line bg-canvas p-4 text-left"
+                  >
+                    <span className={cx('grid size-11 shrink-0 place-items-center rounded-full', WORKSPACE_TONE[w])}>
+                      <meta.icon className="size-5" aria-hidden />
                     </span>
-                    <span className="font-mono text-[10.5px] text-subtle">{w}</span>
-                  </span>
-                  <span className="text-[15.5px] font-extrabold text-navy">{meta.label}</span>
-                  <span className="text-[13px] leading-relaxed text-muted">{meta.blurb}</span>
-                </article>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-base font-semibold text-navy">{meta.label}</span>
+                      <span className="mt-0.5 block text-[13px] text-muted">{meta.blurb}</span>
+                    </span>
+                    <ArrowRight className="size-4 shrink-0 text-subtle" aria-hidden />
+                  </button>
+                </li>
               );
             })}
-          </div>
+          </ul>
         </div>
 
-        <ul className="animate-rise stagger-3 m-0 mt-auto flex list-none flex-col gap-2.5 border-t border-line pt-4 text-[13px] text-neutral-ink">
-          {NOTICES.map((n) => (
-            <li key={n} className="flex items-start gap-2.5">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#B4530A" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="mt-0.5 shrink-0">
-                <path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
-              </svg>
-              {n}
-            </li>
-          ))}
-        </ul>
+        <div className="animate-rise stagger-3 mt-auto flex flex-col gap-2">
+          <p className="eyebrow m-0">Before you start</p>
+          <ul className="m-0 list-none rounded-[18px] border border-line p-0 text-[13px] text-neutral-ink">
+            {NOTICES.map((n) => (
+              <li key={n} className="flex items-start gap-2.5 border-b border-line px-3.5 py-3 last:border-0">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#B4530A" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="mt-0.5 shrink-0">
+                  <path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+                </svg>
+                {n}
+              </li>
+            ))}
+          </ul>
+        </div>
       </section>
     </div>
   );
