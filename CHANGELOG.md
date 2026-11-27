@@ -21,6 +21,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   desktop). A pill call-to-action. Workspace rows now start sign-in and
   remember the picked workspace.
 
+### Changed — Ops Console overviews
+
+- Every workspace overview now has the same frame: a hero with an
+  "attention strip" (glass pills such as "4 KYC waiting" that link to the
+  queue, or "All clear" when nothing is waiting), a row of count tiles, then
+  worklists on the left and a right rail with **Quick actions** (the
+  workspace's pages as round-icon rows) and **Recently viewed** wallets and
+  transactions from this device.
+- Worklists sit under Tamasha-style eyebrow section titles with "See all".
+  Treasury keeps the reserves dashboard full width, with the rail below it.
+  The auditor overview gains open-break and report-run tiles.
+- Counts are fetched once per overview and shared by the strip and tiles,
+  and only when the user holds the permission.
+
 ### Added — pagination for tables
 
 - Shared `Pagination` ("Showing 11–20 of 84", numbered pages with gaps,
