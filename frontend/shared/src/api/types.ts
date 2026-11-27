@@ -84,6 +84,17 @@ export interface SagaAccepted {
   sagaStatus: SagaStatus;
 }
 
+/** services/bff/src/issuance/issuance.types.ts BridgeAcceptedView — the saga
+ * handle a bridge starts with. Deliberately not SagaAccepted: a bridge's
+ * journal entry posts when the burn confirms, so there is no synchronous
+ * transaction to return. */
+export interface BridgeAccepted {
+  correlationId: string;
+  kind: string;
+  sagaStatus: SagaStatus;
+  amount: Money;
+}
+
 export interface SagaTransfer {
   correlationId: string;
   kind: 'MINT' | 'BRIDGE' | 'REDEEM';

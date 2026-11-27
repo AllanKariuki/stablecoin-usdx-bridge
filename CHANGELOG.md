@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 2026-11-27 — Portal: send money from any wallet (slice 5b)
+
+### Added — Send wizard (frontend/portal)
+
+- New `/send` page — a four-step wizard (Recipient → Amount → Review → Result),
+  reached from a new "Send" nav item under Move money (`payments:write:own`):
+  - Recipient: on-platform payees, verified bank accounts and saved bank
+    beneficiaries, or M-Pesa beneficiaries, each on its own tab; a payee
+    deep-linked from Quick Send (`/send?payee=<id>`) skips straight to the
+    amount, and a payee can be added mid-send.
+  - Amount + "Pay from": pick any wallet. A cross-currency source asks for a
+    TO-side live quote (the recipient still nets the exact amount) and sends
+    `quoteId`/`sourceAmount` with the intent; a same-currency source sends
+    only `sourceWalletId`; a USD-X source into USD rides the 1:1 redemption
+    with no quote. A rail payout (bank/M-Pesa) can only be funded from a
+    wallet holding that currency — other wallets are greyed with a
+    "Convert first" link to `/convert?to=<CCY>`.
+  - Review shows the legs, fee and recipient amount, then `createIntent`.
+  - Result: a receipt for settled intents, or a `ConvertingTracker` that
+    polls the CONVERTING intent to SETTLED/FAILED/CANCELLED.
+- Shared pieces extracted so the invoice pay path reuses them: `useQuote`
+  (the debounced quote + countdown, moved out of SwapCard), `PayFromPicker`,
+  `ConvertingTracker` and `AddPayeeModal`.
+- Friendly error codes for the send rails added to `client.ts`
+  (`QUOTE_REQUIRED`, `SOURCE_AMOUNT_REQUIRED`,
+  `CROSS_CURRENCY_RAIL_UNSUPPORTED`, `QUOTE_ALREADY_USED`,
+  `QUOTE_AMOUNT_MISMATCH`, `QUOTE_EXPIRED_DURING_CONVERSION`).
+
 ## 2026-11-27 — Portal: multi-asset dashboard and wallets (slice 5a)
 
 ### Added — Home dashboard (frontend/portal)

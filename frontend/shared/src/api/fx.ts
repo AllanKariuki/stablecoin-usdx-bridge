@@ -60,5 +60,5 @@ export const fxApi = {
    * once per user intent (see newIdempotencyKey) and reuse it on retries. */
   convert: (input: { fromWalletId: string; toWalletId: string; amount: string; quoteId?: string }, key: string) =>
     post<ConversionResult>('/conversions', input, withIdempotency(key)),
-  conversions: (params: { limit?: number } = {}) => get<ConversionPage>(`/conversions${qs(params)}`),
+  conversions: (params: { cursor?: string; limit?: number } = {}) => get<ConversionPage>(`/conversions${qs(params)}`),
 };

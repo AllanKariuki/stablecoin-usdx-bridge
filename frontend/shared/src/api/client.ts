@@ -96,6 +96,13 @@ const FRIENDLY: Record<string, string> = {
   PARTY_OUTSTANDING_CAP_EXCEEDED: 'This is over your outstanding conversion cap. Try a smaller amount.',
   PAIR_TRIPPED: 'This pair is paused while its price sources disagree. Try again in a few minutes.',
   STALE_PRICE: 'Prices for this pair are too old to quote right now. Try again in a few minutes.',
+  // The cross-asset payment rails (slice 5b): send and invoice pay.
+  QUOTE_REQUIRED: 'That payment needs a live quote. Go back and let us price it again.',
+  SOURCE_AMOUNT_REQUIRED: 'That payment needs the exact source amount from its quote. Go back and re-check the amount.',
+  CROSS_CURRENCY_RAIL_UNSUPPORTED: 'Bank and M-Pesa payouts move one currency only. Convert first, then send.',
+  QUOTE_ALREADY_USED: 'That quote was already used. Go back and we’ll price a fresh one.',
+  QUOTE_AMOUNT_MISMATCH: 'The amount no longer matches its quote. Go back and let us price it again.',
+  QUOTE_EXPIRED_DURING_CONVERSION: 'The rate expired while your USD-X burn confirmed. The dollars are safe in your USD wallet — nothing was lost. Try the payment again with a fresh quote.',
 };
 
 /**

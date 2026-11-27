@@ -1,22 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowDownUp, ArrowRight, CheckCircle2 } from 'lucide-react';
-import { addDecimal, apiErrorMessage, fxApi, newIdempotencyKey, parseAmountInput, walletsApi, type Currency, type QuotePreview, type Wallet } from '@damp/web-shared/api';
+import { addDecimal, apiErrorMessage, fxApi, parseAmountInput, walletsApi, type Currency, type Wallet } from '@damp/web-shared/api';
 import { useAsync } from '@damp/web-shared/lib';
 import { AmountInput, Button, Callout, Card, CardHeader, EmptyState, IconButton, LinkButton, Select, Skeleton, toast } from '@damp/web-shared/ui';
+import { useQuote } from '../hooks/useQuote';
 import { useWallets } from '../hooks/useWallets';
 import { currencyMeta } from '../lib/currency';
 import CurrencyIcon from './CurrencyIcon';
 import OpenUsdxWalletForm from './OpenUsdxWalletForm';
 
-const QUOTE_DEBOUNCE_MS = 500;
-
 const optionLabel = (w: Wallet) => `${currencyMeta(w.currency).glyph} ${w.currency}${w.chain ? ` (${w.chain.toLowerCase()})` : ''} · ${w.label || 'Wallet'} — ${w.balance.display}`;
-
-interface HeldQuote {
-  preview: QuotePreview;
-  /** One idempotency key per quote — reused on every retry of the same submit. */
-  key: string;
-}
 
 /**
  * "You pay" / "You receive" — quotes on a 500ms debounce (amount_side FROM),
@@ -33,15 +26,10 @@ export default function SwapCard({ initialFromId, initialToCurrency, onChanged }
   const [fromId, setFromId] = useState('');
   const [to, setTo] = useState('');
   const [amount, setAmount] = useState('');
-  const [quote, setQuote] = useState<HeldQuote | null>(null);
-  const [quoting, setQuoting] = useState(false);
-  const [quoteError, setQuoteError] = useState<string | null>(null);
   const [converting, setConverting] = useState(false);
   const [convertError, setConvertError] = useState<string | null>(null);
-  const [now, setNow] = useState(() => Date.now());
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
-  const requestSeq = useRef(0);
 
   const from = list.find((w) => w.id === fromId);
   const toWallet = to && !to.startsWith('new:') ? list.find((w) => w.id === to) : undefined;
@@ -69,59 +57,7 @@ export default function SwapCard({ initialFromId, initialToCurrency, onChanged }
   const amountOk = parsed.ok ? parsed.value : null;
   const amountError = amount !== '' && !parsed.ok ? (parsed as { ok: false; error: string }).error : undefined;
 
-  // Debounced quoting: any change to the legs or amount re-quotes after a
-  // quiet 500ms; responses from older requests are dropped.
-  useEffect(() => {
-    if (!fromId || !targetWalletId || !amountOk) {
-      setQuote(null);
-      setQuoteError(null);
-      return;
-    }
-    const seq = ++requestSeq.current;
-    setQuote(null);
-    setQuoteError(null);
-    setQuoting(true);
-    const timer = window.setTimeout(() => {
-      fxApi
-        .quote({ fromWalletId: fromId, toWalletId: targetWalletId, amount: amountOk, amountSide: 'FROM' })
-        .then(
-          (preview) => {
-            if (seq !== requestSeq.current) return;
-            setQuote({ preview, key: newIdempotencyKey() });
-          },
-          (err) => seq === requestSeq.current && setQuoteError(apiErrorMessage(err)),
-        )
-        .finally(() => seq === requestSeq.current && setQuoting(false));
-    }, QUOTE_DEBOUNCE_MS);
-    return () => window.clearTimeout(timer);
-  }, [fromId, targetWalletId, amountOk]);
-
-  const expiresAt = quote?.preview.expiresAt ? new Date(quote.preview.expiresAt).getTime() : null;
-  const secondsLeft = expiresAt === null ? null : Math.max(0, Math.ceil((expiresAt - now) / 1000));
-
-  // Tick every second for the countdown; at zero the quote is stale — re-quote.
-  useEffect(() => {
-    if (expiresAt === null) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [expiresAt]);
-  useEffect(() => {
-    if (secondsLeft !== null && secondsLeft <= 0 && quote && !quoting) {
-      setQuote(null);
-      setNow(Date.now());
-      // Bump the legs so the quote effect fires again for the same input.
-      requestSeq.current += 1;
-      const refresh = async () => {
-        try {
-          const preview = await fxApi.quote({ fromWalletId: fromId, toWalletId: targetWalletId as string, amount: amountOk as string, amountSide: 'FROM' });
-          setQuote({ preview, key: newIdempotencyKey() });
-        } catch (err) {
-          setQuoteError(apiErrorMessage(err));
-        }
-      };
-      void refresh();
-    }
-  }, [secondsLeft, quote, quoting, fromId, targetWalletId, amountOk]);
+  const { quote, quoting, error: quoteError, secondsLeft } = useQuote({ fromWalletId: fromId || null, toWalletId: targetWalletId, amount: amountOk, amountSide: 'FROM' });
 
   const addTargetWallet = async () => {
     if (!toNewCurrency || toNewCurrency === 'USDX') return;
@@ -151,7 +87,6 @@ export default function SwapCard({ initialFromId, initialToCurrency, onChanged }
       const routeNote = result.route === 'ISSUANCE' ? 'USD-X will arrive once the mint is final on chain.' : result.route === 'REDEMPTION' ? 'Dollars are released once the burn is final on chain.' : '';
       toast(<span>Converted. {routeNote}</span>);
       setAmount('');
-      setQuote(null);
       setConvertError(null);
       wallets.reload();
       onChanged?.();
@@ -173,7 +108,6 @@ export default function SwapCard({ initialFromId, initialToCurrency, onChanged }
     if (!toWallet) return;
     setFromId(toWallet.id);
     setTo(fromId);
-    setQuote(null);
   };
 
   const quotePreview = quote?.preview;
@@ -205,7 +139,7 @@ export default function SwapCard({ initialFromId, initialToCurrency, onChanged }
             <div className="flex items-center gap-3">
               <span className="min-w-0 flex-1">
                 <label className="sr-only" htmlFor="swap-from">Pay from</label>
-                <Select id="swap-from" className="border-0 bg-transparent p-0 pl-1 shadow-none focus:ring-0" value={fromId} onChange={(e) => (setFromId(e.target.value), setQuote(null))}>
+                <Select id="swap-from" className="border-0 bg-transparent p-0 pl-1 shadow-none focus:ring-0" value={fromId} onChange={(e) => setFromId(e.target.value)}>
                   <option value="" disabled>
                     Choose a wallet
                   </option>
@@ -233,7 +167,7 @@ export default function SwapCard({ initialFromId, initialToCurrency, onChanged }
             <div className="flex items-center gap-3">
               <span className="min-w-0 flex-1">
                 <label className="sr-only" htmlFor="swap-to">Receive in</label>
-                <Select id="swap-to" className="border-0 bg-transparent p-0 pl-1 shadow-none focus:ring-0" value={to} onChange={(e) => (setTo(e.target.value), setQuote(null))}>
+                <Select id="swap-to" className="border-0 bg-transparent p-0 pl-1 shadow-none focus:ring-0" value={to} onChange={(e) => setTo(e.target.value)}>
                   <option value="" disabled>
                     Choose a wallet or currency
                   </option>
