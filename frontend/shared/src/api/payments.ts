@@ -21,6 +21,12 @@ export interface PaymentIntent {
   customerAction: string | null;
   createdAt: string;
   settledAt: string | null;
+  /** Cross-asset payments (slice 4a): which wallet funds this intent, and
+   * the quote pinning the conversion when it is not the payee currency. */
+  sourceWalletId?: string;
+  sourceCurrency?: string;
+  quoteId?: string;
+  sourceAmount?: string;
 }
 
 export interface Invoice {
@@ -84,8 +90,22 @@ export interface Beneficiary {
 export const paymentsApi = {
   intents: async () => (await get<{ paymentIntents: PaymentIntent[] }>('/payment-intents')).paymentIntents,
   intent: (id: string) => get<PaymentIntent>(`/payment-intents/${encodeURIComponent(id)}`),
+  /** sourceWalletId/sourceAmount/quoteId name the cross-asset legs (slice
+   * 4a): the wallet that funds the intent and the quote pinning the
+   * conversion — passed through to services/payments untouched. */
   createIntent: (
-    input: { direction: IntentDirection; amount: string; currency: string; bankAccountId?: string; beneficiaryId?: string; description?: string; phoneNumber?: string },
+    input: {
+      direction: IntentDirection;
+      amount: string;
+      currency: string;
+      bankAccountId?: string;
+      beneficiaryId?: string;
+      description?: string;
+      phoneNumber?: string;
+      sourceWalletId?: string;
+      sourceAmount?: string;
+      quoteId?: string;
+    },
     key: string,
   ) => post<PaymentIntent>('/payment-intents', input, withIdempotency(key)),
   cancelIntent: (id: string) => post<PaymentIntent>(`/payment-intents/${encodeURIComponent(id)}/cancel`),
@@ -97,7 +117,13 @@ export const paymentsApi = {
   createInvoice: (input: { amount: string; currency: string; payerEmail?: string; payerName?: string; dueDate?: string; description?: string }) =>
     post<Invoice>('/invoices', input),
   voidInvoice: (id: string) => post<{ id: string; status: 'VOID' }>(`/invoices/${encodeURIComponent(id)}/void`),
-  payInvoice: (id: string, key: string) => post<PaymentIntent>(`/invoices/${encodeURIComponent(id)}/pay`, {}, withIdempotency(key)),
+  /** Paying from another wallet carries the same cross-asset legs as
+   * createIntent; the body is passed through to the upstream untouched. */
+  payInvoice: (
+    id: string,
+    key: string,
+    input: { sourceWalletId?: string; sourceAmount?: string; quoteId?: string } = {},
+  ) => post<PaymentIntent>(`/invoices/${encodeURIComponent(id)}/pay`, input, withIdempotency(key)),
 
   availableBanks: () => get<Bank[]>('/banks/available'),
   bankAccounts: () => get<BankAccount[]>('/banks/user-accounts'),

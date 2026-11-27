@@ -170,13 +170,20 @@ export class InvoicesController {
    * the money is already inside the platform: the payer's wallet debits and
    * the issuer's credits, in one journal transaction stamped with the
    * invoice's intent id.
+   *
+   * Cross-currency (slice 4a): the invoice is fixed in the issuer's currency,
+   * so a payer paying from another one supplies a TO-side quote minted for
+   * the invoice amount — `quoteId` names it and `sourceAmount` is its pinned
+   * from_amount. The ledger enforces the pin; after settlement the payee
+   * credit is checked against the invoice amount and a shortfall fails
+   * loudly. A USD-X source into USD needs neither (the redemption is 1:1).
    */
   @Post(':id/pay')
   async pay(
     @CurrentUser() partyId: string,
     @IdempotencyKey() idempotencyKey: string,
     @Param('id') id: string,
-    @Body() body: { beneficiaryId?: string },
+    @Body() body: { beneficiaryId?: string; sourceWalletId?: string; sourceAmount?: string; quoteId?: string },
     @AuditContext() audit: AuditRequest = {},
   ) {
     const invoice = await this.repo.find(id);
@@ -191,6 +198,9 @@ export class InvoicesController {
       beneficiaryId: body?.beneficiaryId,
       description: `Invoice ${invoice.number}`,
       idempotencyKey,
+      sourceWalletId: body?.sourceWalletId,
+      sourceAmount: body?.sourceAmount,
+      quoteId: body?.quoteId,
       audit,
     });
 

@@ -467,7 +467,7 @@ func (s *Service) ConfirmRedemption(ctx context.Context, redeemTxID, chainTxHash
 }
 
 // ---------------------------------------------------------------------------
-// FX — fiat to fiat
+// FX — currency to currency, everything but USD-X
 // ---------------------------------------------------------------------------
 
 type ConvertRequest struct {
@@ -516,8 +516,11 @@ func (s *Service) Convert(ctx context.Context, req ConvertRequest) (*Transaction
 	if from.currency.Code == to.currency.Code {
 		return nil, postErr("SAME_CURRENCY", "nothing to convert: both wallets hold %s", from.currency.Code)
 	}
-	if from.currency.Kind != CurrencyFiat || to.currency.Kind != CurrencyFiat {
-		return nil, postErr("NOT_A_FIAT_PAIR", "fiat conversion needs two fiat wallets; use issuance or redemption to cross into USD-X")
+	// USD-X crosses into and out of other currencies through issuance and
+	// redemption (1:1 against the peg), never through FX: a market rate on it
+	// would be a second, competing definition of the peg.
+	if from.currency.Code == USDXCode || to.currency.Code == USDXCode {
+		return nil, postErr("USDX_USES_ISSUANCE", "USD-X converts through issuance or redemption, not FX")
 	}
 
 	quote, err := s.repo.Quote(ctx, req.QuoteID)
@@ -525,6 +528,9 @@ func (s *Service) Convert(ctx context.Context, req ConvertRequest) (*Transaction
 		return nil, err
 	}
 	if err := UsableQuote(quote, from.currency.Code, to.currency.Code, s.now()); err != nil {
+		return nil, err
+	}
+	if err := quote.UsableForRequest(req.Amount, from.wallet.UserID, *from.currency); err != nil {
 		return nil, err
 	}
 
@@ -577,6 +583,123 @@ func (s *Service) Convert(ctx context.Context, req ConvertRequest) (*Transaction
 			"spread_bps": quote.SpreadBps,
 			"gross":      conv.Gross.String(),
 			"net":        conv.Net.String(),
+		},
+		Postings: postings,
+	})
+}
+
+// PayConvertedRequest is a payment that crosses both owners and currencies:
+// the payer's wallet is debited in one currency and the payee's wallet is
+// credited in another, across an FX quote the caller obtained first.
+type PayConvertedRequest struct {
+	FromWalletID   string
+	ToWalletID     string
+	Amount         *big.Int // smallest units of the source currency
+	QuoteID        string
+	IdempotencyKey string
+	ValueDate      time.Time
+	InitiatedBy    string
+
+	// Overrides the FX_CONVERSION/quote-id default; see ValidateCallerEntity.
+	EntityType EntityType
+	EntityID   string
+}
+
+// PayConverted is Convert with a payee instead of a second self-wallet. The
+// owners may differ — that is the point — so the two wallet legs move value
+// between two users, not between one user's own accounts.
+//
+//	source leg:  DR  Payer wallet          amount
+//	             CR  FX position (source)  amount
+//	target leg:  DR  FX position (target)  gross
+//	             CR  Payee wallet          net
+//	             CR  FX spread revenue     spread
+//
+// The legs are Convert's shape for Convert's reason: two currencies cannot
+// balance against each other, and the FX position accounts carry the house's
+// exposure until it is revalued or closed. Frozen/closed wallets are
+// enforced by the posting engine against the wallets' accounts, exactly as
+// they are for Convert and Transfer — the flow itself needs no extra check.
+func (s *Service) PayConverted(ctx context.Context, req PayConvertedRequest) (*Transaction, error) {
+	if err := requirePositive(req.Amount); err != nil {
+		return nil, err
+	}
+	from, err := s.resolve(ctx, req.FromWalletID)
+	if err != nil {
+		return nil, err
+	}
+	to, err := s.resolve(ctx, req.ToWalletID)
+	if err != nil {
+		return nil, err
+	}
+	if from.currency.Code == to.currency.Code {
+		return nil, postErr("SAME_CURRENCY", "nothing to convert: both wallets hold %s; use a transfer to pay someone in one currency", from.currency.Code)
+	}
+	if from.currency.Code == USDXCode || to.currency.Code == USDXCode {
+		return nil, postErr("USDX_USES_ISSUANCE", "USD-X converts through issuance or redemption, not FX")
+	}
+
+	quote, err := s.repo.Quote(ctx, req.QuoteID)
+	if err != nil {
+		return nil, err
+	}
+	if err := UsableQuote(quote, from.currency.Code, to.currency.Code, s.now()); err != nil {
+		return nil, err
+	}
+	if err := quote.UsableForRequest(req.Amount, from.wallet.UserID, *from.currency); err != nil {
+		return nil, err
+	}
+
+	fromPos, err := s.systemAccount(ctx, GLFxPosition(from.currency.Code))
+	if err != nil {
+		return nil, err
+	}
+	toPos, err := s.systemAccount(ctx, GLFxPosition(to.currency.Code))
+	if err != nil {
+		return nil, err
+	}
+	spreadAcct, err := s.systemAccount(ctx, GLFxSpread(to.currency.Code))
+	if err != nil {
+		return nil, err
+	}
+
+	entityType, entityID, err := callerEntityOr(req.EntityType, req.EntityID, EntityFXConversion, quote.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	conv := Convert(quote, req.Amount, *from.currency, *to.currency)
+	if conv.Net.Sign() <= 0 {
+		return nil, postErr("AMOUNT_TOO_SMALL", "%s converts to less than one minor unit of %s after spread",
+			FormatDecimal(req.Amount, from.currency.Decimals), to.currency.Code)
+	}
+
+	postings := []Posting{
+		debit(from.account.ID, from.currency.Code, req.Amount, "Paid to "+to.currency.Code+" wallet"),
+		credit(fromPos.ID, from.currency.Code, req.Amount, "FX position "+from.currency.Code),
+		debit(toPos.ID, to.currency.Code, conv.Gross, "FX position "+to.currency.Code),
+		credit(to.account.ID, to.currency.Code, conv.Net, "Paid from "+from.currency.Code+" wallet"),
+	}
+	if conv.Fee.Sign() > 0 {
+		postings = append(postings, credit(spreadAcct.ID, to.currency.Code, conv.Fee, "FX spread"))
+	}
+
+	return s.repo.Post(ctx, PostRequest{
+		Type:                TxFXPayment,
+		IdempotencyKey:      req.IdempotencyKey,
+		ValueDate:           req.ValueDate,
+		Description:         from.currency.Code + " to " + to.currency.Code + " payment",
+		EntityType:          entityType,
+		EntityID:            entityID,
+		FxQuoteID:           &quote.ID,
+		InitiatedBy:         req.InitiatedBy,
+		NonNegativeAccounts: []string{from.account.ID},
+		Metadata: map[string]any{
+			"rate":          FormatRate(quote.Rate),
+			"spread_bps":    quote.SpreadBps,
+			"gross":         conv.Gross.String(),
+			"net":           conv.Net.String(),
+			"payee_user_id": to.wallet.UserID,
 		},
 		Postings: postings,
 	})

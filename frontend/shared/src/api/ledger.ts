@@ -1,5 +1,5 @@
 import { get, post, qs, withIdempotency } from './client';
-import type { DashboardView, SagaAccepted, SagaTransfer, Transaction, TransactionPage, Wallet, WalletStatement } from './types';
+import type { BridgeAccepted, DashboardView, SagaAccepted, SagaTransfer, Transaction, TransactionPage, Wallet, WalletStatement } from './types';
 
 /** core-ledger, reached through bff. Paths match services/auth-proxy/internal/authztable. */
 export const ledgerApi = {
@@ -27,5 +27,10 @@ export const ledgerApi = {
     post<SagaAccepted>('/issuances', input, withIdempotency(key)),
   redeem: (input: { usdxWalletId: string; fiatWalletId: string; amount: string }, key: string) =>
     post<SagaAccepted>('/redemptions', input, withIdempotency(key)),
+  /** Moves the caller's own USD-X between their own wallets on two chains;
+   * bff answers with the saga handle (the journal posts when the burn
+   * confirms), which is polled through sagaTransfer. */
+  bridge: (input: { fromWalletId: string; toWalletId: string; amount: string }, key: string) =>
+    post<BridgeAccepted>('/bridges', input, withIdempotency(key)),
   sagaTransfer: (correlationId: string) => get<SagaTransfer>(`/transfers/${encodeURIComponent(correlationId)}`),
 };

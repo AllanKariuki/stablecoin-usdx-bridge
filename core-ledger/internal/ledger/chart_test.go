@@ -64,11 +64,13 @@ func TestChartSeedsTheAccountsTheFlowsAskFor(t *testing.T) {
 		GLBridgeSuspense,
 		GLTrustBank("USD"), GLTrustBank("KES"),
 		GLReserveBacking("USD"),
-		GLFxPosition("USD"), GLFxPosition("KES"),
+		GLFxPosition("USD"), GLFxPosition("KES"), GLFxPosition("BTC"),
 		GLIssuanceFee("USD"), GLRedemptionFee("USD"),
-		GLFxSpread("USD"), GLFxSpread("KES"),
+		GLFxSpread("USD"), GLFxSpread("KES"), GLFxSpread("BTC"),
 		GLTransferFee("USD"), GLTransferFee(USDXCode),
 		GLFiatSuspense("USD"),
+		GLCryptoCustody("BTC"),
+		GLCryptoInTransit("BTC"),
 		GLWalletParent("USD"), GLWalletParent(USDXCode),
 	}
 	for _, code := range required {
@@ -89,10 +91,44 @@ func TestChartDoesNotGiveUSDXCustodyAccounts(t *testing.T) {
 		GLReserveBacking(USDXCode),
 		GLFxPosition(USDXCode),
 		GLFiatSuspense(USDXCode),
+		GLCryptoCustody(USDXCode),
+		GLCryptoInTransit(USDXCode),
 	} {
 		if _, ok := byCode[code]; ok {
 			t.Errorf("chart seeded %s, but USD-X is issued rather than held at a custodian", code)
 		}
+	}
+}
+
+// Custodial crypto gets the accounts an FX conversion through it needs —
+// position and spread — plus a custody account for the coins themselves and
+// a manual suspense for custodian credits nobody has matched yet. Without
+// the position and spread accounts a KES->BTC conversion would fail at
+// runtime on the first call.
+func TestChartGivesCustodialCryptoCustodyAccounts(t *testing.T) {
+	byCode := buildDefaultChart(t)
+
+	for _, code := range []string{
+		GLCryptoCustody("BTC"), GLCryptoCustody("ETH"), GLCryptoCustody("SOL"),
+		GLFxPosition("BTC"), GLFxPosition("ETH"), GLFxPosition("SOL"),
+		GLFxSpread("BTC"), GLFxSpread("ETH"), GLFxSpread("SOL"),
+		GLCryptoInTransit("BTC"), GLCryptoInTransit("ETH"), GLCryptoInTransit("SOL"),
+	} {
+		if _, ok := byCode[code]; !ok {
+			t.Errorf("chart is missing %s, which a custodial-crypto flow resolves by name", code)
+		}
+	}
+
+	// The in-transit account is the one custodial-crypto account an operator
+	// may hand-post to, for the same reason the fiat one is.
+	if !byCode[GLCryptoInTransit("BTC")].ManualEntriesAllowed {
+		t.Error("crypto in transit must allow manual entries: unidentified custodian credits sit there until allocated")
+	}
+	// The custody account itself is system-maintained: a coin that appears
+	// there without a matching instruction is corrected through the suspense
+	// account or a reversal, never by editing the balance.
+	if byCode[GLCryptoCustody("BTC")].ManualEntriesAllowed {
+		t.Error("the crypto custody account carries an invariant and must not be hand-postable")
 	}
 }
 

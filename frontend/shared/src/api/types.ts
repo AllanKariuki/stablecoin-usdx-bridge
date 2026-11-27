@@ -9,6 +9,10 @@ export interface Wallet {
   address: string;
   status: string;
   label: string;
+  /** The default wallet for its currency (meaningful where more than one
+   * can exist — the USD-X chains). Optional: bff always renders it, but
+   * older fixtures don't. */
+  isDefault?: boolean;
   balance: Money;
 }
 
@@ -78,6 +82,17 @@ export interface SagaAccepted {
   transaction: Transaction;
   correlationId: string;
   sagaStatus: SagaStatus;
+}
+
+/** services/bff/src/issuance/issuance.types.ts BridgeAcceptedView — the saga
+ * handle a bridge starts with. Deliberately not SagaAccepted: a bridge's
+ * journal entry posts when the burn confirms, so there is no synchronous
+ * transaction to return. */
+export interface BridgeAccepted {
+  correlationId: string;
+  kind: string;
+  sagaStatus: SagaStatus;
+  amount: Money;
 }
 
 export interface SagaTransfer {

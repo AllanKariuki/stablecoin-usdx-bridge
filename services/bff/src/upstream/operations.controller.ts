@@ -25,17 +25,17 @@ export class RmsProxyController {
     this.baseUrl = config.get<string>('RMS_URL', { infer: true }) ?? '';
   }
 
-  @Get(['reserves/status', 'reserves/targets', 'custodians', 'custodians/:custodianId/statements', 'attestations', 'attestations/:attestationId'])
+  @Get(['reserves/status', 'reserves/targets', 'custodians', 'custodians/:custodianId/statements', 'attestations', 'attestations/:attestationId', 'exposure', 'exposure/limits/:currency', 'treasury/rebalances'])
   read(@Req() req: Request, @Res() res: Response) {
     return this.proxy.forward(this.baseUrl, req, res);
   }
 
-  @Put('reserves/targets/:currency')
+  @Put(['reserves/targets/:currency', 'exposure/limits/:currency'])
   setTarget(@Req() req: Request, @Res() res: Response) {
     return this.proxy.forward(this.baseUrl, req, res);
   }
 
-  @Post(['custodians/:custodianId/poll', 'custodians/:custodianId/drift', 'attestations', 'attestations/:attestationId/publish'])
+  @Post(['custodians/:custodianId/poll', 'custodians/:custodianId/drift', 'attestations', 'attestations/:attestationId/publish', 'treasury/rebalances'])
   write(@Req() req: Request, @Res() res: Response) {
     return this.proxy.forward(this.baseUrl, req, res);
   }

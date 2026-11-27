@@ -50,6 +50,13 @@ export class IntentsController {
       invoiceId?: string;
       description?: string;
       phoneNumber?: string;
+      // Cross-asset source (slice 4a): pay from a specific wallet rather than
+      // "the wallet for this currency". For a cross-currency TRANSFER,
+      // sourceAmount is the amount the quote is pinned to and quoteId names
+      // that quote; a USD-X source into USD needs neither.
+      sourceWalletId?: string;
+      sourceAmount?: string;
+      quoteId?: string;
     },
     @AuditContext() audit: AuditRequest = {},
   ) {
@@ -156,6 +163,13 @@ export function render(intent: PaymentIntent) {
     // a bug, and surfacing both lets a client see that for itself.
     ledgerTxId: intent.ledgerTxId || null,
     customerAction: (intent.metadata as { customerAction?: string }).customerAction ?? null,
+    // The cross-asset source (slice 4a), surfaced so a client can see where
+    // the money left from and which conversion is in flight.
+    sourceWalletId: intent.sourceWalletId,
+    sourceCurrency: intent.sourceCurrency,
+    quoteId: intent.quoteId,
+    sourceAmount: intent.sourceAmount,
+    conversionRef: intent.conversionRef || null,
     createdAt: intent.createdAt.toISOString(),
     settledAt: intent.settledAt?.toISOString() ?? null,
   };

@@ -14,25 +14,33 @@ export interface Money {
 }
 
 /**
- * CURRENCY_DECIMALS is a deliberate, temporary duplication of core-ledger's
- * DefaultCurrencies (core-ledger/internal/ledger/chart.go) — core-ledger
- * doesn't expose a GET /currencies route yet (tracked in
- * docs/building-plan.md's "What NOT to build yet": "Add GET/POST
- * /currencies to core-ledger instead" of a second asset-registry service).
- * Once that route exists, this map should be replaced with a call to it,
- * not extended by hand as new currencies get seeded.
+ * CURRENCY_DECIMALS mirrors core-ledger's DefaultCurrencies
+ * (core-ledger/internal/ledger/chart.go), which bff now also reads live
+ * through GET /currencies (see WalletsService.listCurrencies). The static
+ * map stays because toMoney runs on every wallet render — a fetch per
+ * render would be wrong, and a cache would be a second source of truth.
+ * It must cover every currency core-ledger seeds, and adding one there
+ * without adding it here is a render bug, not a new feature.
  */
 const CURRENCY_DECIMALS: Record<string, number> = {
   USD: 2,
   EUR: 2,
+  GBP: 2,
   KES: 2,
+  BTC: 8,
+  ETH: 18,
+  SOL: 9,
   USDX: 6,
 };
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   USD: '$',
   EUR: '€',
+  GBP: '£',
   KES: 'KSh ',
+  BTC: '₿',
+  ETH: 'Ξ',
+  SOL: '◎',
   USDX: '',
 };
 
