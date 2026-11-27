@@ -14,6 +14,7 @@ import TransactionsPage from './pages/TransactionsPage';
 import PaymentsPage from './pages/PaymentsPage';
 import SendMoneyPage from './pages/SendMoneyPage';
 import DepositPage from './pages/DepositPage';
+import HelpPage from './pages/HelpPage';
 import WithdrawPage from './pages/WithdrawPage';
 import PayInvoicePage from './pages/PayInvoicePage';
 import VerificationPage from './pages/VerificationPage';
@@ -63,6 +64,7 @@ export default function App() {
         <Route path="/notifications" element={<RequirePermission anyOf={['notifications:read:own']}><NotificationsPage /></RequirePermission>} />
         <Route path="/approvals" element={<RequirePermission anyOf={['approvals:propose', 'approvals:decide']}><ApprovalsPage /></RequirePermission>} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/help" element={<HelpPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

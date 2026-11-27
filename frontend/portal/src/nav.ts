@@ -1,4 +1,4 @@
-import { ArrowLeftRight, ArrowRightLeft, Bell, CheckSquare, Coins, FileText, Home, ReceiptText, Send, ShieldCheck, Wallet } from 'lucide-react';
+import { CircleHelp, ArrowLeftRight, ArrowRightLeft, Bell, CheckSquare, Coins, FileText, Home, ReceiptText, Send, ShieldCheck, Wallet } from 'lucide-react';
 import type { NavGroup } from '@damp/web-shared/layout';
 
 /**
@@ -30,6 +30,7 @@ export const PORTAL_NAV: NavGroup[] = [
       { to: '/approvals', label: 'Approvals', icon: CheckSquare, anyOf: ['approvals:propose', 'approvals:decide'] },
       { to: '/verification', label: 'Verification', icon: ShieldCheck, anyOf: ['kyc:submit'] },
       { to: '/notifications', label: 'Notifications', icon: Bell, anyOf: ['notifications:read:own'] },
+      { to: '/help', label: 'Help', icon: CircleHelp },
     ],
   },
 ];

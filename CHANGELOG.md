@@ -27,6 +27,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `MPESA_KES_ONLY` and `RAIL_UNAVAILABLE`. `/move/transfer` is unchanged
   apart from the shared tabs.
 
+### Added — banks & mobile money, profile menu, help
+
+- `/payments/banks` is now "Banks & mobile money", with three tabs:
+  - **My bank accounts.**
+  - **Mobile money:** M-Pesa numbers, told apart by the institution's rail
+    rather than a separate table. Adding one validates a Safaricom number
+    and registers it against the M-Pesa institution.
+  - **Available institutions:** each one is labelled "Bank transfer" or
+    "Mobile money".
+- A top-bar profile dropdown (`ProfileMenu`): who is signed in, Settings,
+  Verification, Help and Sign out. It closes on Escape or an outside click.
+- `/help`: searchable FAQs for wallets, converting, sending, deposits and
+  withdrawals, USD-X, and security. The answers describe only behaviour the
+  backend enforces. It is in the Account nav.
+
 ### Fixed — M-Pesa payments never reached the M-Pesa rail
 
 - `services/payments`: an intent naming only a phone number used to fall

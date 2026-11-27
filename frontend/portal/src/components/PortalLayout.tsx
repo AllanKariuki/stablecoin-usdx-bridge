@@ -4,6 +4,7 @@ import { AppShell } from '@damp/web-shared/layout';
 import { NotificationBell } from '@damp/web-shared/notifications';
 import { Toasts } from '@damp/web-shared/ui';
 import { PORTAL_NAV } from '../nav';
+import ProfileMenu from './ProfileMenu';
 
 /** Which account the user is acting as. Business users see their org reference. */
 function AccountContext() {
@@ -32,7 +33,12 @@ export default function PortalLayout() {
         context={<AccountContext />}
         settingsTo="/settings"
         topbar={<p className="text-sm text-muted">Money you hold, on a ledger you can check.</p>}
-        actions={can('notifications:read:own') ? <NotificationBell /> : undefined}
+        actions={
+          <>
+            {can('notifications:read:own') && <NotificationBell />}
+            <ProfileMenu />
+          </>
+        }
       />
       <Toasts />
     </>
